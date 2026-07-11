@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "piezojet"
+version = "0.1.0"
+description = "Equivariant differential-jet learning for crystal piezoelectric response"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "torch-geometric",
+  "e3nn",
+  "pymatgen",
+  "spglib",
+  "numpy",
+  "pyyaml",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

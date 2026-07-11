@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+
+outputs/
+data/raw/*
+!data/raw/gmtnet/
+data/raw/gmtnet/*
+!data/raw/gmtnet/SOURCE_COMMIT.txt
