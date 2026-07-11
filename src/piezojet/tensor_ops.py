@@ -59,7 +59,13 @@ def symmetric_matrix_to_voigt(eta: torch.Tensor, convention: str = "engineering"
 
 
 def piezo_voigt_to_cartesian(piezo: torch.Tensor) -> torch.Tensor:
-    """Expand canonical 3x6 engineering-strain coefficients to e_ijk=e_ikj."""
+    """Expand canonical engineering-strain coefficients to e_ijk=e_ikj.
+
+    The source loader differentiates with respect to one off-diagonal entry of
+    a symmetric strain matrix.  With gamma_ij=2*eta_ij, this derivative is
+    exactly e_ij (not e_ij/2); the factor of two instead appears when eta6 is
+    expanded into both eta_ij and eta_ji in :func:`voigt_to_symmetric_matrix`.
+    """
     if piezo.shape[-2:] != (3, 6):
         raise ValueError(f"Expected [..., 3, 6], got {tuple(piezo.shape)}")
     out = piezo.new_zeros((*piezo.shape[:-2], 3, 3, 3))

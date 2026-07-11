@@ -22,4 +22,6 @@ When data is manually copied rather than cloned by `download_data.py`, create `d
 
 GMTNet labels are `piezoelectric_C_m2` with source columns `[xx, yy, zz, xy, yz, xz]`. PiezoJet converts them once at ingestion to `[xx, yy, zz, yz, xz, xy]`, using engineering shear strain `[exx, eyy, ezz, 2eyz, 2exz, 2exy]`. Internally the tensor is `e_ijk=e_ikj`, represented through `e3nn.io.CartesianTensor("ijk=ikj")` (18 dimensions).
 
+The GMTNet Piezo block obtains its source columns by differentiating with respect to one entry of a symmetric Cartesian strain matrix. Therefore the source shear coefficient is `e_ij`, not `e_ij/2`; PiezoJet stores both Cartesian entries as `e_ij` and puts the factor of two only in the engineering-strain conversion. This is enforced by `test_engineering_shear_matches_single_symmetric_component_derivative`.
+
 The response potential is exactly `Phi=-E_i e_ijk eta_jk`. `--loss full` fits Cartesian tensor MSE; `--loss sketch` applies one Gaussian mixed-Hessian JVP projection per sample; `--loss hybrid` combines them. Outputs contain only `best.pt`, `last.pt`, resolved config, metric history, and a summary.

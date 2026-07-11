@@ -47,7 +47,7 @@ def main() -> None:
     print(f"tensor: {PIEZO_FIELD}, shape {tuple(tensors.shape[1:])}, unit C/m^2")
     print("source Voigt order: [xx, yy, zz, xy, yz, xz] (GMTNet_piezo/transformer.py index [0,4,8,1,5,6])")
     print("PiezoJet canonical order: [xx, yy, zz, yz, xz, xy]; source is converted at ingestion")
-    print("shear: engineering strain; eta=[exx,eyy,ezz,2eyz,2exz,2exy], fixed in piezojet.tensor_ops")
+    print("shear: engineering strain; eta=[exx,eyy,ezz,2eyz,2exz,2exy]. GMTNet differentiates a single symmetric Cartesian entry, so e_iJ=e_ij (no 1/2 on piezo components).")
     print("existing train/val/test split: no")
     print(f"excluded by GMTNet loader screen (empty/malformed/non-finite/abs(max)>=100): {len(raw) - len(records)} (non-finite among populated tensors: {invalid})")
     print(f"atoms per sample: min {min(atom_counts)}, max {max(atom_counts)}")
