@@ -36,12 +36,20 @@ def centro_fp(prediction: torch.Tensor, centrosymmetric: torch.Tensor) -> dict[s
 
 def stratified_metrics(prediction: torch.Tensor, target: torch.Tensor, target_norm: torch.Tensor, centrosymmetric: torch.Tensor, threshold: float) -> dict[str, dict[str, float]]:
     groups = {"all": torch.ones(target.shape[0], dtype=torch.bool, device=target.device), "centrosymmetric": centrosymmetric, "non_centrosymmetric": ~centrosymmetric}
-    quantiles = torch.quantile(target_norm.detach().cpu(), torch.tensor([0.0, 0.05, 0.25, 0.5, 0.75, 0.9, 0.99]))
-    for index, name in enumerate(("zero", "nonzero_0_5", "q25_50", "q50_75", "q75_90", "q90_99", "top_1")):
-        low, high = quantiles[index], quantiles[index + 1] if index + 1 < len(quantiles) else torch.tensor(float("inf"))
-        groups[name] = (target_norm >= low.to(target_norm.device)) & (target_norm < high.to(target_norm.device))
+    norm = target_norm.detach()
+    quantiles = torch.quantile(norm.cpu(), torch.tensor([0.05, 0.25, 0.5, 0.75, 0.9, 0.99])).to(norm.device)
+    zero = norm <= torch.finfo(norm.dtype).eps
+    groups["zero"] = zero
+    groups["nonzero_0_5"] = (norm > torch.finfo(norm.dtype).eps) & (norm <= quantiles[0])
+    groups["q05_25"] = (norm > quantiles[0]) & (norm <= quantiles[1])
+    groups["q25_50"] = (norm > quantiles[1]) & (norm <= quantiles[2])
+    groups["q50_75"] = (norm > quantiles[2]) & (norm <= quantiles[3])
+    groups["q75_90"] = (norm > quantiles[3]) & (norm <= quantiles[4])
+    groups["q90_99"] = (norm > quantiles[4]) & (norm <= quantiles[5])
+    groups["top_1"] = norm > quantiles[5]
     result = {}
     for name, mask in groups.items():
         result[name] = tensor_metrics(prediction[mask], target[mask], threshold) if mask.any() else {}
     result["centro_fp"] = centro_fp(prediction, centrosymmetric)
+    result["non_centrosymmetric_summary"] = result["non_centrosymmetric"]
     return result
