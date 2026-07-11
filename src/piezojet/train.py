@@ -147,8 +147,15 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, help="Override config weight decay")
     parser.add_argument("--output-dir", type=Path, help="Override output directory")
     parser.add_argument("--m2-1", action="store_true", help="Strict 300-epoch 32-sample memorization experiment")
+    parser.add_argument("--resume", type=Path, help="Resume a saved checkpoint at its next epoch")
     args = parser.parse_args()
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    if args.m2_1:
+        cfg["epochs"] = 300
+        cfg["batch_size"] = 32
+        cfg["weight_decay"] = 0.0
+        cfg["output_dir"] = "outputs/m2_1"
+        args.overfit_32 = True
     if args.epochs is not None:
         if args.epochs < 1:
             raise ValueError("--epochs must be positive")
@@ -167,12 +174,6 @@ def main() -> None:
         cfg["weight_decay"] = args.weight_decay
     if args.output_dir is not None:
         cfg["output_dir"] = str(args.output_dir)
-    if args.m2_1:
-        cfg["epochs"] = 300
-        cfg["batch_size"] = 32
-        cfg["weight_decay"] = 0.0
-        cfg["output_dir"] = "outputs/m2_1"
-        args.overfit_32 = True
     seed_everything(int(cfg["seed"]))
     device = device_from_config(cfg["device"])
     data_commit = _data_commit(cfg["data_root"])
@@ -204,12 +205,28 @@ def main() -> None:
     cfg["loss"] = args.loss
     cfg["git_commit"] = _git_commit()
     cfg["data_commit"] = data_commit
+    start_epoch = 1
+    resumed_from = None
+    if args.resume is not None:
+        if not args.resume.is_file():
+            raise FileNotFoundError(f"Resume checkpoint does not exist: {args.resume}")
+        saved = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(saved["model"])
+        if "optimizer" in saved:
+            optimizer.load_state_dict(saved["optimizer"])
+        resumed_from = int(saved["epoch"])
+        start_epoch = resumed_from + 1
+        cfg["resumed_from_epoch"] = resumed_from
     (output / "config.resolved.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     best = float("inf")
     rows: list[dict[str, float | int]] = []
     all_sample_rows: list[dict[str, float | int]] = []
     diagnostic_rows: list[dict[str, float | int]] = []
-    for epoch in range(1, int(cfg["epochs"]) + 1):
+    existing_metrics = output / "metrics.csv"
+    if args.resume is not None and existing_metrics.is_file():
+        with existing_metrics.open(newline="", encoding="utf-8") as handle:
+            rows = [{key: (int(value) if key == "epoch" else float(value)) for key, value in row.items()} for row in csv.DictReader(handle)]
+    for epoch in range(start_epoch, int(cfg["epochs"]) + 1):
         train_value, train_seconds, train_diagnostics = _epoch(model, train_loader, optimizer, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1)
         val_value, val_seconds, val_diagnostics = _epoch(model, val_loader, None, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1)
         row = {"epoch": epoch, "train_loss": train_value, "val_loss": val_value, "train_seconds": train_seconds, "val_seconds": val_seconds}
@@ -220,12 +237,18 @@ def main() -> None:
             diagnostic_rows.append({"epoch": epoch, "phase": "train", **{key: value for key, value in train_diagnostics[0].items() if key != "sample_index"}})
             diagnostic_rows.append({"epoch": epoch, "phase": "eval", **{key: value for key, value in val_diagnostics[0].items() if key != "sample_index"}})
         checkpoint = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": cfg, "piezo_scale": float(scale), "epoch": epoch}
-        torch.save(checkpoint, output / "last.pt")
+        if not args.m2_1 or epoch % 10 == 0 or epoch == int(cfg["epochs"]):
+            torch.save(checkpoint, output / "last.pt")
         if val_value < best:
             best = val_value
             torch.save(checkpoint, output / "best.pt")
         if not args.m2_1 or epoch == 1 or epoch % 10 == 0 or epoch == int(cfg["epochs"]):
             print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
+        if args.m2_1:
+            with (output / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
     with (output / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
         writer.writeheader()
