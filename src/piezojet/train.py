@@ -217,6 +217,7 @@ def main() -> None:
         resumed_from = int(saved["epoch"])
         start_epoch = resumed_from + 1
         cfg["resumed_from_epoch"] = resumed_from
+        cfg["resumed_from_commit"] = saved.get("config", {}).get("git_commit", "unknown")
     (output / "config.resolved.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     best = float("inf")
     rows: list[dict[str, float | int]] = []
