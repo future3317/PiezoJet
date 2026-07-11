@@ -14,6 +14,7 @@ from torch_geometric.loader import DataLoader
 
 from .data import PiezoDataset, create_or_load_splits, load_gmtnet_records, record_to_graph
 from .model import PiezoJet
+from .metrics import tensor_metrics
 from .tensor_ops import cartesian_to_piezo_voigt, rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
 from .train import device_from_config, full_loss, sketch_loss
 
@@ -74,6 +75,9 @@ def main() -> None:
         "normalized_frobenius_error": float((sample_error / target_norm).mean()),
         "max_component_mae": float((prediction.abs().amax(dim=(1, 2, 3)) - target.abs().amax(dim=(1, 2, 3))).abs().mean()),
     }
+    # Keep the historical fields above for compatibility, but expose the
+    # task-defined stabilized metrics as the authoritative evaluation values.
+    metrics["stabilized_tensor_metrics"] = tensor_metrics(prediction, target, float(checkpoint["piezo_scale"]) * 0.05)
     selected = dataset.records[: args.max_equivalence_samples]
     rotation_residuals, group_residuals, centro_norms = [], [], []
     with torch.no_grad():
