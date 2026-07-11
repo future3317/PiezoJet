@@ -55,6 +55,16 @@ def sketch_loss(model: PiezoJet, batch, target_voigt: torch.Tensor) -> torch.Ten
     return torch.mean((-mixed - target).square())
 
 
+def direct_sketch_loss(prediction: torch.Tensor, target_voigt: torch.Tensor, sketches: int = 1) -> torch.Tensor:
+    values = []
+    predicted = cartesian_to_piezo_voigt(prediction)
+    for _ in range(sketches):
+        field = torch.randn(target_voigt.shape[0], 3, device=target_voigt.device, dtype=target_voigt.dtype)
+        strain = torch.randn_like(target_voigt)
+        values.append((torch.einsum("bi,bij,bj->b", field, predicted, strain) - torch.einsum("bi,bij,bj->b", field, target_voigt, strain)).square())
+    return torch.stack(values).mean()
+
+
 def _diagnostics(prediction: torch.Tensor, target: torch.Tensor, batch, model: PiezoJet, normalized_scale: torch.Tensor) -> list[dict[str, float | int]]:
     pred_voigt = cartesian_to_piezo_voigt(prediction)
     target_voigt = cartesian_to_piezo_voigt(target)
@@ -87,7 +97,7 @@ def _diagnostics(prediction: torch.Tensor, target: torch.Tensor, batch, model: P
     return rows
 
 
-def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device: torch.device, full_weight: float, collect_diagnostics: bool = False) -> tuple[float, float, list[dict[str, float | int]]]:
+def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device: torch.device, full_weight: float, collect_diagnostics: bool = False, sketch_implementation: str = "jvp", sketch_count: int = 1) -> tuple[float, float, list[dict[str, float | int]]]:
     training = optimizer is not None
     model.train(training)
     total, count, elapsed, diagnostics = 0.0, 0, 0.0, []
@@ -100,7 +110,8 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device
             if loss_name == "full":
                 loss = full
             else:
-                sketch = sketch_loss(model, batch, cartesian_to_piezo_voigt(batch.y))
+                target_voigt = cartesian_to_piezo_voigt(batch.y)
+                sketch = direct_sketch_loss(prediction, target_voigt, sketch_count) if sketch_implementation == "direct" else sketch_loss(model, batch, target_voigt)
                 loss = sketch if loss_name == "sketch" else sketch + full_weight * full
             if not torch.isfinite(loss):
                 raise FloatingPointError("Non-finite optimization loss encountered")
@@ -148,6 +159,8 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, help="Override output directory")
     parser.add_argument("--m2-1", action="store_true", help="Strict 300-epoch 32-sample memorization experiment")
     parser.add_argument("--resume", type=Path, help="Resume a saved checkpoint at its next epoch")
+    parser.add_argument("--sketch-implementation", choices=("direct", "jvp"), default="jvp")
+    parser.add_argument("--sketch-count", type=int, choices=(1, 2, 4, 8), default=1)
     args = parser.parse_args()
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     if args.m2_1:
@@ -228,8 +241,8 @@ def main() -> None:
         with existing_metrics.open(newline="", encoding="utf-8") as handle:
             rows = [{key: (int(value) if key == "epoch" else float(value)) for key, value in row.items()} for row in csv.DictReader(handle)]
     for epoch in range(start_epoch, int(cfg["epochs"]) + 1):
-        train_value, train_seconds, train_diagnostics = _epoch(model, train_loader, optimizer, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1)
-        val_value, val_seconds, val_diagnostics = _epoch(model, val_loader, None, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1)
+        train_value, train_seconds, train_diagnostics = _epoch(model, train_loader, optimizer, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1, args.sketch_implementation, args.sketch_count)
+        val_value, val_seconds, val_diagnostics = _epoch(model, val_loader, None, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1, args.sketch_implementation, args.sketch_count)
         row = {"epoch": epoch, "train_loss": train_value, "val_loss": val_value, "train_seconds": train_seconds, "val_seconds": val_seconds}
         rows.append(row)
         if args.m2_1:
