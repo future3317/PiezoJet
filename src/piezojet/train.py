@@ -39,15 +39,17 @@ def full_loss(prediction: torch.Tensor, target: torch.Tensor, scale: torch.Tenso
     return torch.mean(((prediction - target) / scale).square())
 
 
-def sketch_loss(model: PiezoJet, batch, target_voigt: torch.Tensor) -> torch.Tensor:
+def sketch_loss(model: PiezoJet, batch, target_voigt: torch.Tensor, piezo_cart: torch.Tensor | None = None) -> torch.Tensor:
     """One Gaussian projection per graph, evaluated with nested forward-mode JVP."""
     graphs = target_voigt.shape[0]
     field0 = torch.zeros(graphs, 3, device=target_voigt.device, dtype=target_voigt.dtype)
     eta0 = torch.zeros(graphs, 6, device=target_voigt.device, dtype=target_voigt.dtype)
     a, b = torch.randn_like(field0), torch.randn_like(eta0)
 
+    piezo_cart = model(batch) if piezo_cart is None else piezo_cart
+
     def eta_direction(field: torch.Tensor) -> torch.Tensor:
-        _, tangent = jvp(lambda eta: model.potential(batch, field, eta), (eta0,), (b,))
+        _, tangent = jvp(lambda eta: model.response(piezo_cart, field, eta), (eta0,), (b,))
         return tangent
 
     _, mixed = jvp(eta_direction, (field0,), (a,))
@@ -60,7 +62,7 @@ def direct_sketch_loss(prediction: torch.Tensor, target_voigt: torch.Tensor, ske
     predicted = cartesian_to_piezo_voigt(prediction)
     for _ in range(sketches):
         field = torch.randn(target_voigt.shape[0], 3, device=target_voigt.device, dtype=target_voigt.dtype)
-        strain = torch.randn_like(target_voigt)
+        strain = torch.randn_like(target_voigt[..., 0, :])
         values.append((torch.einsum("bi,bij,bj->b", field, predicted, strain) - torch.einsum("bi,bij,bj->b", field, target_voigt, strain)).square())
     return torch.stack(values).mean()
 
@@ -111,7 +113,7 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device
                 loss = full
             else:
                 target_voigt = cartesian_to_piezo_voigt(batch.y)
-                sketch = direct_sketch_loss(prediction, target_voigt, sketch_count) if sketch_implementation == "direct" else sketch_loss(model, batch, target_voigt)
+                sketch = direct_sketch_loss(prediction, target_voigt, sketch_count) if sketch_implementation == "direct" else sketch_loss(model, batch, target_voigt, prediction)
                 loss = sketch if loss_name == "sketch" else sketch + full_weight * full
             if not torch.isfinite(loss):
                 raise FloatingPointError("Non-finite optimization loss encountered")

@@ -46,7 +46,7 @@ def main() -> None:
         for _ in range(args.warmup):
             model.zero_grad(set_to_none=True)
             prediction = model(batch)
-            loss = full_loss(prediction, batch.y, scale) if name == "full" else direct_sketch_loss(prediction, target_voigt) if name == "direct_sketch" else sketch_loss(model, batch, target_voigt)
+            loss = full_loss(prediction, batch.y, scale) if name == "full" else direct_sketch_loss(prediction, target_voigt) if name == "direct_sketch" else sketch_loss(model, batch, target_voigt, prediction)
             loss.backward()
         sync(device)
         if device.type == "cuda":
@@ -55,7 +55,7 @@ def main() -> None:
         for _ in range(args.steps):
             model.zero_grad(set_to_none=True)
             prediction = model(batch)
-            loss = full_loss(prediction, batch.y, scale) if name == "full" else direct_sketch_loss(prediction, target_voigt) if name == "direct_sketch" else sketch_loss(model, batch, target_voigt)
+            loss = full_loss(prediction, batch.y, scale) if name == "full" else direct_sketch_loss(prediction, target_voigt) if name == "direct_sketch" else sketch_loss(model, batch, target_voigt, prediction)
             loss.backward()
         sync(device)
         elapsed = time.perf_counter() - start
