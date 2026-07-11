@@ -18,7 +18,7 @@ from torch_geometric.loader import DataLoader
 
 from .data import PiezoDataset, create_or_load_splits, load_gmtnet_records
 from .model import PiezoJet
-from .tensor_ops import cartesian_to_piezo_voigt, piezo_scale, source_voigt_to_canonical
+from .tensor_ops import cartesian_to_piezo_voigt, piezo_scale, piezo_to_irreps, source_voigt_to_canonical
 
 
 def seed_everything(seed: int) -> None:
@@ -55,10 +55,42 @@ def sketch_loss(model: PiezoJet, batch, target_voigt: torch.Tensor) -> torch.Ten
     return torch.mean((-mixed - target).square())
 
 
-def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device: torch.device, full_weight: float) -> tuple[float, float]:
+def _diagnostics(prediction: torch.Tensor, target: torch.Tensor, batch, model: PiezoJet, normalized_scale: torch.Tensor) -> list[dict[str, float | int]]:
+    pred_voigt = cartesian_to_piezo_voigt(prediction)
+    target_voigt = cartesian_to_piezo_voigt(target)
+    diff_voigt = pred_voigt - target_voigt
+    pred_irreps = piezo_to_irreps(prediction)
+    target_irreps = piezo_to_irreps(target)
+    irrep_diff = pred_irreps - target_irreps
+    block_slices = (("1o", 0, 6), ("2o", 6, 11), ("3o", 11, 18))
+    node_counts = (batch.ptr[1:] - batch.ptr[:-1]).tolist() if hasattr(batch, "ptr") else [batch.num_nodes]
+    degree = torch.zeros(batch.num_nodes, device=prediction.device, dtype=torch.long)
+    degree.scatter_add_(0, batch.edge_index[1], torch.ones_like(batch.edge_index[1]))
+    isolated = int((degree == 0).sum())
+    grad_norm = torch.sqrt(sum((parameter.grad.detach().square().sum() for parameter in model.parameters() if parameter.grad is not None), torch.zeros((), device=prediction.device)))
+    rows = []
+    for index in range(prediction.shape[0]):
+        row: dict[str, float | int] = {
+            "sample_index": index,
+            "unnormalized_tensor_mse": float(diff_voigt[index].square().mean()),
+            "frob_error": float(torch.linalg.vector_norm(diff_voigt[index]) / torch.sqrt(torch.tensor(18.0, device=prediction.device))),
+            "normalized_frob_error": float(torch.linalg.vector_norm(diff_voigt[index]) / (normalized_scale * torch.sqrt(torch.tensor(18.0, device=prediction.device)))),
+            "predicted_tensor_norm": float(torch.linalg.vector_norm(pred_voigt[index])),
+            "target_tensor_norm": float(torch.linalg.vector_norm(target_voigt[index])),
+            "gradient_norm": float(grad_norm),
+            "atom_count": int(node_counts[index]),
+            "isolated_nodes_in_batch": isolated,
+        }
+        for name, start, end in block_slices:
+            row[f"irrep_{name}_error"] = float(torch.linalg.vector_norm(irrep_diff[index, start:end]))
+        rows.append(row)
+    return rows
+
+
+def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device: torch.device, full_weight: float, collect_diagnostics: bool = False) -> tuple[float, float, list[dict[str, float | int]]]:
     training = optimizer is not None
     model.train(training)
-    total, count, elapsed = 0.0, 0, 0.0
+    total, count, elapsed, diagnostics = 0.0, 0, 0.0, []
     for batch in loader:
         batch = batch.to(device)
         start = time.perf_counter()
@@ -70,14 +102,20 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device
             else:
                 sketch = sketch_loss(model, batch, cartesian_to_piezo_voigt(batch.y))
                 loss = sketch if loss_name == "sketch" else sketch + full_weight * full
+            if not torch.isfinite(loss):
+                raise FloatingPointError("Non-finite optimization loss encountered")
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                if not all(torch.isfinite(parameter.grad).all() for parameter in model.parameters() if parameter.grad is not None):
+                    raise FloatingPointError("Non-finite parameter gradient encountered")
                 optimizer.step()
+        if collect_diagnostics:
+            diagnostics.extend(_diagnostics(prediction.detach(), batch.y.detach(), batch, model, scale))
         total += float(loss.detach()) * batch.num_graphs
         count += batch.num_graphs
         elapsed += time.perf_counter() - start
-    return total / max(count, 1), elapsed
+    return total / max(count, 1), elapsed, diagnostics
 
 
 def _git_commit() -> str:
@@ -106,6 +144,9 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, help="Override config epochs for a bounded smoke run")
     parser.add_argument("--batch-size", type=int, help="Override config batch size")
     parser.add_argument("--learning-rate", type=float, help="Override config learning rate")
+    parser.add_argument("--weight-decay", type=float, help="Override config weight decay")
+    parser.add_argument("--output-dir", type=Path, help="Override output directory")
+    parser.add_argument("--m2-1", action="store_true", help="Strict 300-epoch 32-sample memorization experiment")
     args = parser.parse_args()
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     if args.epochs is not None:
@@ -120,6 +161,18 @@ def main() -> None:
         if args.learning_rate <= 0:
             raise ValueError("--learning-rate must be positive")
         cfg["learning_rate"] = args.learning_rate
+    if args.weight_decay is not None:
+        if args.weight_decay < 0:
+            raise ValueError("--weight-decay must be non-negative")
+        cfg["weight_decay"] = args.weight_decay
+    if args.output_dir is not None:
+        cfg["output_dir"] = str(args.output_dir)
+    if args.m2_1:
+        cfg["epochs"] = 300
+        cfg["batch_size"] = 32
+        cfg["weight_decay"] = 0.0
+        cfg["output_dir"] = "outputs/m2_1"
+        args.overfit_32 = True
     seed_everything(int(cfg["seed"]))
     device = device_from_config(cfg["device"])
     data_commit = _data_commit(cfg["data_root"])
@@ -154,22 +207,65 @@ def main() -> None:
     (output / "config.resolved.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     best = float("inf")
     rows: list[dict[str, float | int]] = []
+    all_sample_rows: list[dict[str, float | int]] = []
+    diagnostic_rows: list[dict[str, float | int]] = []
     for epoch in range(1, int(cfg["epochs"]) + 1):
-        train_value, train_seconds = _epoch(model, train_loader, optimizer, args.loss, scale, device, cfg["hybrid_full_weight"])
-        val_value, val_seconds = _epoch(model, val_loader, None, args.loss, scale, device, cfg["hybrid_full_weight"])
+        train_value, train_seconds, train_diagnostics = _epoch(model, train_loader, optimizer, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1)
+        val_value, val_seconds, val_diagnostics = _epoch(model, val_loader, None, args.loss, scale, device, cfg["hybrid_full_weight"], args.m2_1)
         row = {"epoch": epoch, "train_loss": train_value, "val_loss": val_value, "train_seconds": train_seconds, "val_seconds": val_seconds}
         rows.append(row)
-        checkpoint = {"model": model.state_dict(), "config": cfg, "piezo_scale": float(scale), "epoch": epoch}
+        if args.m2_1:
+            all_sample_rows.extend({"epoch": epoch, "phase": "train", **item} for item in train_diagnostics)
+            all_sample_rows.extend({"epoch": epoch, "phase": "eval", **item} for item in val_diagnostics)
+            diagnostic_rows.append({"epoch": epoch, "phase": "train", **{key: value for key, value in train_diagnostics[0].items() if key != "sample_index"}})
+            diagnostic_rows.append({"epoch": epoch, "phase": "eval", **{key: value for key, value in val_diagnostics[0].items() if key != "sample_index"}})
+        checkpoint = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": cfg, "piezo_scale": float(scale), "epoch": epoch}
         torch.save(checkpoint, output / "last.pt")
         if val_value < best:
             best = val_value
             torch.save(checkpoint, output / "best.pt")
-        print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
+        if not args.m2_1 or epoch == 1 or epoch % 10 == 0 or epoch == int(cfg["epochs"]):
+            print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
     with (output / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    (output / "summary.json").write_text(json.dumps({"best_val_loss": best, "loss": args.loss, "epochs": len(rows)}, indent=2) + "\n", encoding="utf-8")
+    summary = {"best_val_loss": best, "loss": args.loss, "epochs": len(rows), "optimization_loss": args.loss, "memorization_loss": args.loss if args.m2_1 else None, "all_finite": True}
+    if args.m2_1:
+        with (output / "sample_errors.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=all_sample_rows[0].keys())
+            writer.writeheader()
+            writer.writerows(all_sample_rows)
+        with (output / "diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=diagnostic_rows[0].keys())
+            writer.writeheader()
+            writer.writerows(diagnostic_rows)
+        summary["diagnostics"] = ["sample_errors.csv", "diagnostics.csv"]
+        summary["interpretation_boundary"] = "Same-cohort memorization only; not validation generalization."
+        report = f"""# M2.1 strict memorization test
+
+## Git commit
+
+`{cfg['git_commit']}`
+
+## Data manifest
+
+GMTNet commit `{cfg['data_commit']}`; fixed first 32 material IDs from the existing seed-42 training split.
+
+## Configuration
+
+300 epochs, batch size 32, full tensor loss, weight decay 0, seed {cfg['seed']}, dropout disabled.
+
+## What was implemented
+
+Per-sample Cartesian/Voigt errors, irreps block errors, gradient norms, predicted/target tensor norms, graph atom statistics, and non-finite checks.
+
+## Interpretation boundary
+
+This is a strict same-cohort memorization test. It does not estimate random-split or chemical OOD generalization.
+"""
+        (output / "report.md").write_text(report, encoding="utf-8")
+    (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
