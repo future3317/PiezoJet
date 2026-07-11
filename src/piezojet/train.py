@@ -161,8 +161,11 @@ def main() -> None:
     parser.add_argument("--resume", type=Path, help="Resume a saved checkpoint at its next epoch")
     parser.add_argument("--sketch-implementation", choices=("direct", "jvp"), default="jvp")
     parser.add_argument("--sketch-count", type=int, choices=(1, 2, 4, 8), default=1)
+    parser.add_argument("--seed", type=int, help="Override config seed for multi-seed experiments")
     args = parser.parse_args()
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    if args.seed is not None:
+        cfg["seed"] = args.seed
     if args.m2_1:
         cfg["epochs"] = 300
         cfg["batch_size"] = 32
