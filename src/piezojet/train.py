@@ -254,7 +254,11 @@ def main() -> None:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    summary = {"best_val_loss": best, "loss": args.loss, "epochs": len(rows), "optimization_loss": args.loss, "memorization_loss": args.loss if args.m2_1 else None, "all_finite": True}
+    summary = {"best_val_loss": best, "loss": args.loss, "epochs": int(cfg["epochs"]), "metrics_rows": len(rows), "optimization_loss": args.loss, "memorization_loss": args.loss if args.m2_1 else None, "all_finite": True}
+    if resumed_from is not None:
+        summary["resumed_from_epoch"] = resumed_from
+        summary["resumed_from_commit"] = cfg.get("resumed_from_commit")
+        summary["metrics_coverage"] = [int(rows[0]["epoch"]), int(rows[-1]["epoch"])] if rows else []
     if args.m2_1:
         with (output / "sample_errors.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=all_sample_rows[0].keys())
