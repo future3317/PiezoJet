@@ -1,0 +1,25 @@
+piezo:
+  field: piezoelectric_C_m2
+  type: total
+  unit: C/m^2
+  source_voigt_order: [xx, yy, zz, xy, yz, xz]
+  internal_voigt_order: [xx, yy, zz, yz, xz, xy]
+  engineering_shear: true
+
+elastic:
+  field: elastic_total_kbar
+  type: total
+  source_unit: kbar
+  target_unit: GPa
+  scale_to_target: 0.1
+  source_voigt_order: [xx, yy, zz, xy, yz, xz]
+  internal_voigt_order: [xx, yy, zz, yz, xz, xy]
+  engineering_shear: true
+
+dielectric:
+  electronic_field: dielectric
+  ionic_field: dielectric_ionic
+  unit: dimensionless_relative_permittivity
+  primary_target: total_static
+  static_definition: electronic_plus_ionic
+  susceptibility_definition: static_minus_identity
