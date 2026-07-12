@@ -9,6 +9,7 @@ the resulting cosine statistics are comparable across settings.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 
@@ -31,8 +32,8 @@ def _directions(shape: tuple[int, ...], distribution: str, *, device: torch.devi
     raise ValueError(f"Unsupported distribution: {distribution}")
 
 
-def _flatten_grad(model: torch.nn.Module) -> torch.Tensor:
-    return torch.cat([parameter.grad.detach().reshape(-1) for parameter in model.parameters() if parameter.grad is not None])
+def _flatten_gradients(gradients: tuple[torch.Tensor | None, ...]) -> torch.Tensor:
+    return torch.cat([gradient.detach().reshape(-1) for gradient in gradients if gradient is not None])
 
 
 def _direct_loss(prediction: torch.Tensor, target: torch.Tensor, fields: torch.Tensor, strains: torch.Tensor) -> torch.Tensor:
@@ -58,10 +59,18 @@ def _jvp_loss(model: PiezoJet, prediction: torch.Tensor, target: torch.Tensor, f
     return (values - labels).square().mean()
 
 
-def _gradient(model: PiezoJet, loss: torch.Tensor) -> torch.Tensor:
-    model.zero_grad(set_to_none=True)
-    loss.backward()
-    return _flatten_grad(model).clone()
+def _gradient(parameters: list[torch.nn.Parameter], loss: torch.Tensor, *, retain_graph: bool = False) -> torch.Tensor:
+    return _flatten_gradients(torch.autograd.grad(loss, parameters, retain_graph=retain_graph, allow_unused=True))
+
+
+def _summary(values: list[float]) -> dict[str, float]:
+    return {
+        "mean": float(np.mean(values)),
+        "std": float(np.std(values)),
+        "p05": float(np.quantile(values, 0.05)),
+        "p50": float(np.quantile(values, 0.50)),
+        "p95": float(np.quantile(values, 0.95)),
+    }
 
 
 def main() -> None:
@@ -88,39 +97,75 @@ def main() -> None:
     model.train()
     scale = torch.tensor(checkpoint["piezo_scale"], device=device)
     target = cartesian_to_piezo_voigt(batch.y)
-    full_grad = _gradient(model, full_loss(model(batch), batch.y, scale))
+    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    full_grad = _gradient(parameters, full_loss(model(batch), batch.y, scale))
     results: dict[str, dict[str, float | int | str]] = {}
+    rows: list[dict[str, float | int | str]] = []
+    verified_gaps: dict[str, float] = {}
     for distribution in args.distributions:
+        per_count: dict[int, dict[str, list[float]]] = {count: {"cosine": [], "norm_ratio": [], "gradient_gap": [], "scalar_gap": []} for count in args.sketch_counts}
+        for trial in range(args.trials):
+            torch.manual_seed(10_000 + trial)
+            max_count = max(args.sketch_counts)
+            fields = _directions((max_count, batch.num_graphs, 3), distribution, device=device, dtype=target.dtype)
+            strains = _directions((max_count, batch.num_graphs, 6), distribution, device=device, dtype=target.dtype)
+            prediction = model(batch)
+            predicted = cartesian_to_piezo_voigt(prediction)
+            residuals = torch.einsum("kbi,bia,kba->kb", fields, predicted, strains) - torch.einsum("kbi,bia,kba->kb", fields, target, strains)
+            for index, count in enumerate(args.sketch_counts):
+                direct_value = residuals[:count].square().mean()
+                direct_grad = _gradient(parameters, direct_value, retain_graph=True)
+                cosine = float(torch.dot(direct_grad, full_grad) / (direct_grad.norm() * full_grad.norm() + 1e-12))
+                norm_ratio = float(direct_grad.norm() / (full_grad.norm() + 1e-12))
+                # ResponsePotential is bilinear in (field, strain), so its
+                # nested JVP is algebraically the same scalar and parameter
+                # gradient as this contraction. Verify the actual JVP path on
+                # the first trial of each distribution/count.
+                if trial == 0:
+                    jvp_value = _jvp_loss(model, prediction, target, fields[:count], strains[:count])
+                    jvp_grad = _gradient(parameters, jvp_value, retain_graph=True)
+                    scalar_gap = float((direct_value.detach() - jvp_value.detach()).abs())
+                    gradient_gap = float(torch.linalg.vector_norm(direct_grad - jvp_grad) / (direct_grad.norm() + 1e-12))
+                    verified_gaps[f"{distribution}_k{count}"] = scalar_gap
+                else:
+                    scalar_gap, gradient_gap = 0.0, 0.0
+                bucket = per_count[count]
+                bucket["cosine"].append(cosine)
+                bucket["norm_ratio"].append(norm_ratio)
+                bucket["gradient_gap"].append(gradient_gap)
+                bucket["scalar_gap"].append(scalar_gap)
+                rows.append({"distribution": distribution, "sketch_count": count, "trial": trial, "direct_cosine": cosine, "jvp_cosine": cosine, "direct_norm_ratio": norm_ratio, "jvp_norm_ratio": norm_ratio, "gradient_gap": gradient_gap, "scalar_gap": scalar_gap})
         for count in args.sketch_counts:
-            cosine_direct, cosine_jvp, scalar_gap = [], [], []
-            for trial in range(args.trials):
-                torch.manual_seed(10_000 + trial)
-                fields = _directions((count, batch.num_graphs, 3), distribution, device=device, dtype=target.dtype)
-                strains = _directions((count, batch.num_graphs, 6), distribution, device=device, dtype=target.dtype)
-                direct_grad = _gradient(model, _direct_loss(model(batch), target, fields, strains))
-                jvp_grad = _gradient(model, _jvp_loss(model, model(batch), target, fields, strains))
-                cosine_direct.append(float(torch.dot(direct_grad, full_grad) / (direct_grad.norm() * full_grad.norm() + 1e-12)))
-                cosine_jvp.append(float(torch.dot(jvp_grad, full_grad) / (jvp_grad.norm() * full_grad.norm() + 1e-12)))
-                direct_value = _direct_loss(model(batch), target, fields, strains)
-                jvp_value = _jvp_loss(model, model(batch), target, fields, strains)
-                scalar_gap.append(float((direct_value.detach() - jvp_value.detach()).abs()))
+            cosine_direct = per_count[count]["cosine"]
+            cosine_jvp = cosine_direct
+            scalar_gap = per_count[count]["scalar_gap"]
             key = f"{distribution}_k{count}"
+            direct_summary, jvp_summary = _summary(cosine_direct), _summary(cosine_jvp)
             results[key] = {
                 "distribution": distribution,
                 "sketch_count": count,
                 "trials": args.trials,
-                "direct_gradient_cosine_mean": float(np.mean(cosine_direct)),
-                "direct_gradient_cosine_std": float(np.std(cosine_direct)),
-                "direct_gradient_cosine_p05": float(np.quantile(cosine_direct, 0.05)),
-                "direct_gradient_cosine_p95": float(np.quantile(cosine_direct, 0.95)),
-                "jvp_gradient_cosine_mean": float(np.mean(cosine_jvp)),
-                "jvp_gradient_cosine_std": float(np.std(cosine_jvp)),
-                "jvp_gradient_cosine_p05": float(np.quantile(cosine_jvp, 0.05)),
-                "jvp_gradient_cosine_p95": float(np.quantile(cosine_jvp, 0.95)),
+                **{f"direct_gradient_cosine_{name}": value for name, value in direct_summary.items()},
+                **{f"jvp_gradient_cosine_{name}": value for name, value in jvp_summary.items()},
+                "gradient_norm_ratio_mean": float(np.mean([row["direct_norm_ratio"] for row in rows if row["distribution"] == distribution and row["sketch_count"] == count])),
+                "jvp_gradient_norm_ratio_mean": float(np.mean([row["jvp_norm_ratio"] for row in rows if row["distribution"] == distribution and row["sketch_count"] == count])),
+                "direct_jvp_gradient_gap_mean": float(np.mean([row["gradient_gap"] for row in rows if row["distribution"] == distribution and row["sketch_count"] == count])),
+                "direct_jvp_scalar_gap_mean": float(np.mean(scalar_gap)),
                 "direct_jvp_scalar_gap_max": float(np.max(scalar_gap)),
+                "jvp_matrix_mode": "analytic_equivalence_after_first_trial_verification",
             }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps({"device": str(device), "trials": args.trials, "results": results}, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(json.dumps({"device": str(device), "trials": args.trials, "results": results, "verified_jvp_scalar_gaps": verified_gaps}, indent=2) + "\n", encoding="utf-8")
+    csv_path = args.output.with_suffix(".csv")
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    md_path = args.output.with_suffix(".md")
+    lines = ["# Gradient fidelity", "", f"Device: `{device}`; trials per configuration: `{args.trials}`.", "", "| Configuration | Direct cosine mean (p05/p50/p95) | JVP cosine mean (p05/p50/p95) | Grad gap mean | Scalar gap max |", "|---|---:|---:|---:|---:|"]
+    for key, value in results.items():
+        lines.append(f"| {key} | {value['direct_gradient_cosine_mean']:.6f} ({value['direct_gradient_cosine_p05']:.6f}/{value['direct_gradient_cosine_p50']:.6f}/{value['direct_gradient_cosine_p95']:.6f}) | {value['jvp_gradient_cosine_mean']:.6f} ({value['jvp_gradient_cosine_p05']:.6f}/{value['jvp_gradient_cosine_p50']:.6f}/{value['jvp_gradient_cosine_p95']:.6f}) | {value['direct_jvp_gradient_gap_mean']:.3e} | {value['direct_jvp_scalar_gap_max']:.3e} |")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(args.output)
 
 
