@@ -104,7 +104,7 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, device
     model.train(training)
     total, count, elapsed, diagnostics = 0.0, 0, 0.0, []
     for batch in loader:
-        batch = batch.to(device)
+        batch = batch.to(device, non_blocking=device.type == "cuda")
         start = time.perf_counter()
         with torch.set_grad_enabled(training):
             prediction = model(batch)
@@ -202,8 +202,11 @@ def main() -> None:
         splits["val"] = splits["train"]
     train_set = PiezoDataset(records, splits["train"], cfg["cutoff"], cfg["max_neighbors"])
     val_set = PiezoDataset(records, splits["val"], cfg["cutoff"], cfg["max_neighbors"])
-    train_loader = DataLoader(train_set, batch_size=cfg["batch_size"], shuffle=True, num_workers=cfg["num_workers"])
-    val_loader = DataLoader(val_set, batch_size=cfg["batch_size"], shuffle=False, num_workers=cfg["num_workers"])
+    loader_options = {"num_workers": cfg["num_workers"], "pin_memory": device.type == "cuda"}
+    if cfg["num_workers"] > 0:
+        loader_options["persistent_workers"] = True
+    train_loader = DataLoader(train_set, batch_size=cfg["batch_size"], shuffle=True, **loader_options)
+    val_loader = DataLoader(val_set, batch_size=cfg["batch_size"], shuffle=False, **loader_options)
     train_ids = set(splits["train"])
     first_target = torch.stack(
         [source_voigt_to_canonical(torch.tensor(record["piezoelectric_C_m2"], dtype=torch.float32))

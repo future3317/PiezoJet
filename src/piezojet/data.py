@@ -132,9 +132,12 @@ class PiezoDataset(Dataset):
         if len(self.records) != len(ids):
             raise ValueError("Split contains material IDs absent from loaded GMTNet records")
         self.cutoff, self.max_neighbors = cutoff, max_neighbors
+        self._graph_cache: dict[int, Data] = {}
 
     def len(self) -> int:
         return len(self.records)
 
     def get(self, index: int) -> Data:
-        return record_to_graph(self.records[index], self.cutoff, self.max_neighbors)
+        if index not in self._graph_cache:
+            self._graph_cache[index] = record_to_graph(self.records[index], self.cutoff, self.max_neighbors)
+        return self._graph_cache[index]
