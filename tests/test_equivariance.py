@@ -32,3 +32,8 @@ def test_untrained_model_is_rotation_equivariant_and_potential_invariant():
     strain = rotate_strain(__import__("piezojet.tensor_ops", fromlist=["voigt_to_symmetric_matrix"]).voigt_to_symmetric_matrix(eta6), rotation)
     potential = ResponsePotential()
     assert torch.allclose(potential(prediction, field, eta6), potential(transformed_prediction, field @ rotation.T, symmetric_matrix_to_voigt(strain)), atol=1e-5)
+
+
+def test_encoder_radial_centers_are_registered_buffer():
+    model = PiezoJet()
+    assert "radial_centers" in dict(model.encoder.named_buffers())

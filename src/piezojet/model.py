@@ -11,9 +11,9 @@ from torch_geometric.utils import scatter
 from .tensor_ops import PIEZO_TYPE, piezo_from_irreps, voigt_to_symmetric_matrix
 
 
-def _radial_basis(distance: torch.Tensor, cutoff: float, count: int) -> torch.Tensor:
-    centers = torch.linspace(0, cutoff, count, device=distance.device, dtype=distance.dtype)
-    width = cutoff / max(count - 1, 1)
+def _radial_basis(distance: torch.Tensor, centers: torch.Tensor, cutoff: float) -> torch.Tensor:
+    centers = centers.to(dtype=distance.dtype)
+    width = cutoff / max(centers.numel() - 1, 1)
     envelope = (1 - distance / cutoff).clamp_min(0).square()
     return torch.exp(-((distance.unsqueeze(-1) - centers) / width).square()) * envelope.unsqueeze(-1)
 
@@ -62,6 +62,7 @@ class PeriodicCrystalEncoder(nn.Module):
     ):
         super().__init__()
         self.cutoff, self.radial_basis = cutoff, radial_basis
+        self.register_buffer("radial_centers", torch.linspace(0, cutoff, radial_basis), persistent=False)
         self.embedding = nn.Embedding(119, embedding_dim)
         self.input_irreps = o3.Irreps(f"{embedding_dim}x0e")
         self.hidden_irreps = o3.Irreps("64x0e + 16x0o + 24x1e + 24x1o + 12x2e + 12x2o + 6x3e + 6x3o")
@@ -83,7 +84,7 @@ class PeriodicCrystalEncoder(nn.Module):
         if torch.any(distance > self.cutoff + 1e-5):
             raise ValueError("Graph contains an edge beyond the configured cutoff")
         sh = o3.spherical_harmonics(self.sh_irreps, vectors, normalize=True, normalization="component")
-        radial = _radial_basis(distance, self.cutoff, self.radial_basis)
+        radial = _radial_basis(distance, self.radial_centers, self.cutoff)
         source, target = batch.edge_index
         initial = self.initial_tp(self.embedding(batch.z)[source], sh, self.initial_radial(radial))
         features = self.initial_gate(scatter(initial, target, dim=0, dim_size=batch.z.shape[0], reduce="mean"))

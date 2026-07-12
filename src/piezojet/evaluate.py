@@ -12,7 +12,7 @@ from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from torch_geometric.loader import DataLoader
 
-from .data import PiezoDataset, create_or_load_splits, load_gmtnet_records, record_to_graph
+from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records, record_to_graph
 from .model import PiezoJet
 from .metrics import tensor_metrics
 from .tensor_ops import cartesian_to_piezo_voigt, rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
@@ -51,8 +51,9 @@ def main() -> None:
     device = device_from_config(cfg["device"])
     records = load_gmtnet_records(cfg["data_root"])
     splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
-    dataset = PiezoDataset(records, splits[args.split], cfg["cutoff"], cfg["max_neighbors"])
-    loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=False, num_workers=cfg["num_workers"])
+    cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
+    dataset = PiezoDataset(records, splits[args.split], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
+    loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=False, num_workers=cfg["num_workers"], pin_memory=device.type == "cuda")
     model = PiezoJet(
         embedding_dim=cfg["embedding_dim"], cutoff=cfg["cutoff"], lmax=cfg["lmax"], num_blocks=cfg["num_blocks"],
         radial_basis=cfg["radial_basis"], radial_hidden=cfg["radial_hidden"],
@@ -60,9 +61,9 @@ def main() -> None:
     model.load_state_dict(checkpoint["model"])
     model.eval()
     predictions, targets = [], []
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=device.type == "cuda")
             predictions.append(model(batch).cpu())
             targets.append(batch.y.cpu())
     prediction, target = torch.cat(predictions), torch.cat(targets)
@@ -80,11 +81,11 @@ def main() -> None:
     metrics["stabilized_tensor_metrics"] = tensor_metrics(prediction, target, float(checkpoint["piezo_scale"]) * 0.05)
     selected = dataset.records[: args.max_equivalence_samples]
     rotation_residuals, group_residuals, centro_norms = [], [], []
-    with torch.no_grad():
+    with torch.inference_mode():
         for record in selected:
             graph = record_to_graph(record, cfg["cutoff"], cfg["max_neighbors"])
             graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
-            graph = graph.to(device)
+            graph = graph.to(device, non_blocking=device.type == "cuda")
             rotation = _random_rotation(torch.float32, device)
             rotated_prediction = model(_rotated_graph(graph, rotation))
             base_prediction = model(graph)
@@ -98,9 +99,9 @@ def main() -> None:
     metrics["rotation_equivariance_residual"] = float(sum(rotation_residuals) / len(rotation_residuals))
     metrics["point_group_residual"] = float(sum(group_residuals) / len(group_residuals))
     metrics["centrosymmetric_false_positive_norm"] = float(sum(centro_norms) / len(centro_norms)) if centro_norms else None
-    batch = next(iter(loader)).to(device)
+    batch = next(iter(loader)).to(device, non_blocking=device.type == "cuda")
     scale = torch.tensor(checkpoint["piezo_scale"], device=device)
-    with torch.no_grad():
+    with torch.inference_mode():
         start = time.perf_counter()
         full = full_loss(model(batch), batch.y, scale)
         metrics["full_loss_seconds"] = time.perf_counter() - start
