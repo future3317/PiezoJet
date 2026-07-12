@@ -12,7 +12,7 @@ from torch import nn
 from torch_geometric.data import Dataset
 from torch_geometric.utils import scatter
 
-from .data import record_to_graph
+from .data import PersistentGraphCache, record_to_graph
 from .model import PeriodicCrystalEncoder
 from .response_ops import DIELECTRIC_TENSOR, ELASTIC_TENSOR, elastic_voigt_to_cartesian
 from .tensor_ops import PIEZO_TYPE, piezo_from_irreps, piezo_voigt_to_cartesian, source_voigt_to_canonical
@@ -57,7 +57,7 @@ def load_multresponse_records(data_root: str | Path) -> list[dict[str, Any]]:
 
 
 class MultiResponseDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int):
+    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None):
         super().__init__()
         wanted = set(ids)
         self.records = [record for record in records if str(record["JARVIS_ID"]) in wanted]
@@ -65,6 +65,7 @@ class MultiResponseDataset(Dataset):
             raise ValueError("Multiresponse split contains absent material IDs")
         self.cutoff, self.max_neighbors = cutoff, max_neighbors
         self._graph_cache: dict[int, Any] = {}
+        self._disk_cache = PersistentGraphCache(processed_dir, self.records, cutoff, max_neighbors, cache_key=cache_key) if processed_dir is not None else None
 
     def len(self) -> int:
         return len(self.records)
@@ -72,7 +73,12 @@ class MultiResponseDataset(Dataset):
     def get(self, index: int):
         record = self.records[index]
         if index not in self._graph_cache:
-            self._graph_cache[index] = record_to_graph(record, self.cutoff, self.max_neighbors)
+            graph = self._disk_cache.load(record) if self._disk_cache is not None else None
+            if graph is None:
+                graph = record_to_graph(record, self.cutoff, self.max_neighbors)
+                if self._disk_cache is not None:
+                    self._disk_cache.save(record, graph)
+            self._graph_cache[index] = graph
         graph = self._graph_cache[index]
         graph.y_piezo = piezo_voigt_to_cartesian(source_voigt_to_canonical(_as_tensor(record["piezoelectric_C_m2"]))).unsqueeze(0)
         graph.y_elastic = elastic_voigt_to_cartesian(_as_tensor(record["elastic_total_kbar"]) * 0.1).unsqueeze(0)

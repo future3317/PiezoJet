@@ -8,3 +8,4 @@ data/raw/*
 !data/raw/gmtnet/
 data/raw/gmtnet/*
 !data/raw/gmtnet/SOURCE_COMMIT.txt
+data/processed/pbc_graph_cache/

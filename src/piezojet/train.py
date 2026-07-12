@@ -16,7 +16,7 @@ import yaml
 from torch.func import jvp
 from torch_geometric.loader import DataLoader
 
-from .data import PiezoDataset, create_or_load_splits, load_gmtnet_records
+from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
 from .model import PiezoJet
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_scale, piezo_to_irreps, source_voigt_to_canonical
 
@@ -200,8 +200,9 @@ def main() -> None:
     if args.overfit_32:
         splits["train"] = splits["train"][:32]
         splits["val"] = splits["train"]
-    train_set = PiezoDataset(records, splits["train"], cfg["cutoff"], cfg["max_neighbors"])
-    val_set = PiezoDataset(records, splits["val"], cfg["cutoff"], cfg["max_neighbors"])
+    cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
+    train_set = PiezoDataset(records, splits["train"], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
+    val_set = PiezoDataset(records, splits["val"], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
     loader_options = {"num_workers": cfg["num_workers"], "pin_memory": device.type == "cuda"}
     if cfg["num_workers"] > 0:
         loader_options["persistent_workers"] = True

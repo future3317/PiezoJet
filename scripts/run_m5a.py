@@ -14,6 +14,7 @@ import torch
 import yaml
 from torch_geometric.loader import DataLoader
 
+from piezojet.data import graph_cache_key, load_gmtnet_records
 from piezojet.multiresponse import MultiResponseDataset, SharedMultiResponseModel, load_multresponse_records, multiresponse_loss
 
 
@@ -39,8 +40,9 @@ def main() -> None:
     seed_everything(int(cfg["seed"]))
     device = torch.device("cuda" if cfg.get("device") == "auto" and torch.cuda.is_available() else "cpu")
     records = load_multresponse_records(cfg["data_root"])
+    piezo_records = load_gmtnet_records(cfg["data_root"])
     ids = sorted(str(record["JARVIS_ID"]) for record in records)[: args.limit]
-    dataset = MultiResponseDataset(records, ids, cfg["cutoff"], cfg["max_neighbors"])
+    dataset = MultiResponseDataset(records, ids, cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=graph_cache_key(piezo_records, cfg["cutoff"], cfg["max_neighbors"]))
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=cfg["num_workers"])
     first = next(iter(DataLoader(dataset, batch_size=len(dataset), shuffle=False))).to(device)
     scales = {}

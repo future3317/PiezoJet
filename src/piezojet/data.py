@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pickle
 import random
+from hashlib import sha256
 from collections import Counter
 from itertools import product
 from pathlib import Path
@@ -19,6 +20,7 @@ from .tensor_ops import piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 PIEZO_FILE = "jarvis_diele_piezo.pkl"
 PIEZO_FIELD = "piezoelectric_C_m2"
+GRAPH_CACHE_SCHEMA = 1
 
 
 def load_gmtnet_records(root: str | Path) -> list[dict[str, Any]]:
@@ -124,8 +126,74 @@ def record_to_graph(record: dict[str, Any], cutoff: float, max_neighbors: int) -
     )
 
 
+def graph_cache_key(records: list[dict[str, Any]], cutoff: float, max_neighbors: int) -> str:
+    """Hash graph-defining geometry and construction parameters, not labels."""
+    digest = sha256()
+    digest.update(f"schema={GRAPH_CACHE_SCHEMA};cutoff={cutoff:.8g};max_neighbors={max_neighbors}".encode("utf-8"))
+    for record in records:
+        atoms = record["atoms"]
+        payload = {
+            "id": str(record["JARVIS_ID"]),
+            "elements": atoms["elements"],
+            "coords": atoms["coords"],
+            "lattice_mat": atoms["lattice_mat"],
+            "cartesian": atoms.get("cartesian"),
+        }
+        digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return digest.hexdigest()[:20]
+
+
+class PersistentGraphCache:
+    """Atomic, versioned CPU graph cache reusable across Python processes."""
+
+    def __init__(self, processed_dir: str | Path, records: list[dict[str, Any]], cutoff: float, max_neighbors: int, cache_key: str | None = None):
+        self.key = cache_key or graph_cache_key(records, cutoff, max_neighbors)
+        self.directory = Path(processed_dir) / "pbc_graph_cache" / self.key
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.cutoff, self.max_neighbors = cutoff, max_neighbors
+        if not (self.directory / "manifest.json").exists():
+            self.write_manifest(records)
+
+    def write_manifest(self, records: list[dict[str, Any]]) -> None:
+        (self.directory / "manifest.json").write_text(json.dumps({
+            "schema": GRAPH_CACHE_SCHEMA,
+            "cache_key": self.key,
+            "cutoff": self.cutoff,
+            "max_neighbors": self.max_neighbors,
+            "graph_count": len(records),
+            "material_ids": [str(record["JARVIS_ID"]) for record in records],
+        }, indent=2) + "\n", encoding="utf-8")
+
+    def path(self, record: dict[str, Any]) -> Path:
+        material_id = str(record["JARVIS_ID"])
+        return self.directory / f"{sha256(material_id.encode('utf-8')).hexdigest()[:16]}.pt"
+
+    def load(self, record: dict[str, Any]) -> Data | None:
+        path = self.path(record)
+        return torch.load(path, map_location="cpu", weights_only=False) if path.exists() else None
+
+    def has(self, record: dict[str, Any]) -> bool:
+        return self.path(record).exists()
+
+    def save(self, record: dict[str, Any], graph: Data) -> None:
+        path = self.path(record)
+        temporary = path.with_suffix(".tmp")
+        torch.save(graph, temporary)
+        temporary.replace(path)
+
+
+def precompute_pbc_graphs(records: list[dict[str, Any]], processed_dir: str | Path, cutoff: float, max_neighbors: int) -> Path:
+    """Materialize the persistent graph cache and return its versioned directory."""
+    cache = PersistentGraphCache(processed_dir, records, cutoff, max_neighbors)
+    cache.write_manifest(records)
+    for record in records:
+        if not cache.has(record):
+            cache.save(record, record_to_graph(record, cutoff, max_neighbors))
+    return cache.directory
+
+
 class PiezoDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int):
+    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None):
         super().__init__()
         wanted = set(ids)
         self.records = [record for record in records if str(record["JARVIS_ID"]) in wanted]
@@ -133,11 +201,18 @@ class PiezoDataset(Dataset):
             raise ValueError("Split contains material IDs absent from loaded GMTNet records")
         self.cutoff, self.max_neighbors = cutoff, max_neighbors
         self._graph_cache: dict[int, Data] = {}
+        self._disk_cache = PersistentGraphCache(processed_dir, self.records, cutoff, max_neighbors, cache_key=cache_key) if processed_dir is not None else None
 
     def len(self) -> int:
         return len(self.records)
 
     def get(self, index: int) -> Data:
         if index not in self._graph_cache:
-            self._graph_cache[index] = record_to_graph(self.records[index], self.cutoff, self.max_neighbors)
+            record = self.records[index]
+            graph = self._disk_cache.load(record) if self._disk_cache is not None else None
+            if graph is None:
+                graph = record_to_graph(record, self.cutoff, self.max_neighbors)
+                if self._disk_cache is not None:
+                    self._disk_cache.save(record, graph)
+            self._graph_cache[index] = graph
         return self._graph_cache[index]
