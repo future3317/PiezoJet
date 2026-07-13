@@ -28,6 +28,11 @@ def test_untrained_model_is_rotation_equivariant_and_potential_invariant():
     expected = rotate_piezo(prediction, rotation)
     residual = torch.linalg.vector_norm(transformed_prediction - expected) / torch.linalg.vector_norm(prediction).clamp_min(1e-12)
     assert residual < 1e-4
+    born = model.predict_components(graph).born_charges
+    rotated_born = model.predict_components(rotated).born_charges
+    expected_born = torch.einsum("ia,nab,jb->nij", rotation, born, rotation)
+    born_residual = torch.linalg.vector_norm(rotated_born - expected_born) / torch.linalg.vector_norm(born).clamp_min(1e-12)
+    assert born_residual < 1e-4
     field, eta6 = torch.randn(1, 3), torch.randn(1, 6)
     strain = rotate_strain(__import__("piezojet.tensor_ops", fromlist=["voigt_to_symmetric_matrix"]).voigt_to_symmetric_matrix(eta6), rotation)
     potential = ResponsePotential()

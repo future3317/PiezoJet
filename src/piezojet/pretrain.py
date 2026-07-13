@@ -13,7 +13,6 @@ from pathlib import Path
 
 import torch
 import yaml
-from e3nn import o3
 from torch import nn
 from torch_geometric.loader import DataLoader
 from torch_geometric.utils import scatter
@@ -24,13 +23,15 @@ from .train import device_from_config, seed_everything
 
 
 class StructurePretrainingHead(nn.Module):
-    def __init__(self, irreps: o3.Irreps):
+    """Pretraining heads for invariant scalars and Cartesian polar modes."""
+
+    def __init__(self, scalar_dim: int, channels: int):
         super().__init__()
-        self.species = o3.Linear(irreps, o3.Irreps("119x0e"))
-        self.displacement = o3.Linear(irreps, o3.Irreps("1x1o"))
+        self.species = nn.Sequential(nn.Linear(scalar_dim, scalar_dim), nn.SiLU(), nn.Linear(scalar_dim, 119))
+        self.displacement = nn.Sequential(nn.Linear(scalar_dim, scalar_dim), nn.SiLU(), nn.Linear(scalar_dim, channels))
 
     def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.species(features), self.displacement(features)
+        return self.species(features.scalar), torch.einsum("nc,nci->ni", self.displacement(features.scalar), features.vector)
 
 
 def _corrupt_structure(batch, mask_probability: float, noise_std: float):
@@ -70,10 +71,13 @@ def main() -> None:
             raise ValueError("--max-samples must be positive")
         all_ids = all_ids[: args.max_samples]
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
-    dataset = PiezoDataset(records, all_ids, float(cfg["cutoff"]), int(cfg["max_neighbors"]), processed_dir=cfg["processed_dir"], cache_key=cache_key)
-    loader = DataLoader(dataset, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=int(cfg["num_workers"]), pin_memory=device.type == "cuda")
+    dataset = PiezoDataset(records, all_ids, float(cfg["cutoff"]), int(cfg["max_neighbors"]), processed_dir=cfg["processed_dir"], cache_key=cache_key, project_targets=False)
+    loader_options = {"num_workers": int(cfg["num_workers"]), "pin_memory": device.type == "cuda"}
+    if loader_options["num_workers"] > 0:
+        loader_options["persistent_workers"] = True
+    loader = DataLoader(dataset, batch_size=int(cfg["batch_size"]), shuffle=True, **loader_options)
     model = model_from_config(cfg).to(device)
-    head = StructurePretrainingHead(model.encoder.hidden_irreps).to(device)
+    head = StructurePretrainingHead(model.encoder.input[-2].out_features, model.encoder.channels).to(device)
     optimizer = torch.optim.AdamW(list(model.encoder.parameters()) + list(head.parameters()), lr=float(cfg["pretrain_learning_rate"]), weight_decay=float(cfg["weight_decay"]))
     output.mkdir(parents=True, exist_ok=True)
     best = float("inf")
@@ -98,7 +102,11 @@ def main() -> None:
             count += batch.num_graphs
         value = total / max(count, 1)
         history.append({"epoch": epoch, "loss": value})
-        payload = {"encoder": model.encoder.state_dict(), "config": cfg, "epoch": epoch, "loss": value, "objective": "masked_species_plus_translation_free_coordinate_denoising"}
+        payload = {
+            "encoder": model.encoder.state_dict(), "config": cfg, "epoch": epoch, "loss": value,
+            "architecture": "cartesian_local_environment_v1",
+            "objective": "masked_species_plus_translation_free_coordinate_denoising",
+        }
         torch.save(payload, output / "last_encoder.pt")
         if value < best:
             best = value

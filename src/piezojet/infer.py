@@ -29,7 +29,10 @@ def main() -> None:
     ids = splits[args.split][: args.max_samples]
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
     dataset = PiezoDataset(records, ids, cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
-    loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=False, num_workers=cfg["num_workers"], pin_memory=device.type == "cuda")
+    loader_options = {"num_workers": cfg["num_workers"], "pin_memory": device.type == "cuda"}
+    if loader_options["num_workers"] > 0:
+        loader_options["persistent_workers"] = True
+    loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=False, **loader_options)
     model = model_from_config(cfg).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
