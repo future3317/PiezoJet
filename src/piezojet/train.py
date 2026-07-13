@@ -17,7 +17,7 @@ from torch.func import jvp
 from torch_geometric.loader import DataLoader
 
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
-from .model import PiezoJet
+from .model import PiezoJet, model_from_config
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_scale, piezo_to_irreps, source_voigt_to_canonical
 
 
@@ -217,14 +217,23 @@ def main() -> None:
     processed = Path(cfg["processed_dir"])
     processed.mkdir(parents=True, exist_ok=True)
     (processed / "stats.json").write_text(json.dumps({"piezo_scale": float(scale), "source": "train split only"}, indent=2) + "\n", encoding="utf-8")
-    model = PiezoJet(
-        embedding_dim=cfg["embedding_dim"], cutoff=cfg["cutoff"], lmax=cfg["lmax"], num_blocks=cfg["num_blocks"],
-        radial_basis=cfg["radial_basis"], radial_hidden=cfg["radial_hidden"],
-    ).to(device)
+    model = model_from_config(cfg).to(device)
+    pretraining_path = Path(cfg["pretrained_encoder"])
+    if not pretraining_path.is_file():
+        raise FileNotFoundError(
+            f"PiezoJet fine-tuning requires the structural pretraining checkpoint {pretraining_path}. "
+            "Run `python -m piezojet.pretrain --config config.yaml` or use `python scripts/run_pipeline.py --config config.yaml`."
+        )
+    pretrained = torch.load(pretraining_path, map_location=device, weights_only=False)
+    if "encoder" not in pretrained:
+        raise ValueError(f"Pretraining checkpoint {pretraining_path} has no encoder state")
+    model.encoder.load_state_dict(pretrained["encoder"], strict=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
     output = Path(cfg["output_dir"])
     output.mkdir(parents=True, exist_ok=True)
     cfg["loss"] = args.loss
+    cfg["pretrained_encoder"] = str(pretraining_path)
+    cfg["pretraining_epoch"] = pretrained.get("epoch")
     cfg["git_commit"] = _git_commit()
     cfg["data_commit"] = data_commit
     start_epoch = 1

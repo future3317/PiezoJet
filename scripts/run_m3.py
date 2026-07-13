@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument("--loss", choices=("full", "sketch", "hybrid"), default="full")
     args = parser.parse_args()
     root = Path(args.config).resolve().parent
+    subprocess.run([sys.executable, "-m", "piezojet.pretrain", "--config", str(args.config)], check=True)
     for seed in (42, 43, 44):
         output = root / "outputs" / "m3" / f"seed_{seed}"
         command = [sys.executable, "-m", "piezojet.train", "--config", str(args.config), "--loss", args.loss, "--seed", str(seed), "--output-dir", str(output)]

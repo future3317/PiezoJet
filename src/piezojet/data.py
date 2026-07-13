@@ -20,7 +20,7 @@ from .tensor_ops import piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 PIEZO_FILE = "jarvis_diele_piezo.pkl"
 PIEZO_FIELD = "piezoelectric_C_m2"
-GRAPH_CACHE_SCHEMA = 1
+GRAPH_CACHE_SCHEMA = 2
 
 
 def load_gmtnet_records(root: str | Path) -> list[dict[str, Any]]:
@@ -115,6 +115,9 @@ def record_to_graph(record: dict[str, Any], cutoff: float, max_neighbors: int) -
     target_voigt = source_voigt_to_canonical(source)
     return Data(
         z=z,
+        # Fractional coordinates are retained for the reciprocal-space global
+        # context; Cartesian positions remain the input to local e3nn messages.
+        frac=frac,
         pos=frac @ cell,
         cell=cell.unsqueeze(0),
         edge_index=edge_index,

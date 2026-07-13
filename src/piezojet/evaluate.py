@@ -13,8 +13,8 @@ from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from torch_geometric.loader import DataLoader
 
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records, record_to_graph
-from .model import PiezoJet
-from .metrics import tensor_metrics
+from .model import model_from_config
+from .metrics import stabilized_relative_residual, tensor_metrics
 from .tensor_ops import cartesian_to_piezo_voigt, rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
 from .train import device_from_config, full_loss, sketch_loss
 
@@ -54,10 +54,7 @@ def main() -> None:
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
     dataset = PiezoDataset(records, splits[args.split], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
     loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=False, num_workers=cfg["num_workers"], pin_memory=device.type == "cuda")
-    model = PiezoJet(
-        embedding_dim=cfg["embedding_dim"], cutoff=cfg["cutoff"], lmax=cfg["lmax"], num_blocks=cfg["num_blocks"],
-        radial_basis=cfg["radial_basis"], radial_hidden=cfg["radial_hidden"],
-    ).to(device)
+    model = model_from_config(cfg).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     predictions, targets = [], []
@@ -70,17 +67,19 @@ def main() -> None:
     diff = prediction - target
     sample_error = torch.linalg.vector_norm(diff.reshape(diff.shape[0], -1), dim=-1)
     target_norm = torch.linalg.vector_norm(target.reshape(target.shape[0], -1), dim=-1).clamp_min(1e-12)
+    equivariance_floor = float(checkpoint["piezo_scale"]) * 0.05 * (18.0 ** 0.5)
     metrics: dict[str, float | int | None] = {
         "cartesian_component_mae": float(diff.abs().mean()),
         "sample_frobenius_mae": float(sample_error.mean()),
-        "normalized_frobenius_error": float((sample_error / target_norm).mean()),
+        "normalized_frobenius_error": float((sample_error / target_norm.clamp_min(equivariance_floor)).mean()),
         "max_component_mae": float((prediction.abs().amax(dim=(1, 2, 3)) - target.abs().amax(dim=(1, 2, 3))).abs().mean()),
     }
     # Keep the historical fields above for compatibility, but expose the
     # task-defined stabilized metrics as the authoritative evaluation values.
     metrics["stabilized_tensor_metrics"] = tensor_metrics(prediction, target, float(checkpoint["piezo_scale"]) * 0.05)
     selected = dataset.records[: args.max_equivalence_samples]
-    rotation_residuals, group_residuals, centro_norms = [], [], []
+    rotation_residuals, rotation_absolute_residuals = [], []
+    group_residuals, group_absolute_residuals, centro_norms = [], [], []
     with torch.inference_mode():
         for record in selected:
             graph = record_to_graph(record, cfg["cutoff"], cfg["max_neighbors"])
@@ -90,14 +89,20 @@ def main() -> None:
             rotated_prediction = model(_rotated_graph(graph, rotation))
             base_prediction = model(graph)
             expected = rotate_piezo(base_prediction, rotation)
-            rotation_residuals.append(float(torch.linalg.vector_norm(rotated_prediction - expected) / torch.linalg.vector_norm(base_prediction).clamp_min(1e-12)))
+            absolute, relative = stabilized_relative_residual(rotated_prediction, expected, equivariance_floor)
+            rotation_absolute_residuals.append(float(absolute.mean()))
+            rotation_residuals.append(float(relative.mean()))
             operations = [op.to(device) for op in _point_group_rotations(record)]
-            per_op = [torch.linalg.vector_norm(base_prediction - rotate_piezo(base_prediction, op)) / torch.linalg.vector_norm(base_prediction).clamp_min(1e-12) for op in operations]
-            group_residuals.append(float(torch.stack(per_op).mean()))
+            per_op = [stabilized_relative_residual(base_prediction, rotate_piezo(base_prediction, op), equivariance_floor) for op in operations]
+            group_absolute_residuals.append(float(torch.stack([value[0] for value in per_op]).mean()))
+            group_residuals.append(float(torch.stack([value[1] for value in per_op]).mean()))
             if any(torch.allclose(op, -torch.eye(3, device=device), atol=1e-5) for op in operations):
                 centro_norms.append(float(torch.linalg.vector_norm(base_prediction)))
     metrics["rotation_equivariance_residual"] = float(sum(rotation_residuals) / len(rotation_residuals))
+    metrics["rotation_equivariance_absolute_residual"] = float(sum(rotation_absolute_residuals) / len(rotation_absolute_residuals))
     metrics["point_group_residual"] = float(sum(group_residuals) / len(group_residuals))
+    metrics["point_group_absolute_residual"] = float(sum(group_absolute_residuals) / len(group_absolute_residuals))
+    metrics["equivariance_norm_floor"] = equivariance_floor
     metrics["centrosymmetric_false_positive_norm"] = float(sum(centro_norms) / len(centro_norms)) if centro_norms else None
     batch = next(iter(loader)).to(device, non_blocking=device.type == "cuda")
     scale = torch.tensor(checkpoint["piezo_scale"], device=device)

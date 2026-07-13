@@ -10,10 +10,15 @@ python scripts/download_data.py --output data/raw/gmtnet
 python scripts/inspect_data.py --root data/raw/gmtnet
 pytest -q
 python -m piezojet.train --config config.yaml --loss full --overfit-32
-python -m piezojet.train --config config.yaml --loss full
-python -m piezojet.train --config config.yaml --loss sketch
+python scripts/run_pipeline.py --config config.yaml --loss full
+python scripts/run_pipeline.py --config config.yaml --loss sketch
 python -m piezojet.evaluate --checkpoint outputs/best.pt --split test
 ```
+
+The production pipeline always performs masked-species and translation-free
+coordinate-denoising structural pretraining before piezoelectric fine-tuning.
+The response model combines local equivariant polar motifs with their periodic
+reciprocal-space coherence spectrum and continuous lattice-frame synthesis.
 
 `inspect_data.py` is a required gate: it records the raw fields, units, source Voigt order, split status, finite-value check, and atom counts before training.
 When data is manually copied rather than cloned by `download_data.py`, create `data/raw/gmtnet/SOURCE_COMMIT.txt` containing the exact 40-character GMTNet commit SHA. Training refuses to start without it, so results remain reproducible.

@@ -10,6 +10,22 @@ import torch
 from .tensor_ops import cartesian_to_piezo_voigt
 
 
+def stabilized_relative_residual(actual: torch.Tensor, expected: torch.Tensor, floor: float | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return absolute and scale-stabilized relative tensor residuals.
+
+    Exact equivariant models can legitimately predict a near-zero tensor (in
+    particular for centrosymmetric crystals).  Dividing by that prediction
+    norm turns floating-point roundoff into an arbitrarily large ``relative``
+    error, so use a task-scale floor and report the absolute residual too.
+    """
+    absolute = torch.linalg.vector_norm((actual - expected).reshape(actual.shape[0], -1), dim=-1)
+    reference = torch.maximum(
+        torch.linalg.vector_norm(expected.reshape(expected.shape[0], -1), dim=-1),
+        torch.as_tensor(floor, dtype=absolute.dtype, device=absolute.device),
+    )
+    return absolute, absolute / reference
+
+
 def tensor_metrics(prediction: torch.Tensor, target: torch.Tensor, threshold: float) -> dict[str, float]:
     pred = cartesian_to_piezo_voigt(prediction)
     truth = cartesian_to_piezo_voigt(target)

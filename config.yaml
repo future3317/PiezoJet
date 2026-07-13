@@ -9,6 +9,9 @@ lmax: 3
 num_blocks: 3
 radial_basis: 12
 radial_hidden: 64
+global_context_dim: 128
+spectral_channels: 16
+spectral_shells: 8
 batch_size: 8
 epochs: 50
 learning_rate: 0.001
@@ -16,3 +19,10 @@ weight_decay: 0.000001
 num_workers: 0
 device: auto
 hybrid_full_weight: 0.1
+pretraining_output_dir: outputs/pretrain
+pretrained_encoder: outputs/pretrain/best_encoder.pt
+pretrain_epochs: 20
+pretrain_learning_rate: 0.0005
+mask_probability: 0.15
+coordinate_noise_std: 0.02
+denoising_weight: 1.0

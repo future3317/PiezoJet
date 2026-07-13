@@ -1,6 +1,6 @@
 import torch
 
-from piezojet.metrics import stratified_metrics, tensor_metrics
+from piezojet.metrics import stabilized_relative_residual, stratified_metrics, tensor_metrics
 
 
 def test_tensor_metrics_use_stabilized_relative_error_and_strata():
@@ -17,3 +17,12 @@ def test_tensor_metrics_use_stabilized_relative_error_and_strata():
     assert "non_centrosymmetric_summary" in result
     assert "q05_25" in result
     assert result["centro_fp"]["max"] > 0
+
+
+def test_stabilized_relative_residual_does_not_amplify_near_zero_tensor_roundoff():
+    expected = torch.zeros(2, 3, 3, 3)
+    actual = expected.clone()
+    actual[0, 0, 0, 0] = 1e-9
+    absolute, relative = stabilized_relative_residual(actual, expected, floor=1e-2)
+    assert torch.allclose(absolute, torch.tensor([1e-9, 0.0]))
+    assert torch.allclose(relative, torch.tensor([1e-7, 0.0]))

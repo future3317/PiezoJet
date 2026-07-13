@@ -10,7 +10,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
-from .model import PiezoJet
+from .model import model_from_config
 from .train import device_from_config
 
 
@@ -30,7 +30,7 @@ def main() -> None:
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
     dataset = PiezoDataset(records, ids, cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
     loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=False, num_workers=cfg["num_workers"], pin_memory=device.type == "cuda")
-    model = PiezoJet(embedding_dim=cfg["embedding_dim"], cutoff=cfg["cutoff"], lmax=cfg["lmax"], num_blocks=cfg["num_blocks"], radial_basis=cfg["radial_basis"], radial_hidden=cfg["radial_hidden"]).to(device)
+    model = model_from_config(cfg).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from piezojet.data import PiezoDataset, create_or_load_splits, load_gmtnet_records
-from piezojet.model import PiezoJet
+from piezojet.model import model_from_config
 from piezojet.tensor_ops import cartesian_to_piezo_voigt, piezo_scale
 from piezojet.train import direct_sketch_loss, full_loss, sketch_loss
 
@@ -36,7 +36,7 @@ def main() -> None:
     splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
     dataset = PiezoDataset(records, splits["train"][:32], cfg["cutoff"], cfg["max_neighbors"])
     batch = next(iter(DataLoader(dataset, batch_size=32, shuffle=False))).to(device)
-    model = PiezoJet(embedding_dim=cfg["embedding_dim"], cutoff=cfg["cutoff"], lmax=cfg["lmax"], num_blocks=cfg["num_blocks"], radial_basis=cfg["radial_basis"], radial_hidden=cfg["radial_hidden"]).to(device)
+    model = model_from_config(cfg).to(device)
     model.load_state_dict(checkpoint["model"])
     model.train()
     scale = torch.tensor(checkpoint["piezo_scale"], device=device)
