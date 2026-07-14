@@ -201,7 +201,11 @@ def record_to_graph(record: dict[str, Any], cutoff: float, max_neighbors: int) -
     z = torch.tensor([Element(symbol).Z for symbol in atoms["elements"]], dtype=torch.long)
     edge_index, edge_shift = _periodic_edges(frac, cell, cutoff, max_neighbors)
     target_voigt = cartesian_to_piezo_voigt(_raw_cartesian_target(record))
-    dielectric = torch.as_tensor(record.get("dielectric", []), dtype=torch.float32)
+    dielectric_value = record.get("dielectric")
+    dielectric = torch.as_tensor(
+        [] if dielectric_value is None else dielectric_value,
+        dtype=torch.float32,
+    )
     has_dielectric = dielectric.shape == (3, 3) and bool(torch.isfinite(dielectric).all())
     return Data(
         z=z,
@@ -367,7 +371,7 @@ def precompute_pbc_graphs(records: list[dict[str, Any]], processed_dir: str | Pa
 
 
 class PiezoDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None):
+    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None):
         super().__init__()
         wanted = set(ids)
         self.records = [record for record in records if str(record["JARVIS_ID"]) in wanted]
@@ -378,6 +382,9 @@ class PiezoDataset(Dataset):
         self._disk_cache = PersistentGraphCache(processed_dir, self.records, cutoff, max_neighbors, cache_key=cache_key) if processed_dir is not None else None
         self._target_cache = SymmetryTargetCache(processed_dir) if processed_dir is not None and project_targets else None
         self._dfpt_cache = JarvisDFPTCache(dfpt_dir) if dfpt_dir is not None else None
+        self._strain_completion_dir = (
+            Path(strain_completion_dir) if strain_completion_dir is not None else None
+        )
 
     def target(self, record: dict[str, Any]) -> torch.Tensor:
         return _raw_cartesian_target(record) if self._target_cache is None else self._target_cache.get(record)
@@ -401,7 +408,11 @@ class PiezoDataset(Dataset):
                 target, rotations = payload["target"], payload["rotations"]
             graph.y = target.unsqueeze(0)
             graph.y_voigt = cartesian_to_piezo_voigt(target).unsqueeze(0)
-            dielectric = torch.as_tensor(record.get("dielectric", []), dtype=target.dtype)
+            dielectric_value = record.get("dielectric")
+            dielectric = torch.as_tensor(
+                [] if dielectric_value is None else dielectric_value,
+                dtype=target.dtype,
+            )
             has_dielectric = dielectric.shape == (3, 3) and bool(torch.isfinite(dielectric).all())
             graph.y_dielectric = (dielectric if has_dielectric else torch.zeros(3, 3, dtype=target.dtype)).unsqueeze(0)
             graph.dielectric_mask = torch.tensor(has_dielectric, dtype=torch.bool)
@@ -410,6 +421,20 @@ class PiezoDataset(Dataset):
             # form plus their dimensions for downstream mode-specific audits.
             dfpt = self._dfpt_cache.load(str(record["JARVIS_ID"])) if self._dfpt_cache is not None else None
             has_dfpt = dfpt is not None
+            completion_path = (
+                self._strain_completion_dir / f"{record['JARVIS_ID']}.pt"
+                if self._strain_completion_dir is not None else None
+            )
+            completion = (
+                torch.load(completion_path, map_location="cpu", weights_only=False)
+                if completion_path is not None and completion_path.is_file() else None
+            )
+            if completion is not None and (
+                completion.get("schema") != 2
+                or completion.get("jid") != str(record["JARVIS_ID"])
+                or not bool(completion.get("audit", {}).get("accepted", False))
+            ):
+                raise ValueError(f"Invalid strain-completion payload: {completion_path}")
             raw_born = (
                 dfpt["born_charges"]
                 if has_dfpt
@@ -457,6 +482,17 @@ class PiezoDataset(Dataset):
                 graph.dfpt_internal_strain_ions = torch.empty(0, dtype=torch.long)
                 graph.dfpt_internal_strain_directions = torch.empty(0, dtype=torch.long)
                 graph.dfpt_internal_strain_count = torch.tensor([0], dtype=torch.long)
+            if completion is not None:
+                full_internal = completion["internal_strain_full"].to(dtype=target.dtype)
+                if full_internal.shape != (graph.num_nodes, 3, 3, 3):
+                    raise ValueError(f"Invalid completed strain-force shape: {completion_path}")
+                graph.dfpt_internal_strain_full = full_internal
+                graph.internal_strain_full_mask = torch.tensor(True, dtype=torch.bool)
+            else:
+                graph.dfpt_internal_strain_full = torch.zeros(
+                    graph.num_nodes, 3, 3, 3, dtype=target.dtype
+                )
+                graph.internal_strain_full_mask = torch.tensor(False, dtype=torch.bool)
             graph.dfpt_mode_count = torch.tensor([modes], dtype=torch.long)
             graph.point_group_ops, graph.point_group_mask = pad_point_group_operations(rotations)
             graph.is_polar_point_group = torch.tensor(is_polar_point_group(rotations), dtype=torch.bool)

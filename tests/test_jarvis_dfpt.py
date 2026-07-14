@@ -3,13 +3,16 @@ from torch_geometric.loader import DataLoader
 
 from piezojet.data import PiezoDataset, load_gmtnet_records
 from piezojet.jarvis_dfpt import DFPT_CACHE_SCHEMA, JarvisDFPTCache
-from piezojet.model import PiezoJet
+from piezojet.evaluate_dfpt import ionic_piezo_from_factors
+from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
 from piezojet.train import (
     born_loss,
+    full_internal_strain_loss,
     force_constant_loss,
     internal_strain_loss,
     ionic_piezo_loss,
     freeze_factor_stack,
+    response_active_internal_strain_loss,
 )
 
 
@@ -131,3 +134,64 @@ def test_freeze_factor_stack_leaves_response_heads_trainable():
     assert not any(parameter.requires_grad for parameter in model.born_head.parameters())
     assert all(parameter.requires_grad for parameter in model.head.parameters())
     assert not any(parameter.requires_grad for parameter in model.global_context.parameters())
+
+
+def test_response_active_lambda_loss_is_zero_for_the_true_observable_response():
+    response = AtomCoordinateResponsePotential(optical_regularization=0.1)
+    atoms = 2
+    relative = torch.zeros(3, 3 * atoms)
+    for axis in range(3):
+        relative[axis, axis] = 2.0 ** -0.5
+        relative[axis, axis + 3] = -(2.0 ** -0.5)
+    matrix = torch.einsum("a,ai,aj->ij", torch.tensor([2.0, 3.0, 4.0]), relative, relative)
+    blocks = matrix.reshape(atoms, 3, atoms, 3).permute(0, 2, 1, 3)
+    born = torch.randn(atoms, 3, 3)
+    born = born - born.mean(dim=0, keepdim=True)
+    true_lambda = torch.randn(atoms, 3, 3, 3)
+    true_lambda = 0.5 * (true_lambda + true_lambda.transpose(-1, -2))
+    true_lambda = true_lambda - true_lambda.mean(dim=0, keepdim=True)
+    cell = torch.diag(torch.tensor([2.0, 2.0, 2.5])).unsqueeze(0)
+    target = ionic_piezo_from_factors(
+        response, born, blocks, true_lambda, torch.linalg.det(cell[0]), "regularized"
+    ).unsqueeze(0)
+    prediction = true_lambda.clone().requires_grad_()
+    exact_loss = response_active_internal_strain_loss(
+        prediction,
+        born,
+        blocks.reshape(-1),
+        target,
+        torch.tensor([True]),
+        torch.tensor([0, atoms]),
+        cell,
+        response,
+    )
+    perturbed_loss = response_active_internal_strain_loss(
+        prediction + 0.2 * torch.randn_like(prediction),
+        born,
+        blocks.reshape(-1),
+        target,
+        torch.tensor([True]),
+        torch.tensor([0, atoms]),
+        cell,
+        response,
+    )
+    assert exact_loss < 1e-10
+    assert perturbed_loss > exact_loss
+    perturbed_loss.backward()
+    assert prediction.grad is not None and prediction.grad.abs().sum() > 0
+
+
+def test_full_lambda_loss_respects_strict_graph_mask():
+    prediction = torch.zeros(3, 3, 3, 3, requires_grad=True)
+    target = torch.zeros_like(prediction)
+    batch = torch.tensor([0, 0, 1])
+    graph_mask = torch.tensor([True, False])
+    target[2] = 10.0
+    masked = full_internal_strain_loss(prediction, target, graph_mask, batch)
+    assert masked == 0.0
+    target[0] = 1.0
+    supervised = full_internal_strain_loss(prediction, target, graph_mask, batch)
+    assert supervised > 0.0
+    supervised.backward()
+    assert prediction.grad[0].abs().sum() > 0
+    assert prediction.grad[2].abs().sum() == 0

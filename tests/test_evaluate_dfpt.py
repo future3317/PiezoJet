@@ -3,15 +3,19 @@ import torch
 
 from piezojet.evaluate_dfpt import (
     FactorAccumulator,
+    _oracle_operator_policy,
     clean_force_constant_target,
+    ionic_aggregate_metrics,
     ionic_piezo_from_factors,
     optical_eigensystem,
     pair_metrics,
     replace_printed_internal_strain,
+    response_decomposition_metrics,
     selected_internal_strain,
     soft_mode_metrics,
 )
 from piezojet.model import AtomCoordinateResponsePotential
+from piezojet.tensor_ops import piezo_voigt_to_cartesian
 
 
 def test_pair_metrics_reports_zero_baseline_skill_in_physical_units():
@@ -32,6 +36,57 @@ def test_factor_accumulator_separates_micro_and_material_macro_metrics():
     assert summary["micro_component_mae"] == pytest.approx(2.8)
     assert summary["macro_material_component_mae"] == pytest.approx(2.0)
     assert summary["macro_material_mae_skill_vs_zero"] == pytest.approx(0.0)
+
+
+def test_ionic_aggregation_labels_material_macro_and_component_micro_separately():
+    # The high-amplitude perfect material dominates a component-micro cosine,
+    # while a material macro score gives the weak, failed material one vote.
+    targets = [torch.tensor([[1.0]]), torch.tensor([[100.0]])]
+    predictions = [torch.zeros(1, 1), torch.tensor([[100.0]])]
+    metrics = ionic_aggregate_metrics(predictions, targets, floor=0.05)
+    assert metrics["ionic_cosine_macro_material"] == pytest.approx(0.5)
+    assert metrics["ionic_cosine_micro_components"] > 0.99
+    assert metrics["directional_cosine"] == metrics["ionic_cosine_micro_components"]
+    assert metrics["ionic_amplitude_ratio_macro"] == pytest.approx(0.5)
+    assert metrics["ionic_active_norm_threshold_c_per_m2"] == pytest.approx(0.05)
+
+
+def test_ionic_active_panel_uses_registered_physical_norm_floor():
+    targets = [torch.tensor([[0.04]]), torch.tensor([[1.0]])]
+    predictions = [torch.tensor([[-2.0]]), torch.tensor([[1.0]])]
+    metrics = ionic_aggregate_metrics(predictions, targets, floor=0.05)
+    assert metrics["ionic_materials"] == 2
+    assert metrics["ionic_active_materials"] == 1
+    assert metrics["ionic_cosine_active_only"] == pytest.approx(1.0)
+    assert metrics["ionic_mae_skill_vs_zero_macro"] == pytest.approx(
+        1.0 - (2.04 / 2.0) / ((0.04 + 1.0) / 2.0)
+    )
+
+
+def test_cartesian_piezo_active_threshold_counts_eighteen_independent_components():
+    target = piezo_voigt_to_cartesian(torch.ones(3, 6))
+    metrics = ionic_aggregate_metrics([target], [target], floor=0.05)
+    assert metrics["ionic_active_norm_threshold_c_per_m2"] == pytest.approx(0.05 * 18.0 ** 0.5)
+
+
+def test_response_decomposition_exposes_branch_magnitude_and_cancellation():
+    metrics = response_decomposition_metrics(
+        electronic_predictions=[torch.tensor([[3.0]])],
+        ionic_predictions=[torch.tensor([[-2.0]])],
+        total_targets=[torch.tensor([[1.0]])],
+        ionic_targets=[torch.tensor([[0.0]])],
+        floor=0.05,
+    )
+    assert metrics["predicted_electronic_norm_over_true_total_macro"] == pytest.approx(3.0)
+    assert metrics["predicted_ionic_norm_over_true_total_macro"] == pytest.approx(2.0)
+    assert metrics["predicted_total_norm_over_true_total_macro"] == pytest.approx(1.0)
+    assert metrics["predicted_cancellation_ratio_macro"] == pytest.approx(0.2)
+
+
+def test_oracle_operator_policies_are_explicitly_labelled():
+    assert _oracle_operator_policy("true_z_true_phi_pred_lambda_regularized", "auto") == "regularized"
+    assert _oracle_operator_policy("true_z_true_phi_pred_lambda_auto", "regularized") == "auto"
+    assert _oracle_operator_policy("pred_all_auto", "regularized") == "model_configured:regularized"
 
 
 def test_clean_force_constant_target_has_symmetry_and_three_translations():

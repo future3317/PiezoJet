@@ -19,6 +19,7 @@ from torch_geometric.utils import scatter
 
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
 from .model import PiezoJet, model_from_config
+from .metrics import response_tensor_skill
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_scale, piezo_to_irreps
 from .data import RESPONSE_NORM_BOUNDS
 
@@ -111,6 +112,208 @@ def ionic_piezo_loss(prediction: torch.Tensor, target: torch.Tensor, mask: torch
     # other physical target, so 0.05 C/m^2 is the robust resolution floor.
     scale = target[mask].abs().mean().clamp_min(0.05)
     return torch.nn.functional.smooth_l1_loss(residual / scale, torch.zeros_like(residual))
+
+
+def response_active_internal_strain_loss(
+    prediction: torch.Tensor,
+    true_born: torch.Tensor,
+    true_force_constants_flat: torch.Tensor,
+    target_ionic_piezo: torch.Tensor,
+    mask: torch.Tensor,
+    node_ptr: torch.Tensor,
+    cells: torch.Tensor,
+    response,
+) -> torch.Tensor:
+    """Supervise only the observable part of Lambda with true Z* and Phi.
+
+    Macroscopic labels cannot identify every component of a ``3N x 6``
+    strain-force tensor.  This oracle-isolated loss therefore propagates the
+    predicted Lambda through the *true* DFPT Born charges and force constants,
+    and compares ``Z*^T D_delta(Phi) Lambda`` with the OUTCAR ionic tensor.
+    The continuous signed regularized operator is used deliberately: no
+    predicted stability threshold participates in this supervision path.
+    """
+    mask = mask.reshape(-1).to(dtype=torch.bool)
+    losses, force_offset = [], 0
+    for graph_index in range(node_ptr.numel() - 1):
+        atoms = int(node_ptr[graph_index + 1] - node_ptr[graph_index])
+        block_values = 9 * atoms * atoms
+        if not bool(mask[graph_index]):
+            continue
+        blocks = true_force_constants_flat[
+            force_offset : force_offset + block_values
+        ].reshape(atoms, atoms, 3, 3)
+        force_offset += block_values
+        operator = response.optical_operator(blocks, solve_policy="regularized")
+        start, stop = int(node_ptr[graph_index]), int(node_ptr[graph_index + 1])
+        coupling = response._coupling_voigt(prediction[start:stop]).reshape(3 * atoms, 6)
+        charge = true_born[start:stop].reshape(3 * atoms, 3)
+        volume = torch.linalg.det(cells[graph_index]).abs().clamp_min(
+            torch.finfo(cells.dtype).eps
+        )
+        predicted = response.PIEZO_C_PER_M2 * (
+            charge.transpose(0, 1) @ operator @ coupling
+        ) / volume
+        target = cartesian_to_piezo_voigt(target_ionic_piezo[graph_index])
+        scale = target.abs().mean().clamp_min(0.05)
+        losses.append(
+            torch.nn.functional.smooth_l1_loss(
+                predicted / scale,
+                target / scale,
+            )
+        )
+    if not losses:
+        return prediction.sum() * 0.0
+    if force_offset != true_force_constants_flat.numel():
+        raise ValueError("Ragged force-constant labels did not match response-active mask")
+    return torch.stack(losses).mean()
+
+
+def _translation_projector(atoms: int, reference: torch.Tensor) -> torch.Tensor:
+    """Project Cartesian displacements onto the optical subspace."""
+    translation = reference.new_zeros(3 * atoms, 3)
+    for axis in range(3):
+        translation[axis::3, axis] = atoms ** -0.5
+    return torch.eye(3 * atoms, dtype=reference.dtype, device=reference.device) - translation @ translation.T
+
+
+def _near_degenerate_mode_blocks(
+    force_constants: torch.Tensor,
+    tolerance: float,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Return gauge-safe optical eigenvalue/vector blocks from true DFPT Phi.
+
+    Exact degeneracies have an arbitrary orthogonal basis.  Nearby modes are
+    grouped conservatively as well, so the later loss compares a projector
+    onto their subspace rather than attempting a fragile eigenvector match.
+    """
+    if tolerance < 0:
+        raise ValueError("Mode degeneracy tolerance must be non-negative")
+    atoms = force_constants.shape[0]
+    matrix = force_constants.permute(0, 2, 1, 3).reshape(3 * atoms, 3 * atoms)
+    matrix = 0.5 * (matrix + matrix.transpose(0, 1))
+    projector = _translation_projector(atoms, matrix)
+    matrix = projector @ matrix @ projector
+    values, vectors = torch.linalg.eigh(matrix)
+    if values.numel() <= 3:
+        return []
+    optical = torch.argsort(values.abs())[3:]
+    optical = optical[torch.argsort(values[optical])]
+    values, vectors = values[optical], vectors[:, optical]
+    blocks: list[tuple[torch.Tensor, torch.Tensor]] = []
+    start = 0
+    for index in range(1, values.numel() + 1):
+        boundary = index == values.numel()
+        if not boundary:
+            left, right = values[index - 1], values[index]
+            scale = torch.maximum(torch.ones((), dtype=values.dtype, device=values.device), torch.maximum(left.abs(), right.abs()))
+            boundary = bool((right - left).abs() > tolerance * scale)
+        if boundary:
+            blocks.append((values[start:index], vectors[:, start:index]))
+            start = index
+    return blocks
+
+
+def mode_aware_internal_strain_terms(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    true_born: torch.Tensor,
+    true_force_constants_flat: torch.Tensor,
+    graph_mask: torch.Tensor,
+    node_ptr: torch.Tensor,
+    response: AtomCoordinateResponsePotential,
+    degeneracy_tolerance: float = 1e-2,
+    epsilon: float = 1e-6,
+    direction_weight: float = 1.0,
+    amplitude_weight: float = 1.0,
+    sign_weight: float = 0.25,
+) -> dict[str, torch.Tensor]:
+    """Response-weighted, degeneracy-safe supervision on complete Lambda.
+
+    For each true-DFPT optical subspace ``V_g`` this compares
+    ``V_g.T Lambda`` rather than an arbitrary individual eigenvector.  The
+    block is weighted by its mode-effective charge and the declared signed
+    regularization.  Direction and amplitude are Frobenius comparisons in the
+    block; the signed-hinge term acts on the gauge-invariant ionic block
+    ``Z*.T V_g V_g.T Lambda``.  Thus no per-mode sign/eigenvector convention is
+    imposed on exact or near-degenerate branches.
+    """
+    if epsilon <= 0:
+        raise ValueError("Mode-aware epsilon must be positive")
+    graph_mask = graph_mask.reshape(-1).to(dtype=torch.bool)
+    force_offset = 0
+    weighted_direction: list[tuple[torch.Tensor, torch.Tensor]] = []
+    weighted_amplitude: list[tuple[torch.Tensor, torch.Tensor]] = []
+    weighted_sign: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for graph_index in range(node_ptr.numel() - 1):
+        start, stop = int(node_ptr[graph_index]), int(node_ptr[graph_index + 1])
+        atoms = stop - start
+        block_values = 9 * atoms * atoms
+        force_target = true_force_constants_flat[force_offset : force_offset + block_values].reshape(atoms, atoms, 3, 3)
+        force_offset += block_values
+        if not graph_mask[graph_index]:
+            continue
+        # Eigenvectors are a fixed true-label basis, so the prediction remains
+        # differentiable while the diagonalization cannot create a learned
+        # eigengauge.  Float64 is required near soft crossings.
+        force64 = force_target.to(torch.float64)
+        blocks = _near_degenerate_mode_blocks(force64, degeneracy_tolerance)
+        predicted_coupling = response._coupling_voigt(prediction[start:stop]).reshape(3 * atoms, 6)
+        target_coupling = response._coupling_voigt(target[start:stop]).reshape(3 * atoms, 6)
+        charge = true_born[start:stop].reshape(3 * atoms, 3)
+        for eigenvalues64, basis64 in blocks:
+            basis = basis64.to(dtype=prediction.dtype)
+            eigenvalues = eigenvalues64.to(dtype=prediction.dtype)
+            projected_charge = basis.transpose(0, 1) @ charge
+            # A block-average spectral denominator is invariant under an
+            # arbitrary rotation inside a near-degenerate subspace.
+            weight = projected_charge.square().sum() / (
+                eigenvalues.square().mean() + response.optical_regularization ** 2
+            )
+            if not torch.isfinite(weight) or bool(weight <= 0):
+                continue
+            predicted_gamma = basis.transpose(0, 1) @ predicted_coupling
+            target_gamma = basis.transpose(0, 1) @ target_coupling
+            predicted_norm = torch.linalg.vector_norm(predicted_gamma)
+            target_norm = torch.linalg.vector_norm(target_gamma)
+            if bool(target_norm > epsilon):
+                cosine = (predicted_gamma * target_gamma).sum() / (predicted_norm * target_norm).clamp_min(epsilon)
+                weighted_direction.append((weight, 1.0 - cosine))
+            log_ratio = torch.log((predicted_norm + epsilon) / (target_norm + epsilon))
+            weighted_amplitude.append((weight, torch.nn.functional.smooth_l1_loss(log_ratio, torch.zeros_like(log_ratio))))
+            # The average signed Green filter yields a block contribution that
+            # is invariant under any rotation of the chosen subspace basis.
+            signed_filter = (eigenvalues / (eigenvalues.square() + response.optical_regularization ** 2)).mean()
+            projector = basis @ basis.transpose(0, 1)
+            predicted_contribution = signed_filter * charge.transpose(0, 1) @ projector @ predicted_coupling
+            target_contribution = signed_filter * charge.transpose(0, 1) @ projector @ target_coupling
+            active = target_contribution.abs() > epsilon
+            if bool(active.any()):
+                sign_scale = target_contribution[active].abs().mean().clamp_min(epsilon)
+                signed_margin = torch.sign(target_contribution[active]) * predicted_contribution[active] / sign_scale
+                # A zero-margin hinge is zero whenever the ionic contribution
+                # has the correct sign, so it does not keep inflating an
+                # already correctly scaled mode after the amplitude term has
+                # converged.
+                weighted_sign.append((weight, torch.nn.functional.relu(-signed_margin).mean()))
+    if force_offset != true_force_constants_flat.numel():
+        raise ValueError("Ragged force-constant labels did not match mode-aware mask")
+    zero = prediction.sum() * 0.0
+
+    def reduce(values: list[tuple[torch.Tensor, torch.Tensor]]) -> torch.Tensor:
+        if not values:
+            return zero
+        weights = torch.stack([weight for weight, _ in values])
+        losses = torch.stack([loss for _, loss in values])
+        return (weights * losses).sum() / weights.sum().clamp_min(epsilon)
+
+    direction, amplitude, sign = reduce(weighted_direction), reduce(weighted_amplitude), reduce(weighted_sign)
+    return {
+        "direction": direction,
+        "amplitude": amplitude,
+        "sign": sign,
+        "total": direction_weight * direction + amplitude_weight * amplitude + sign_weight * sign,
+    }
 
 
 def force_constant_loss(
@@ -232,6 +435,28 @@ def internal_strain_loss(
     return torch.stack(losses).mean()
 
 
+def full_internal_strain_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    graph_mask: torch.Tensor,
+    batch_index: torch.Tensor,
+) -> torch.Tensor:
+    """Supervise only strictly audited, symmetry-completed Lambda tensors."""
+    graph_mask = graph_mask.reshape(-1).to(dtype=torch.bool)
+    if not graph_mask.any():
+        return prediction.sum() * 0.0
+    node_mask = graph_mask[batch_index]
+    selected_prediction = prediction[node_mask]
+    selected_target = target[node_mask]
+    scale = selected_target.abs().mean().clamp_min(
+        torch.finfo(selected_target.dtype).eps
+    )
+    return torch.nn.functional.smooth_l1_loss(
+        selected_prediction / scale,
+        selected_target / scale,
+    )
+
+
 def sketch_loss(model: PiezoJet, batch, target_voigt: torch.Tensor, piezo_cart: torch.Tensor | None = None) -> torch.Tensor:
     """One Gaussian projection of the physical response energy density."""
     graphs = target_voigt.shape[0]
@@ -291,10 +516,11 @@ def _diagnostics(prediction: torch.Tensor, target: torch.Tensor, batch, model: P
     return rows
 
 
-def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_weights: torch.Tensor, device: torch.device, full_weight: float, dielectric_weight: float = 0.0, born_weight: float = 0.0, ionic_weight: float = 0.0, force_weight: float = 0.0, internal_strain_weight: float = 0.0, soft_mode_weight: float = 0.0, collect_diagnostics: bool = False, sketch_implementation: str = "jvp", sketch_count: int = 1) -> tuple[float, float, list[dict[str, float | int]], dict[str, float]]:
+def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_weights: torch.Tensor, device: torch.device, full_weight: float, dielectric_weight: float = 0.0, born_weight: float = 0.0, ionic_weight: float = 0.0, force_weight: float = 0.0, internal_strain_weight: float = 0.0, internal_strain_full_weight: float = 0.0, soft_mode_weight: float = 0.0, response_active_strain_weight: float = 0.0, mode_aware_strain_weight: float = 0.0, mode_aware_degeneracy_tolerance: float = 1e-2, mode_aware_epsilon: float = 1e-6, mode_aware_direction_weight: float = 1.0, mode_aware_amplitude_weight: float = 1.0, mode_aware_sign_weight: float = 0.25, collect_diagnostics: bool = False, sketch_implementation: str = "jvp", sketch_count: int = 1) -> tuple[float, float, list[dict[str, float | int]], dict[str, float]]:
     training = optimizer is not None
     model.train(training)
     total, count, elapsed, diagnostics = 0.0, 0, 0.0, []
+    response_predictions, response_targets = [], []
     component_totals = {
         "piezo_full": 0.0,
         "dielectric": 0.0,
@@ -302,6 +528,9 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_we
         "force_constant": 0.0,
         "soft_optical": 0.0,
         "internal_strain": 0.0,
+        "internal_strain_full": 0.0,
+        "response_active_strain": 0.0,
+        "mode_aware_strain": 0.0,
         "ionic_piezo": 0.0,
     }
     for batch in loader:
@@ -333,6 +562,38 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_we
                 batch.dfpt_internal_strain_ions, batch.dfpt_internal_strain_directions,
                 batch.dfpt_internal_strain_count, batch.ptr,
             )
+            full_internal_component = full_internal_strain_loss(
+                components.internal_strain,
+                batch.dfpt_internal_strain_full,
+                batch.internal_strain_full_mask,
+                batch.batch,
+            )
+            active_strain_component = response_active_internal_strain_loss(
+                components.internal_strain,
+                batch.y_born,
+                batch.dfpt_force_constants_flat,
+                batch.y_ionic_piezo,
+                batch.ionic_piezo_mask,
+                batch.ptr,
+                batch.cell.reshape(-1, 3, 3),
+                model.response,
+            )
+            mode_aware_component = prediction.sum() * 0.0
+            if mode_aware_strain_weight != 0.0:
+                mode_aware_component = mode_aware_internal_strain_terms(
+                    components.internal_strain,
+                    batch.dfpt_internal_strain_full,
+                    batch.y_born,
+                    batch.dfpt_force_constants_flat,
+                    batch.internal_strain_full_mask,
+                    batch.ptr,
+                    model.response,
+                    mode_aware_degeneracy_tolerance,
+                    mode_aware_epsilon,
+                    mode_aware_direction_weight,
+                    mode_aware_amplitude_weight,
+                    mode_aware_sign_weight,
+                )["total"]
             auxiliary = (
                 dielectric_weight * dielectric_component
                 + born_weight * born_component
@@ -340,6 +601,9 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_we
                 + force_weight * force_component
                 + soft_mode_weight * soft_component
                 + internal_strain_weight * internal_component
+                + internal_strain_full_weight * full_internal_component
+                + response_active_strain_weight * active_strain_component
+                + mode_aware_strain_weight * mode_aware_component
             )
             if loss_name == "full":
                 loss = full + auxiliary
@@ -358,6 +622,8 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_we
         if collect_diagnostics:
             diagnostics.extend(_diagnostics(prediction.detach(), batch.y.detach(), batch, model, scale))
         total += float(loss.detach()) * batch.num_graphs
+        response_predictions.append(prediction.detach().cpu())
+        response_targets.append(batch.y.detach().cpu())
         detached_components = {
             "piezo_full": full,
             "dielectric": dielectric_component,
@@ -365,6 +631,9 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_we
             "force_constant": force_component,
             "soft_optical": soft_component,
             "internal_strain": internal_component,
+            "internal_strain_full": full_internal_component,
+            "response_active_strain": active_strain_component,
+            "mode_aware_strain": mode_aware_component,
             "ionic_piezo": ionic_component,
         }
         for name, value in detached_components.items():
@@ -372,9 +641,15 @@ def _epoch(model, loader, optimizer, loss_name: str, scale: torch.Tensor, bin_we
         count += batch.num_graphs
         elapsed += time.perf_counter() - start
     denominator = max(count, 1)
-    return total / denominator, elapsed, diagnostics, {
+    component_summary = {
         name: value / denominator for name, value in component_totals.items()
     }
+    component_summary["tensor_response_skill_vs_zero"] = float(
+        response_tensor_skill(
+            torch.cat(response_predictions), torch.cat(response_targets)
+        )["tensor_response_skill_vs_zero"]
+    )
+    return total / denominator, elapsed, diagnostics, component_summary
 
 
 def _factor_epoch(
@@ -385,13 +660,21 @@ def _factor_epoch(
     born_weight: float,
     force_weight: float,
     internal_strain_weight: float,
+    internal_strain_full_weight: float,
     soft_mode_weight: float,
+    response_active_strain_weight: float,
+    mode_aware_strain_weight: float = 0.0,
+    mode_aware_degeneracy_tolerance: float = 1e-2,
+    mode_aware_epsilon: float = 1e-6,
+    mode_aware_direction_weight: float = 1.0,
+    mode_aware_amplitude_weight: float = 1.0,
+    mode_aware_sign_weight: float = 0.25,
 ) -> tuple[float, float, dict[str, float]]:
     """Train direct DFPT factors without the ill-conditioned inverse response path."""
     training = optimizer is not None
     model.train(training)
     total, count, elapsed = 0.0, 0, 0.0
-    component_totals = {"born": 0.0, "force_constant": 0.0, "soft_optical": 0.0, "internal_strain": 0.0}
+    component_totals = {"born": 0.0, "force_constant": 0.0, "soft_optical": 0.0, "internal_strain": 0.0, "internal_strain_full": 0.0, "response_active_strain": 0.0, "mode_aware_strain": 0.0}
     for batch in loader:
         batch = batch.to(device, non_blocking=device.type == "cuda")
         start = time.perf_counter()
@@ -419,12 +702,47 @@ def _factor_epoch(
                     batch.dfpt_internal_strain_count,
                     batch.ptr,
                 ),
+                "internal_strain_full": full_internal_strain_loss(
+                    factors.internal_strain,
+                    batch.dfpt_internal_strain_full,
+                    batch.internal_strain_full_mask,
+                    batch.batch,
+                ),
+                "response_active_strain": response_active_internal_strain_loss(
+                    factors.internal_strain,
+                    batch.y_born,
+                    batch.dfpt_force_constants_flat,
+                    batch.y_ionic_piezo,
+                    batch.ionic_piezo_mask,
+                    batch.ptr,
+                    batch.cell.reshape(-1, 3, 3),
+                    model.response,
+                ),
             }
+            components["mode_aware_strain"] = factors.internal_strain.sum() * 0.0
+            if mode_aware_strain_weight != 0.0:
+                components["mode_aware_strain"] = mode_aware_internal_strain_terms(
+                    factors.internal_strain,
+                    batch.dfpt_internal_strain_full,
+                    batch.y_born,
+                    batch.dfpt_force_constants_flat,
+                    batch.internal_strain_full_mask,
+                    batch.ptr,
+                    model.response,
+                    mode_aware_degeneracy_tolerance,
+                    mode_aware_epsilon,
+                    mode_aware_direction_weight,
+                    mode_aware_amplitude_weight,
+                    mode_aware_sign_weight,
+                )["total"]
             loss = (
                 born_weight * components["born"]
                 + force_weight * components["force_constant"]
                 + soft_mode_weight * components["soft_optical"]
                 + internal_strain_weight * components["internal_strain"]
+                + internal_strain_full_weight * components["internal_strain_full"]
+                + response_active_strain_weight * components["response_active_strain"]
+                + mode_aware_strain_weight * components["mode_aware_strain"]
             )
             if not torch.isfinite(loss):
                 raise FloatingPointError("Non-finite direct-factor loss encountered")
@@ -462,7 +780,9 @@ def freeze_factor_stack(model: PiezoJet) -> list[str]:
     Lambda.  The physical ionic response remains in every forward pass.
     """
     names = ["encoder", "born_head", "local_polar_mode", "global_context"]
-    if model.factor_architecture in {"energy", "energy_learned_strain"}:
+    if model.factor_architecture in {
+        "energy", "energy_learned_strain", "energy_learned_star"
+    }:
         names.append("energy_factors")
     else:
         names.extend(("force_constants", "internal_strain"))
@@ -513,6 +833,34 @@ def restrict_splits_to_material_ids(
     return restricted
 
 
+def load_explicit_splits(path: Path, known_ids: set[str]) -> dict[str, list[str]]:
+    """Load a frozen, auditable train/validation/test assignment.
+
+    This is distinct from ``--material-ids-file``: benchmark splits are
+    already formula-disjoint and must not be intersected with the unrelated
+    4,998-material global split.
+    """
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    splits = parsed.get("splits", parsed) if isinstance(parsed, dict) else None
+    if not isinstance(splits, dict):
+        raise ValueError("Explicit split file must contain a splits object")
+    restored: dict[str, list[str]] = {}
+    for name in ("train", "val", "test"):
+        values = splits.get(name)
+        if not isinstance(values, list):
+            raise ValueError(f"Explicit split file is missing a {name} list")
+        restored[name] = [str(value) for value in values]
+    all_ids = restored["train"] + restored["val"] + restored["test"]
+    if len(all_ids) != len(set(all_ids)):
+        raise ValueError("Explicit split file leaks material IDs across splits")
+    unknown = sorted(set(all_ids) - known_ids)
+    if unknown:
+        raise ValueError(f"Explicit split file contains unknown IDs: {unknown[:5]}")
+    if not restored["train"] or not restored["val"] or not restored["test"]:
+        raise ValueError("Explicit split file requires non-empty train, val, and test splits")
+    return restored
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -533,14 +881,41 @@ def main() -> None:
         "--material-ids-split", choices=("same", "global"), default="same",
         help="Use the same IDs for a plumbing smoke or intersect them with the persisted formula-disjoint global split",
     )
+    parser.add_argument(
+        "--splits-file", type=Path,
+        help="Frozen explicit train/val/test JSON; do not combine with --material-ids-file",
+    )
     parser.add_argument("--m2-1", action="store_true", help="Strict 300-epoch 32-sample memorization experiment")
     parser.add_argument("--resume", type=Path, help="Resume a saved checkpoint at its next epoch")
+    parser.add_argument(
+        "--factor-checkpoint",
+        type=Path,
+        help="Initialize a fresh joint stage from a selected factor checkpoint without restoring its optimizer/epoch",
+    )
     parser.add_argument("--sketch-implementation", choices=("direct", "jvp"), default="jvp")
     parser.add_argument("--sketch-count", type=int, choices=(1, 2, 4, 8), default=1)
     parser.add_argument("--seed", type=int, help="Override config seed for multi-seed experiments")
     parser.add_argument("--factor-pretrain-epochs", type=int, help="Direct Z*, Phi, Lambda curriculum epochs before joint response training")
     parser.add_argument("--factor-pretrain-learning-rate", type=float, help="Learning rate for direct-factor curriculum")
     parser.add_argument("--factor-pretrain-patience", type=int, help="Early-stopping patience for direct-factor validation loss")
+    parser.add_argument(
+        "--mode-aware-strain-loss-weight", type=float,
+        help="Override the gauge-safe response-subspace loss weight during joint training",
+    )
+    parser.add_argument(
+        "--factor-pretrain-mode-aware-strain-weight", type=float,
+        help="Override the gauge-safe response-subspace loss weight during direct-factor training",
+    )
+    parser.add_argument(
+        "--factor-architecture",
+        choices=("legacy", "energy", "energy_learned_strain", "energy_learned_star"),
+        help="Override the factor architecture for a controlled matched-budget comparison",
+    )
+    parser.add_argument(
+        "--checkpoint-selection-metric",
+        choices=("trs", "loss"),
+        help="Preregister the joint-stage early-stopping and primary-checkpoint metric",
+    )
     parser.add_argument("--freeze-factors-during-joint", action="store_true", help="Freeze the selected direct-factor stack during joint response fine-tuning")
     args = parser.parse_args()
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -588,6 +963,18 @@ def main() -> None:
         if args.factor_pretrain_patience < 0:
             raise ValueError("--factor-pretrain-patience must be non-negative")
         cfg["factor_pretrain_patience"] = args.factor_pretrain_patience
+    if args.mode_aware_strain_loss_weight is not None:
+        if args.mode_aware_strain_loss_weight < 0:
+            raise ValueError("--mode-aware-strain-loss-weight must be non-negative")
+        cfg["mode_aware_strain_loss_weight"] = args.mode_aware_strain_loss_weight
+    if args.factor_pretrain_mode_aware_strain_weight is not None:
+        if args.factor_pretrain_mode_aware_strain_weight < 0:
+            raise ValueError("--factor-pretrain-mode-aware-strain-weight must be non-negative")
+        cfg["factor_pretrain_mode_aware_strain_weight"] = args.factor_pretrain_mode_aware_strain_weight
+    if args.factor_architecture is not None:
+        cfg["factor_architecture"] = args.factor_architecture
+    if args.checkpoint_selection_metric is not None:
+        cfg["checkpoint_selection_metric"] = args.checkpoint_selection_metric
     if args.freeze_factors_during_joint:
         cfg["freeze_factors_during_joint"] = True
     if args.output_dir is not None:
@@ -601,7 +988,16 @@ def main() -> None:
     data_commit = _data_commit(cfg["data_root"])
     records = load_gmtnet_records(cfg["data_root"])
     splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
-    if args.material_ids_file is not None:
+    if args.material_ids_file is not None and args.splits_file is not None:
+        raise ValueError("--material-ids-file and --splits-file are mutually exclusive")
+    known_ids = {str(record["JARVIS_ID"]) for record in records}
+    if args.splits_file is not None:
+        if not args.splits_file.is_file():
+            raise FileNotFoundError(f"Explicit split file does not exist: {args.splits_file}")
+        splits = load_explicit_splits(args.splits_file, known_ids)
+        cfg["splits_file"] = str(args.splits_file)
+        cfg["restricted_split_counts"] = {name: len(values) for name, values in splits.items()}
+    elif args.material_ids_file is not None:
         if not args.material_ids_file.is_file():
             raise FileNotFoundError(f"Material-ID file does not exist: {args.material_ids_file}")
         text = args.material_ids_file.read_text(encoding="utf-8")
@@ -610,7 +1006,6 @@ def main() -> None:
             selected_ids = [str(value) for value in parsed]
         except json.JSONDecodeError:
             selected_ids = [line.strip() for line in text.splitlines() if line.strip()]
-        known_ids = {str(record["JARVIS_ID"]) for record in records}
         unknown = sorted(set(selected_ids) - known_ids)
         if unknown:
             raise ValueError(f"Material-ID file contains unknown IDs: {unknown[:5]}")
@@ -624,8 +1019,9 @@ def main() -> None:
         splits["val"] = splits["train"]
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
     dfpt_dir = cfg.get("jarvis_dfpt_dir")
-    train_set = PiezoDataset(records, splits["train"], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key, dfpt_dir=dfpt_dir)
-    val_set = PiezoDataset(records, splits["val"], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key, dfpt_dir=dfpt_dir)
+    strain_completion_dir = cfg.get("jarvis_strain_completion_dir")
+    train_set = PiezoDataset(records, splits["train"], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key, dfpt_dir=dfpt_dir, strain_completion_dir=strain_completion_dir)
+    val_set = PiezoDataset(records, splits["val"], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key, dfpt_dir=dfpt_dir, strain_completion_dir=strain_completion_dir)
     loader_options = {"num_workers": cfg["num_workers"], "pin_memory": device.type == "cuda"}
     if cfg["num_workers"] > 0:
         loader_options["persistent_workers"] = True
@@ -666,12 +1062,32 @@ def main() -> None:
     factor_best = float("inf")
     factor_best_epoch = 0
     factor_epochs = int(cfg.get("factor_pretrain_epochs", 0))
-    if factor_epochs > 0 and args.resume is None:
+    if factor_epochs > 0 and args.resume is None and args.factor_checkpoint is None:
         factor_weights = {
             "born_weight": float(cfg.get("factor_pretrain_born_weight", 1.0)),
             "force_weight": float(cfg.get("factor_pretrain_force_weight", 1.0)),
             "internal_strain_weight": float(cfg.get("factor_pretrain_internal_strain_weight", 5.0)),
+            "internal_strain_full_weight": float(
+                cfg.get("factor_pretrain_internal_strain_full_weight", 0.0)
+            ),
             "soft_mode_weight": float(cfg.get("factor_pretrain_soft_mode_weight", 1.0)),
+            "response_active_strain_weight": float(
+                cfg.get("factor_pretrain_response_active_strain_weight", 0.0)
+            ),
+            "mode_aware_strain_weight": float(
+                cfg.get("factor_pretrain_mode_aware_strain_weight", 0.0)
+            ),
+            "mode_aware_degeneracy_tolerance": float(
+                cfg.get("mode_aware_degeneracy_tolerance", 1e-2)
+            ),
+            "mode_aware_epsilon": float(cfg.get("mode_aware_epsilon", 1e-6)),
+            "mode_aware_direction_weight": float(
+                cfg.get("mode_aware_direction_weight", 1.0)
+            ),
+            "mode_aware_amplitude_weight": float(
+                cfg.get("mode_aware_amplitude_weight", 1.0)
+            ),
+            "mode_aware_sign_weight": float(cfg.get("mode_aware_sign_weight", 0.25)),
         }
         factor_optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -729,8 +1145,25 @@ def main() -> None:
         cfg["factor_pretraining_best_val_loss"] = factor_best
         cfg["factor_pretraining_epochs_completed"] = len(factor_rows)
 
+    if args.factor_checkpoint is not None:
+        if args.resume is not None:
+            raise ValueError("--factor-checkpoint and --resume are mutually exclusive")
+        if not args.factor_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Factor checkpoint does not exist: {args.factor_checkpoint}"
+            )
+        factor_saved = torch.load(
+            args.factor_checkpoint, map_location=device, weights_only=False
+        )
+        if factor_saved.get("stage") != "direct_factor_pretraining":
+            raise ValueError("--factor-checkpoint must come from direct factor pretraining")
+        model.load_state_dict(factor_saved["model"])
+        torch.save(factor_saved, output / "factor_best.pt")
+        cfg["initialized_from_factor_checkpoint"] = str(args.factor_checkpoint)
+        cfg["initialized_from_factor_epoch"] = int(factor_saved["epoch"])
+
     if bool(cfg.get("freeze_factors_during_joint", False)):
-        if factor_epochs <= 0 and args.resume is None:
+        if factor_epochs <= 0 and args.resume is None and args.factor_checkpoint is None:
             raise ValueError("Frozen-factor joint training requires direct factor pretraining")
         cfg["joint_frozen_modules"] = freeze_factor_stack(model)
     optimizer = torch.optim.AdamW(
@@ -750,8 +1183,17 @@ def main() -> None:
         start_epoch = resumed_from + 1
         cfg["resumed_from_epoch"] = resumed_from
         cfg["resumed_from_commit"] = saved.get("config", {}).get("git_commit", "unknown")
-    (output / "config.resolved.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
-    best = float("inf")
+    selection_metric = str(cfg.get("checkpoint_selection_metric", "trs"))
+    if selection_metric not in {"trs", "loss"}:
+        raise ValueError("checkpoint_selection_metric must be 'trs' or 'loss'")
+    cfg["primary_checkpoint"] = "trs_best.pt" if selection_metric == "trs" else "loss_best.pt"
+    (output / "config.resolved.yaml").write_text(
+        yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8"
+    )
+    loss_best = float("inf")
+    loss_best_epoch = 0
+    trs_best = float("-inf")
+    trs_best_epoch = 0
     epochs_without_improvement = 0
     patience = int(cfg.get("early_stopping_patience", 0))
     rows: list[dict[str, float | int]] = []
@@ -761,6 +1203,17 @@ def main() -> None:
     if args.resume is not None and existing_metrics.is_file():
         with existing_metrics.open(newline="", encoding="utf-8") as handle:
             rows = [{key: (int(value) if key == "epoch" else float(value)) for key, value in row.items()} for row in csv.DictReader(handle)]
+        if rows:
+            loss_row = min(rows, key=lambda row: float(row["val_loss"]))
+            trs_row = max(
+                rows,
+                key=lambda row: float(row["val_tensor_response_skill_vs_zero_loss"]),
+            )
+            loss_best, loss_best_epoch = float(loss_row["val_loss"]), int(loss_row["epoch"])
+            trs_best = float(trs_row["val_tensor_response_skill_vs_zero_loss"])
+            trs_best_epoch = int(trs_row["epoch"])
+            selected_epoch = trs_best_epoch if selection_metric == "trs" else loss_best_epoch
+            epochs_without_improvement = int(rows[-1]["epoch"]) - selected_epoch
     for epoch in range(start_epoch, int(cfg["epochs"]) + 1):
         response_weights = dict(
             dielectric_weight=float(cfg.get("dielectric_loss_weight", 0.0)),
@@ -768,7 +1221,23 @@ def main() -> None:
             ionic_weight=float(cfg.get("ionic_piezo_loss_weight", 0.0)),
             force_weight=float(cfg.get("force_constant_loss_weight", 0.0)),
             internal_strain_weight=float(cfg.get("internal_strain_loss_weight", 0.0)),
+            internal_strain_full_weight=float(
+                cfg.get("internal_strain_full_loss_weight", 0.0)
+            ),
             soft_mode_weight=float(cfg.get("soft_mode_loss_weight", 0.0)),
+            response_active_strain_weight=float(
+                cfg.get("response_active_strain_loss_weight", 0.0)
+            ),
+            mode_aware_strain_weight=float(
+                cfg.get("mode_aware_strain_loss_weight", 0.0)
+            ),
+            mode_aware_degeneracy_tolerance=float(
+                cfg.get("mode_aware_degeneracy_tolerance", 1e-2)
+            ),
+            mode_aware_epsilon=float(cfg.get("mode_aware_epsilon", 1e-6)),
+            mode_aware_direction_weight=float(cfg.get("mode_aware_direction_weight", 1.0)),
+            mode_aware_amplitude_weight=float(cfg.get("mode_aware_amplitude_weight", 1.0)),
+            mode_aware_sign_weight=float(cfg.get("mode_aware_sign_weight", 0.25)),
             collect_diagnostics=args.m2_1,
             sketch_implementation=args.sketch_implementation,
             sketch_count=args.sketch_count,
@@ -790,15 +1259,33 @@ def main() -> None:
             all_sample_rows.extend({"epoch": epoch, "phase": "eval", **item} for item in val_diagnostics)
             diagnostic_rows.append({"epoch": epoch, "phase": "train", **{key: value for key, value in train_diagnostics[0].items() if key != "sample_index"}})
             diagnostic_rows.append({"epoch": epoch, "phase": "eval", **{key: value for key, value in val_diagnostics[0].items() if key != "sample_index"}})
-        checkpoint = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": cfg, "piezo_scale": float(scale), "epoch": epoch}
-        if not args.m2_1 or epoch % 10 == 0 or epoch == int(cfg["epochs"]):
-            torch.save(checkpoint, output / "last.pt")
-        if val_value < best:
-            best = val_value
-            epochs_without_improvement = 0
-            torch.save(checkpoint, output / "best.pt")
-        else:
-            epochs_without_improvement += 1
+        checkpoint = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "config": cfg,
+            "piezo_scale": float(scale),
+            "epoch": epoch,
+            "validation": {
+                "loss": float(val_value),
+                "tensor_response_skill_vs_zero": float(
+                    val_components["tensor_response_skill_vs_zero"]
+                ),
+            },
+        }
+        torch.save(checkpoint, output / "last.pt")
+        loss_improved = val_value < loss_best
+        if loss_improved:
+            loss_best = val_value
+            loss_best_epoch = epoch
+            torch.save(checkpoint, output / "loss_best.pt")
+        val_response_skill = float(val_components["tensor_response_skill_vs_zero"])
+        trs_improved = val_response_skill > trs_best
+        if trs_improved:
+            trs_best = val_response_skill
+            trs_best_epoch = epoch
+            torch.save(checkpoint, output / "trs_best.pt")
+        selected_improved = trs_improved if selection_metric == "trs" else loss_improved
+        epochs_without_improvement = 0 if selected_improved else epochs_without_improvement + 1
         if not args.m2_1 or epoch == 1 or epoch % 10 == 0 or epoch == int(cfg["epochs"]):
             print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
         if args.m2_1:
@@ -807,19 +1294,39 @@ def main() -> None:
                 writer.writeheader()
                 writer.writerows(rows)
         if patience > 0 and epochs_without_improvement >= patience:
-            print(f"early_stop epoch={epoch} best_val={best:.6g} patience={patience}")
+            selected_value = trs_best if selection_metric == "trs" else loss_best
+            print(
+                f"early_stop epoch={epoch} metric={selection_metric} "
+                f"best={selected_value:.6g} patience={patience}"
+            )
             break
     with (output / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    summary = {"best_val_loss": best, "loss": args.loss, "epochs": int(cfg["epochs"]), "epochs_completed": len(rows), "metrics_rows": len(rows), "optimization_loss": args.loss, "memorization_loss": args.loss if args.m2_1 else None, "runtime_device": runtime_device, "all_finite": True}
+    summary = {
+        "checkpoint_selection_metric": selection_metric,
+        "primary_checkpoint": cfg["primary_checkpoint"],
+        "best_val_loss": loss_best,
+        "loss_best_epoch": loss_best_epoch,
+        "best_val_response_skill": trs_best,
+        "trs_best_epoch": trs_best_epoch,
+        "loss": args.loss,
+        "epochs": int(cfg["epochs"]),
+        "epochs_completed": len(rows),
+        "metrics_rows": len(rows),
+        "optimization_loss": args.loss,
+        "memorization_loss": args.loss if args.m2_1 else None,
+        "runtime_device": runtime_device,
+        "all_finite": True,
+    }
     if factor_rows:
         summary["factor_pretraining"] = {
             "epochs_completed": len(factor_rows),
             "best_epoch": factor_best_epoch,
             "best_val_loss": factor_best,
-            "objective": "born + force_constant + soft_optical + 5 * printed_internal_strain",
+            "objective": "weighted direct-factor losses; see objective_weights",
+            "objective_weights": factor_weights,
         }
     if resumed_from is not None:
         summary["resumed_from_epoch"] = resumed_from

@@ -424,10 +424,14 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
         cutoff: float,
         context_dim: int,
         learned_strain_map: bool = False,
+        star_rank: int = 0,
     ):
         super().__init__()
         self.cutoff = float(cutoff)
         self.learned_strain_map = bool(learned_strain_map)
+        if star_rank < 0:
+            raise ValueError("star_rank must be non-negative")
+        self.star_rank = int(star_rank)
         self.register_buffer("radial_centers", torch.linspace(0, cutoff, radial_basis), persistent=False)
         self.register_buffer("identity", torch.eye(3), persistent=False)
         self.register_buffer(
@@ -455,6 +459,25 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
             # plus ionic-response supervision learn only the required residual.
             nn.init.zeros_(self.edge_strain_map[-1].weight)
             nn.init.zeros_(self.edge_strain_map[-1].bias)
+        if self.star_rank:
+            self.edge_star_map = nn.Sequential(
+                nn.Linear(2 * scalar_dim + radial_basis + context_dim, hidden),
+                nn.SiLU(),
+                nn.Linear(hidden, hidden),
+                nn.SiLU(),
+                nn.Linear(hidden, self.star_rank * 4),
+            )
+            self.node_star_stiffness = nn.Sequential(
+                nn.Linear(scalar_dim + context_dim, hidden),
+                nn.SiLU(),
+                nn.Linear(hidden, self.star_rank),
+            )
+            nn.init.zeros_(self.edge_star_map[-1].weight)
+            nn.init.zeros_(self.edge_star_map[-1].bias)
+            with torch.no_grad():
+                self.edge_star_map[-1].bias[0::4] = 1.0
+            nn.init.zeros_(self.node_star_stiffness[-1].weight)
+            nn.init.zeros_(self.node_star_stiffness[-1].bias)
 
     @staticmethod
     def _internal_tensor(coupling: torch.Tensor) -> torch.Tensor:
@@ -475,7 +498,7 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
         local_polar: torch.Tensor,
         context: torch.Tensor,
         batch,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         source, target = batch.edge_index
         vectors = batch.pos[source] - batch.pos[target] + batch.edge_shift
         distance = torch.linalg.vector_norm(vectors, dim=-1)
@@ -538,9 +561,25 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
             )
             strain_map = strain_map + correction_voigt
         stiffness_strain = stiffness @ strain_map
+        star_map = None
+        star_stiffness = None
+        if self.star_rank:
+            star_coefficients = self.edge_star_map(edge_context).reshape(
+                -1, self.star_rank, 4
+            )
+            star_map = (
+                star_coefficients[..., 0, None, None] * identity
+                + star_coefficients[..., 1, None, None] * rr[:, None]
+                + star_coefficients[..., 2, None, None] * polar_r[:, None]
+                + star_coefficients[..., 3, None, None] * pp[:, None]
+            )
+            node_context = torch.cat(
+                (features.scalar, context[batch.batch]), dim=-1
+            )
+            star_stiffness = self.node_star_stiffness(node_context)
 
         ptr = _graph_ptr(batch.batch)
-        force_flat, internal = [], []
+        force_flat, internal, strain_curvature = [], [], []
         for graph_index in range(ptr.numel() - 1):
             start, stop = int(ptr[graph_index]), int(ptr[graph_index + 1])
             atoms = stop - start
@@ -561,9 +600,65 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
             # Lambda = -B^T K S for the declared quadratic energy.
             coupling.index_put_((local_source,), -local_strain, accumulate=True)
             coupling.index_put_((local_target,), local_strain, accumulate=True)
+            local_map = strain_map[edge_mask]
+            local_curvature = torch.einsum(
+                "eai,eaj->ij", local_map, local_strain
+            )
+            if star_map is not None and star_stiffness is not None:
+                local_star_map = star_map[edge_mask]
+                rank = self.star_rank
+                edge_count = local_source.numel()
+                centers = local_target[:, None].expand(edge_count, rank).reshape(-1)
+                ranks = torch.arange(rank, device=centers.device)[None].expand(
+                    edge_count, rank
+                ).reshape(-1)
+                sources = local_source[:, None].expand(edge_count, rank).reshape(-1)
+                targets = local_target[:, None].expand(edge_count, rank).reshape(-1)
+                map_values = local_star_map.reshape(-1, 3, 3)
+                derivative_blocks = local_stiffness.new_zeros(
+                    atoms, rank, atoms, 3, 3
+                )
+                derivative_blocks.index_put_(
+                    (centers, ranks, sources), map_values, accumulate=True
+                )
+                derivative_blocks.index_put_(
+                    (centers, ranks, targets), -map_values, accumulate=True
+                )
+                derivative = derivative_blocks.permute(0, 1, 3, 2, 4).reshape(
+                    atoms * rank * 3, 3 * atoms
+                )
+                star_strain_values = torch.einsum(
+                    "erab,ebm->eram", local_star_map, strain_map[edge_mask]
+                )
+                star_strain = local_stiffness.new_zeros(atoms, rank, 3, 6)
+                star_strain.index_put_(
+                    (centers, ranks),
+                    star_strain_values.reshape(-1, 3, 6),
+                    accumulate=True,
+                )
+                star_strain_matrix = star_strain.reshape(atoms * rank * 3, 6)
+                weights = star_stiffness[start:stop].unsqueeze(-1).expand(
+                    atoms, rank, 3
+                ).reshape(-1)
+                weighted_derivative = weights[:, None] * derivative
+                star_phi = derivative.transpose(0, 1) @ weighted_derivative
+                star_lambda = -derivative.transpose(0, 1) @ (
+                    weights[:, None] * star_strain_matrix
+                )
+                star_curvature = star_strain_matrix.transpose(0, 1) @ (
+                    weights[:, None] * star_strain_matrix
+                )
+                blocks = blocks + star_phi.reshape(
+                    atoms, 3, atoms, 3
+                ).permute(0, 2, 1, 3)
+                coupling = coupling + star_lambda.reshape(atoms, 3, 6)
+                local_curvature = local_curvature + star_curvature
             force_flat.append(blocks.reshape(-1))
             internal.append(self._internal_tensor(coupling))
-        return torch.cat(force_flat), torch.cat(internal)
+            strain_curvature.append(
+                0.5 * (local_curvature + local_curvature.transpose(0, 1))
+            )
+        return torch.cat(force_flat), torch.cat(internal), torch.stack(strain_curvature)
 
 
 class LinearResponseBackground(nn.Module):
@@ -582,7 +677,12 @@ class LinearResponseBackground(nn.Module):
         diagonal = torch.arange(3, device=context.device)
         elastic[:, diagonal, diagonal] = (lam + 2.0 * shear).unsqueeze(-1).expand(-1, 3)
         elastic[:, 3, 3], elastic[:, 4, 4], elastic[:, 5, 5] = shear, shear, shear
-        dielectric = susceptibility[:, None, None] * self.identity.to(dtype=context.dtype)
+        # GMTNet/JARVIS labels are relative permittivities epsilon_r, not
+        # susceptibilities chi_r.  The vacuum contribution is therefore the
+        # identity and the learned non-negative scalar is the electronic
+        # susceptibility: epsilon_r^el = I + chi_r^el.
+        identity = self.identity.to(dtype=context.dtype)
+        dielectric = (1.0 + susceptibility)[:, None, None] * identity
         return elastic, dielectric
 
 
@@ -596,6 +696,7 @@ class AtomCoordinatePrediction(NamedTuple):
     force_constants_flat: torch.Tensor
     internal_strain: torch.Tensor
     optical_operator_flat: torch.Tensor
+    shared_clamped_elastic: torch.Tensor
     elastic_background: torch.Tensor
     dielectric_background: torch.Tensor
     dielectric: torch.Tensor
@@ -608,6 +709,7 @@ class AtomCoordinateFactors(NamedTuple):
     born_charges: torch.Tensor
     force_constants_flat: torch.Tensor
     internal_strain: torch.Tensor
+    strain_curvature: torch.Tensor
 
 
 class CrystalGlobalContext(nn.Module):
@@ -928,12 +1030,13 @@ class AtomCoordinateResponsePotential(nn.Module):
         born_charges: torch.Tensor,
         internal_strain: torch.Tensor,
         force_constants_flat: torch.Tensor,
+        strain_curvature: torch.Tensor,
         batch,
         elastic_background: torch.Tensor,
         dielectric_background: torch.Tensor,
         solve_policy: str | None = None,
         regularization: float | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         ptr = _graph_ptr(batch.batch)
         cell = getattr(batch, "cell", None)
         cells = (
@@ -941,7 +1044,7 @@ class AtomCoordinateResponsePotential(nn.Module):
             .expand(ptr.numel() - 1, 3, 3)
             if cell is None else cell.reshape(-1, 3, 3)
         )
-        ionic_piezo, ionic_dielectric, elastic_softening, inverse_flat = [], [], [], []
+        ionic_piezo, ionic_dielectric, shared_clamped, elastic_softening, inverse_flat = [], [], [], [], []
         force_offset = 0
         for graph_index in range(ptr.numel() - 1):
             start, stop = int(ptr[graph_index]), int(ptr[graph_index + 1])
@@ -961,13 +1064,25 @@ class AtomCoordinateResponsePotential(nn.Module):
             ionic_dielectric.append(
                 self.DIELECTRIC_RELATIVE * (charge.transpose(0, 1) @ operator @ charge) / volume
             )
+            shared_clamped.append(
+                self.EV_PER_A3_TO_GPA * strain_curvature[graph_index] / volume
+            )
             elastic_softening.append(
                 self.EV_PER_A3_TO_GPA * (coupling.transpose(0, 1) @ inverse_coupling) / volume
             )
         ionic_piezo_cart = piezo_voigt_to_cartesian(torch.stack(ionic_piezo))
         dielectric = dielectric_background + torch.stack(ionic_dielectric)
-        elastic = elastic_background - torch.stack(elastic_softening)
-        return electronic_piezo + ionic_piezo_cart, dielectric, elastic, torch.cat(inverse_flat)
+        shared_clamped_tensor = torch.stack(shared_clamped)
+        # Case A in the energy decomposition: the separately predicted
+        # background is K_direct, while S^T K S is included exactly once here.
+        elastic = elastic_background + shared_clamped_tensor - torch.stack(elastic_softening)
+        return (
+            electronic_piezo + ionic_piezo_cart,
+            dielectric,
+            elastic,
+            torch.cat(inverse_flat),
+            shared_clamped_tensor,
+        )
 
     def forward(
         self,
@@ -1010,6 +1125,7 @@ class PiezoJet(nn.Module):
         optical_stability_cutoff: float = 1e-4,
         optical_solve_policy: str = "auto",
         factor_architecture: str = "energy_learned_strain",
+        star_rank: int = 4,
         **encoder_kwargs,
     ):
         super().__init__()
@@ -1020,8 +1136,13 @@ class PiezoJet(nn.Module):
         self.global_context = CrystalGlobalContext(
             global_context_dim, spectral_channels, spectral_shells, polar_fluctuation_shells, reciprocal_cutoff
         )
-        if factor_architecture not in {"legacy", "energy", "energy_learned_strain"}:
-            raise ValueError("factor_architecture must be legacy, energy, or energy_learned_strain")
+        if factor_architecture not in {
+            "legacy", "energy", "energy_learned_strain", "energy_learned_star"
+        }:
+            raise ValueError(
+                "factor_architecture must be legacy, energy, "
+                "energy_learned_strain, or energy_learned_star"
+            )
         self.factor_architecture = factor_architecture
         if factor_architecture == "legacy":
             self.force_constants = CartesianForceConstantHead(
@@ -1038,7 +1159,13 @@ class PiezoJet(nn.Module):
                 int(encoder_kwargs.get("radial_basis", 12)),
                 float(encoder_kwargs.get("cutoff", 5.0)),
                 global_context_dim,
-                learned_strain_map=factor_architecture == "energy_learned_strain",
+                learned_strain_map=factor_architecture in {
+                    "energy_learned_strain", "energy_learned_star"
+                },
+                star_rank=(
+                    int(star_rank)
+                    if factor_architecture == "energy_learned_star" else 0
+                ),
             )
         self.background = LinearResponseBackground(global_context_dim)
         self.response = AtomCoordinateResponsePotential(
@@ -1064,11 +1191,15 @@ class PiezoJet(nn.Module):
         if self.factor_architecture == "legacy":
             force_constants_flat = self.force_constants(features, local_polar, batch)
             internal_strain = self.internal_strain(features, batch.batch)
+            graphs = int(batch.batch.max()) + 1
+            strain_curvature = force_constants_flat.new_zeros(graphs, 6, 6)
         else:
-            force_constants_flat, internal_strain = self.energy_factors(
+            force_constants_flat, internal_strain, strain_curvature = self.energy_factors(
                 features, local_polar, context, batch
             )
-        factors = AtomCoordinateFactors(born_charges, force_constants_flat, internal_strain)
+        factors = AtomCoordinateFactors(
+            born_charges, force_constants_flat, internal_strain, strain_curvature
+        )
         return features, local_polar, factors, context, spectral_operator
 
     def predict_factors(self, batch) -> AtomCoordinateFactors:
@@ -1080,16 +1211,16 @@ class PiezoJet(nn.Module):
         direct = self.head(features, batch.batch)
         electronic_piezo = 0.5 * (direct + spectral_operator + (direct + spectral_operator).transpose(-1, -2))
         elastic_background, dielectric_background = self.background(context)
-        tensor, dielectric, elastic, optical_operator_flat = self.response.responses(
+        tensor, dielectric, elastic, optical_operator_flat, shared_clamped_elastic = self.response.responses(
             electronic_piezo, factors.born_charges, factors.internal_strain,
-            factors.force_constants_flat, batch,
+            factors.force_constants_flat, factors.strain_curvature, batch,
             elastic_background, dielectric_background
         )
         ionic_piezo = tensor - electronic_piezo
         return AtomCoordinatePrediction(
             0.5 * (tensor + tensor.transpose(-1, -2)), electronic_piezo, ionic_piezo,
             factors.born_charges, factors.force_constants_flat, factors.internal_strain, optical_operator_flat,
-            elastic_background, dielectric_background, dielectric, elastic,
+            shared_clamped_elastic, elastic_background, dielectric_background, dielectric, elastic,
         )
 
     def forward(self, batch) -> torch.Tensor:
@@ -1115,4 +1246,5 @@ def model_from_config(config: Mapping[str, object]) -> PiezoJet:
         optical_stability_cutoff=float(config.get("optical_stability_cutoff", 1e-4)),
         optical_solve_policy=str(config.get("optical_solve_policy", "auto")),
         factor_architecture=str(config.get("factor_architecture", "legacy")),
+        star_rank=int(config.get("star_rank", 4)),
     )

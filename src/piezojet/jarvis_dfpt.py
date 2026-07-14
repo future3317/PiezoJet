@@ -247,15 +247,41 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed/jarvis_dfpt_v1"))
     parser.add_argument("--index-cache-dir", type=Path, default=Path.home() / ".cache" / "piezojet" / "jarvis_raw_files")
     parser.add_argument("--limit", type=int, help="Bounded number of records; omit to cache all records.")
+    parser.add_argument(
+        "--material-ids-file", type=Path,
+        help="JSON list or newline-delimited JARVIS IDs for an explicit, auditable retrieval cohort.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         raise ValueError("--limit must be positive")
+    if args.limit is not None and args.material_ids_file is not None:
+        raise ValueError("--limit and --material-ids-file are mutually exclusive")
     from .data import load_gmtnet_records
 
     records = load_gmtnet_records(args.data_root)
-    if args.limit is not None:
+    if args.material_ids_file is not None:
+        if not args.material_ids_file.is_file():
+            raise FileNotFoundError(f"Material-ID file does not exist: {args.material_ids_file}")
+        text = args.material_ids_file.read_text(encoding="utf-8")
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("material_ids")
+            if not isinstance(parsed, list):
+                raise ValueError("JSON material-ID input must be a list or contain a material_ids list")
+            selected = [str(value) for value in parsed]
+        except json.JSONDecodeError:
+            selected = [line.strip() for line in text.splitlines() if line.strip()]
+        if not selected or len(selected) != len(set(selected)):
+            raise ValueError("Material-ID file must contain a non-empty list of unique IDs")
+        by_id = {str(record["JARVIS_ID"]): record for record in records}
+        unknown = sorted(set(selected) - set(by_id))
+        if unknown:
+            raise ValueError(f"Material-ID file contains unknown IDs: {unknown[:5]}")
+        records = [by_id[jid] for jid in selected]
+    elif args.limit is not None:
         records = records[: args.limit]
     cache, index = JarvisDFPTCache(args.output_dir), JarvisRawFileIndex(args.index_cache_dir)
     succeeded, failed = [], []

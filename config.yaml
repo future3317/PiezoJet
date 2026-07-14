@@ -15,6 +15,7 @@ cartesian_channels: 48
 # Phi and Lambda are joint derivatives of one signed strain-aware quadratic
 # bond energy. Set to legacy only to load historical checkpoints.
 factor_architecture: energy_learned_strain
+star_rank: 4
 global_context_dim: 128
 spectral_channels: 16
 spectral_shells: 8
@@ -22,10 +23,11 @@ spectral_shells: 8
 # shell.  It replaces the former fixed {-1,0,1}^3 integer-index cube.
 reciprocal_cutoff: 7.0
 polar_fluctuation_shells: 8
-# Stable predicted optical operators use the exact stationary linear solve.
-# Soft/unstable operators use the separately defined signed regularized Green
-# operator; this is not described as equilibrium relaxation.
-optical_solve_policy: auto
+# Training and production inference use one continuous signed regularized
+# operator. Exact stationary solves are reported only as a diagnostic for
+# high-confidence stable DFPT structures, so no learned eigenvalue threshold
+# participates in the optimization path.
+optical_solve_policy: regularized
 optical_stability_cutoff: 0.0001
 # Regularization scale (eV/Angstrom^2) for the soft/unstable branch.
 optical_regularization: 0.001
@@ -36,11 +38,29 @@ dielectric_loss_weight: 0.1
 # ``python -m piezojet.jarvis_dfpt --limit ...`` before assigning a nonzero
 # weight; missing cache entries are masked rather than fabricated.
 jarvis_dfpt_dir: data/processed/jarvis_dfpt_v1
+# v4 merges 99 independently audited strict completions. The 20-material
+# formula-disjoint test panel is frozen separately before any new training.
+jarvis_strain_completion_dir: data/processed/jarvis_strain_completion_v4
+strict_completion_split_file: data/processed/strict_completion_benchmark_v1.json
 born_loss_weight: 0.1
 # Physical atom-coordinate Hessian and only the symmetry-inequivalent
 # internal-strain blocks actually printed by VASP are supervised separately.
 force_constant_loss_weight: 0.1
 internal_strain_loss_weight: 0.1
+internal_strain_full_loss_weight: 0.1
+# Isolate Lambda with true DFPT Z* and Phi, and supervise only the observable
+# response-active product Z*^T O(Phi) Lambda against the OUTCAR ionic tensor.
+response_active_strain_loss_weight: 0.1
+# Gauge-safe response-subspace supervision.  It projects complete strict
+# Lambda labels into true-DFPT near-degenerate optical blocks and gives larger
+# weight to soft, mode-effective-charge-active blocks.  Disabled in production
+# until the separately registered mode-aware smoke is reported.
+mode_aware_strain_loss_weight: 0.0
+mode_aware_degeneracy_tolerance: 0.01
+mode_aware_epsilon: 0.000001
+mode_aware_direction_weight: 1.0
+mode_aware_amplitude_weight: 1.0
+mode_aware_sign_weight: 0.25
 # Low optical eigenvalues dominate Phi^-1; supervise them separately from
 # dense component MAE.
 soft_mode_loss_weight: 0.1
@@ -57,11 +77,19 @@ factor_pretrain_patience: 30
 factor_pretrain_born_weight: 1.0
 factor_pretrain_force_weight: 1.0
 factor_pretrain_internal_strain_weight: 5.0
+factor_pretrain_internal_strain_full_weight: 1.0
 factor_pretrain_soft_mode_weight: 1.0
+factor_pretrain_response_active_strain_weight: 1.0
+factor_pretrain_mode_aware_strain_weight: 0.0
 freeze_factors_during_joint: false
 batch_size: 128
 epochs: 50
 early_stopping_patience: 15
+# Four checkpoints are always retained.  The 14-material validation TRS is a
+# high-variance selector, so the preregistered primary checkpoint minimizes
+# the full validation objective; trs_best.pt is reported as a sensitivity
+# diagnostic rather than used for the main test table.
+checkpoint_selection_metric: loss
 learning_rate: 0.001
 weight_decay: 0.000001
 # Windows workers can exhaust shared-file mappings in long runs.  Cached PBC

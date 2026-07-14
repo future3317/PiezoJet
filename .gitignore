@@ -9,3 +9,9 @@ data/raw/*
 data/raw/gmtnet/*
 !data/raw/gmtnet/SOURCE_COMMIT.txt
 data/processed/pbc_graph_cache/
+# Regenerable binary caches derived from public JARVIS/GMTNet inputs. Keep
+# manifests and explicit split JSON files versioned; publish large cache
+# snapshots through a data release rather than normal Git history.
+data/processed/**/*.pt
+data/processed/jarvis_raw_index/
+data/processed/piezo_symmetry_targets*/

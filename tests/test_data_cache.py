@@ -1,5 +1,5 @@
 import piezojet.data as data_module
-from piezojet.data import PiezoDataset, load_gmtnet_records
+from piezojet.data import PiezoDataset, load_gmtnet_records, record_to_graph
 
 
 def test_piezo_dataset_graph_cache_preserves_graph():
@@ -22,3 +22,11 @@ def test_piezo_dataset_reuses_persistent_disk_graph(monkeypatch, tmp_path):
     monkeypatch.setattr(data_module, "record_to_graph", lambda *_: (_ for _ in ()).throw(AssertionError("disk cache miss")))
     restored = second[0]
     assert restored.material_id == graph.material_id
+
+
+def test_explicit_none_dielectric_is_a_masked_missing_label():
+    record = dict(load_gmtnet_records("data/raw/gmtnet")[0])
+    record["dielectric"] = None
+    graph = record_to_graph(record, 5.0, 32)
+    assert not bool(graph.dielectric_mask)
+    assert graph.y_dielectric.shape == (1, 3, 3)

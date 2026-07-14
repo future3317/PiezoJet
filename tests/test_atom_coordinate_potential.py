@@ -109,3 +109,39 @@ def test_response_generator_converts_all_si_blocks_to_one_energy_density_unit():
     energy_density = response(piezo, elastic, dielectric, field, eta)
     # -E e eta + 1/2 eta C eta - 1/2 E epsilon E = -1 here.
     assert torch.allclose(energy_density, torch.tensor([-1.0]))
+
+
+def test_elastic_response_counts_shared_strain_curvature_once():
+    response = AtomCoordinateResponsePotential(optical_solve_policy="regularized")
+    atoms = 2
+    relative = torch.zeros(3, 3 * atoms)
+    for axis in range(3):
+        relative[axis, axis] = 2.0 ** -0.5
+        relative[axis, axis + 3] = -(2.0 ** -0.5)
+    matrix = torch.einsum("a,ai,aj->ij", torch.tensor([2.0, 3.0, 4.0]), relative, relative)
+    blocks = matrix.reshape(atoms, 3, atoms, 3).permute(0, 2, 1, 3)
+    internal = torch.randn(atoms, 3, 3, 3)
+    internal = 0.5 * (internal + internal.transpose(-1, -2))
+    internal = internal - internal.mean(dim=0, keepdim=True)
+    curvature = torch.eye(6).unsqueeze(0) * 0.7
+    elastic_direct = torch.eye(6).unsqueeze(0) * 5.0
+    batch = type("Batch", (), {})()
+    batch.batch = torch.zeros(atoms, dtype=torch.long)
+    batch.cell = torch.diag(torch.tensor([2.0, 2.0, 2.5])).unsqueeze(0)
+    _, _, elastic, _, shared = response.responses(
+        torch.zeros(1, 3, 3, 3),
+        torch.zeros(atoms, 3, 3),
+        internal,
+        blocks.reshape(-1),
+        curvature,
+        batch,
+        elastic_direct,
+        torch.eye(3).unsqueeze(0),
+    )
+    volume = torch.linalg.det(batch.cell[0])
+    operator = response.optical_operator(blocks, "regularized")
+    coupling = response._coupling_voigt(internal).reshape(3 * atoms, 6)
+    softening = response.EV_PER_A3_TO_GPA * coupling.T @ operator @ coupling / volume
+    expected_shared = response.EV_PER_A3_TO_GPA * curvature[0] / volume
+    assert torch.allclose(shared[0], expected_shared)
+    assert torch.allclose(elastic[0], elastic_direct[0] + expected_shared - softening)

@@ -20,14 +20,15 @@ import torch
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
 from .metrics import response_tensor_skill
 from .model import AtomCoordinateResponsePotential, model_from_config
-from .tensor_ops import piezo_voigt_to_cartesian
-from .train import device_from_config, restrict_splits_to_material_ids
+from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian
+from .train import device_from_config, load_explicit_splits, restrict_splits_to_material_ids
 
 
 FACTOR_FLOORS = {
     "born_charge": 0.1,  # elementary charge
     "force_constant": 0.01,  # eV / Angstrom^2
     "internal_strain": 0.01,  # eV / Angstrom
+    "internal_strain_full": 0.01,  # eV / Angstrom
     "ionic_piezo": 0.05,  # C / m^2
     "electronic_piezo": 0.05,  # C / m^2
     "total_piezo": 0.05,  # C / m^2
@@ -38,6 +39,7 @@ FACTOR_UNITS = {
     "born_charge": "e",
     "force_constant": "eV/Angstrom^2",
     "internal_strain": "eV/Angstrom",
+    "internal_strain_full": "eV/Angstrom",
     "ionic_piezo": "C/m^2",
     "electronic_piezo": "C/m^2",
     "total_piezo": "C/m^2",
@@ -193,6 +195,196 @@ def pair_metrics(prediction: torch.Tensor, target: torch.Tensor, floor: float) -
     }
 
 
+def macro_material_tensor_metrics(
+    predictions: Iterable[torch.Tensor],
+    targets: Iterable[torch.Tensor],
+    floor: float,
+) -> dict[str, float | int]:
+    """Material-balanced tensor metrics with an explicit physical floor."""
+    rows = [pair_metrics(prediction, target, floor) for prediction, target in zip(predictions, targets)]
+    if not rows:
+        raise ValueError("Material-balanced metrics require at least one material")
+    macro_mae = _mean_rows(rows, "component_mae")
+    macro_zero_mae = _mean_rows(rows, "zero_component_mae")
+    return {
+        "materials": len(rows),
+        "cosine_macro_material": _mean_rows(rows, "directional_cosine"),
+        "amplitude_ratio_macro": _mean_rows(rows, "stabilized_amplitude_ratio"),
+        # Average the errors first, then form a one-zero-predictor comparison.
+        # Averaging per-material skills would diverge on a legitimately
+        # zero-response material because its zero baseline is exactly zero.
+        "mae_skill_vs_zero_macro": 1.0 - macro_mae / max(macro_zero_mae, torch.finfo(torch.float64).eps),
+        "amplitude_denominator_floor_per_component": float(floor),
+    }
+
+
+def _active_piezo_norm(target: torch.Tensor) -> tuple[torch.Tensor, int]:
+    """Return a non-duplicated piezo norm for active-panel registration.
+
+    Cartesian piezo tensors store both ``e_ijk`` and ``e_ikj``.  They have 27
+    storage entries but only 18 independent physical coefficients, so an
+    active threshold based on the stored Frobenius norm would accidentally
+    double-count shear.  The aggregate cosine still uses the evaluator's
+    Cartesian representation; this helper is only the registered inclusion
+    gate for active-material reporting.
+    """
+    if target.shape[-3:] == (3, 3, 3) and torch.allclose(target, target.transpose(-1, -2), atol=1e-6, rtol=1e-6):
+        voigt = cartesian_to_piezo_voigt(target)
+        return torch.linalg.vector_norm(voigt), voigt.numel()
+    return torch.linalg.vector_norm(target), target.numel()
+
+
+def ionic_aggregate_metrics(
+    predictions: Iterable[torch.Tensor],
+    targets: Iterable[torch.Tensor],
+    floor: float = FACTOR_FLOORS["ionic_piezo"],
+) -> dict[str, float | int | str]:
+    """Canonical ionic metrics resolving macro/micro aggregation ambiguity.
+
+    ``ionic_cosine_macro_material`` gives every material one vote; the legacy
+    ``directional_cosine`` equals the all-component micro cosine.  Active-only
+    metrics retain only materials whose true Frobenius norm exceeds the same
+    per-component resolution floor used by stabilized amplitudes, multiplied
+    by ``sqrt(number_of_independent_components)``.  For a symmetric Cartesian
+    piezo tensor that is ``sqrt(18)``, not the 27 duplicated storage entries.
+    This makes the threshold dimensional and auditable rather than a post-hoc
+    response-bin choice.
+    """
+    prediction_rows = [value.detach().cpu() for value in predictions]
+    target_rows = [value.detach().cpu() for value in targets]
+    if len(prediction_rows) != len(target_rows) or not prediction_rows:
+        raise ValueError("Ionic aggregation requires equally many non-empty predictions and targets")
+    if any(prediction.shape != target.shape for prediction, target in zip(prediction_rows, target_rows)):
+        raise ValueError("Ionic aggregation requires matching prediction and target shapes")
+    macro = macro_material_tensor_metrics(prediction_rows, target_rows, floor)
+    micro = pair_metrics(torch.stack(prediction_rows), torch.stack(target_rows), floor)
+    _, components = _active_piezo_norm(target_rows[0])
+    active_threshold = float(floor) * components ** 0.5
+    active = [
+        (prediction, target) for prediction, target in zip(prediction_rows, target_rows)
+        if float(_active_piezo_norm(target)[0]) > active_threshold
+    ]
+    active_macro = macro_material_tensor_metrics(
+        [prediction for prediction, _ in active], [target for _, target in active], floor
+    ) if active else None
+    active_micro = pair_metrics(
+        torch.stack([prediction for prediction, _ in active]),
+        torch.stack([target for _, target in active]), floor,
+    ) if active else None
+    return {
+        # Four canonical names for cross-evaluator comparisons.
+        "ionic_cosine_macro_material": float(macro["cosine_macro_material"]),
+        "ionic_cosine_micro_components": float(micro["directional_cosine"]),
+        "ionic_cosine_active_only": (
+            float(active_macro["cosine_macro_material"]) if active_macro is not None else float("nan")
+        ),
+        "ionic_amplitude_ratio_macro": float(macro["amplitude_ratio_macro"]),
+        "ionic_mae_skill_vs_zero_macro": float(macro["mae_skill_vs_zero_macro"]),
+        # Additional names make the active-panel definition and old fields
+        # directly inspectable without reimplementing a metric downstream.
+        "ionic_cosine_active_only_micro_components": (
+            float(active_micro["directional_cosine"]) if active_micro is not None else float("nan")
+        ),
+        "ionic_active_materials": len(active),
+        "ionic_materials": len(target_rows),
+        "ionic_active_norm_threshold_c_per_m2": active_threshold,
+        "ionic_amplitude_denominator_floor_per_component_c_per_m2": float(floor),
+        "aggregation_contract": (
+            "macro_material=mean(per-material cosine); micro_components=single cosine after concatenation; "
+            "active_only=macro material cosine for true Frobenius norm above the registered threshold"
+        ),
+        # Retain evaluator v2 field names as explicitly micro aliases so older
+        # readers cannot mistake them for macro material statistics.
+        "directional_cosine": float(micro["directional_cosine"]),
+        "stabilized_amplitude_ratio": float(micro["stabilized_amplitude_ratio"]),
+        "mae_skill_vs_zero": float(micro["mae_skill_vs_zero"]),
+    }
+
+
+def response_decomposition_metrics(
+    electronic_predictions: Iterable[torch.Tensor],
+    ionic_predictions: Iterable[torch.Tensor],
+    total_targets: Iterable[torch.Tensor],
+    ionic_targets: Iterable[torch.Tensor],
+    floor: float = FACTOR_FLOORS["ionic_piezo"],
+) -> dict[str, float | int]:
+    """Audit whether total-response fitting relies on branch cancellation."""
+    electronic_predictions = [value.detach().cpu() for value in electronic_predictions]
+    ionic_predictions = [value.detach().cpu() for value in ionic_predictions]
+    total_targets = [value.detach().cpu() for value in total_targets]
+    ionic_targets = [value.detach().cpu() for value in ionic_targets]
+    if not electronic_predictions or not (
+        len(electronic_predictions) == len(ionic_predictions) == len(total_targets) == len(ionic_targets)
+    ):
+        raise ValueError("Response decomposition requires equally many non-empty material rows")
+    electronic_targets = [total - ionic for total, ionic in zip(total_targets, ionic_targets)]
+    electronic = macro_material_tensor_metrics(electronic_predictions, electronic_targets, floor)
+    ionic = macro_material_tensor_metrics(ionic_predictions, ionic_targets, floor)
+    total_floor = float(floor) * total_targets[0].numel() ** 0.5
+    electronic_over_total, ionic_over_total, total_over_total, cancellation = [], [], [], []
+    for electronic_prediction, ionic_prediction, total_target in zip(
+        electronic_predictions, ionic_predictions, total_targets
+    ):
+        denominator = torch.linalg.vector_norm(total_target).clamp_min(total_floor)
+        electronic_norm = torch.linalg.vector_norm(electronic_prediction)
+        ionic_norm = torch.linalg.vector_norm(ionic_prediction)
+        total_norm = torch.linalg.vector_norm(electronic_prediction + ionic_prediction)
+        electronic_over_total.append(float(electronic_norm / denominator))
+        ionic_over_total.append(float(ionic_norm / denominator))
+        total_over_total.append(float(total_norm / denominator))
+        cancellation.append(float(total_norm / (electronic_norm + ionic_norm + 1e-12)))
+    return {
+        "materials": len(total_targets),
+        "electronic_cosine_macro_material": float(electronic["cosine_macro_material"]),
+        "ionic_cosine_macro_material": float(ionic["cosine_macro_material"]),
+        "predicted_electronic_norm_over_true_total_macro": sum(electronic_over_total) / len(electronic_over_total),
+        "predicted_ionic_norm_over_true_total_macro": sum(ionic_over_total) / len(ionic_over_total),
+        "predicted_total_norm_over_true_total_macro": sum(total_over_total) / len(total_over_total),
+        "predicted_cancellation_ratio_macro": sum(cancellation) / len(cancellation),
+        "total_norm_denominator_floor_c_per_m2": total_floor,
+    }
+
+
+def _oracle_operator_policy(name: str, model_policy: str) -> str:
+    """Name the operator used by an oracle experiment without inference.
+
+    Oracle output is consumed by several reports, so this explicit mapping is
+    preferable to asking a downstream reader to recover the policy from a
+    historical experiment name.  ``pred_all_auto`` is intentionally labelled
+    with the model configuration: its ionic prediction was produced by the
+    response module rather than by a new oracle solve in this evaluator.
+    """
+    if name.endswith("_regularized"):
+        return "regularized"
+    if name.endswith("_exact"):
+        return "exact"
+    if name.endswith("_auto") and name != "pred_all_auto":
+        return "auto"
+    if name == "pred_all_auto":
+        return f"model_configured:{model_policy}"
+    raise ValueError(f"Unknown oracle experiment name: {name}")
+
+
+def _ionic_metric_bundle(
+    predictions: Iterable[torch.Tensor],
+    targets: Iterable[torch.Tensor],
+    floor: float,
+) -> dict[str, float | int | str]:
+    """Emit canonical ionic aggregation plus explicit legacy micro aliases."""
+    prediction_rows = list(predictions)
+    target_rows = list(targets)
+    canonical = ionic_aggregate_metrics(prediction_rows, target_rows, floor)
+    # ``pair_metrics`` is preserved for readers of schema <=2.  Its cosine and
+    # amplitude keys are duplicated by the documented micro aliases in the
+    # canonical block, never used as the canonical material-balanced result.
+    legacy_micro = pair_metrics(torch.stack(prediction_rows), torch.stack(target_rows), floor)
+    return {
+        **legacy_micro,
+        **canonical,
+        "legacy_metric_contract": "directional_cosine and stabilized_amplitude_ratio are micro-component aliases; use ionic_* names for canonical comparisons",
+    }
+
+
 @dataclass
 class FactorAccumulator:
     name: str
@@ -261,8 +453,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--material-ids-file", type=Path)
+    parser.add_argument("--splits-file", type=Path, help="Frozen explicit split JSON used for this evaluation")
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--device",
+        help="Optional execution-device override (for example cpu); it does not alter checkpoint physics or selection.",
+    )
     parser.add_argument("--soft-mode-count", type=int, default=3)
     parser.add_argument(
         "--delta-grid",
@@ -278,14 +475,21 @@ def main() -> None:
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cfg = checkpoint["config"]
-    device = device_from_config(str(cfg["device"]))
+    checkpoint_device = str(cfg["device"])
+    device = device_from_config(str(args.device or checkpoint_device))
     records = load_gmtnet_records(cfg["data_root"])
-    global_splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
-    ids_path = args.material_ids_file or Path(str(cfg.get("material_ids_file", "")))
-    if not ids_path.is_file():
-        raise FileNotFoundError("A persisted audited material-ID file is required for DFPT evaluation")
-    selected_ids = _read_material_ids(ids_path)
-    splits = restrict_splits_to_material_ids(global_splits, selected_ids, "global")
+    if args.splits_file is not None and args.material_ids_file is not None:
+        raise ValueError("--splits-file and --material-ids-file are mutually exclusive")
+    split_path = args.splits_file or Path(str(cfg.get("splits_file", "")))
+    if split_path.is_file():
+        splits = load_explicit_splits(split_path, {str(record["JARVIS_ID"]) for record in records})
+    else:
+        global_splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
+        ids_path = args.material_ids_file or Path(str(cfg.get("material_ids_file", "")))
+        if not ids_path.is_file():
+            raise FileNotFoundError("A persisted audited material-ID file or frozen split file is required for DFPT evaluation")
+        selected_ids = _read_material_ids(ids_path)
+        splits = restrict_splits_to_material_ids(global_splits, selected_ids, "global")
     split_ids = splits[args.split]
     if not split_ids:
         raise ValueError(f"The audited DFPT {args.split} split is empty")
@@ -299,6 +503,7 @@ def main() -> None:
         processed_dir=cfg["processed_dir"],
         cache_key=cache_key,
         dfpt_dir=cfg.get("jarvis_dfpt_dir"),
+        strain_completion_dir=cfg.get("jarvis_strain_completion_dir"),
     )
     model = model_from_config(cfg).to(device)
     model.load_state_dict(checkpoint["model"])
@@ -308,6 +513,7 @@ def main() -> None:
         "born_charge",
         "force_constant",
         "internal_strain",
+        "internal_strain_full",
         "ionic_piezo",
         "electronic_piezo",
         "total_piezo",
@@ -315,7 +521,8 @@ def main() -> None:
     )
     accumulators = {name: FactorAccumulator(name) for name in factor_names}
     rows: list[dict[str, float | int | str]] = []
-    total_predictions, total_targets, electronic_predictions = [], [], []
+    total_predictions, total_targets = [], []
+    electronic_predictions, ionic_predictions, ionic_targets = [], [], []
     oracle_names = (
         "pred_all_auto",
         "true_z_true_phi_pred_lambda_auto",
@@ -339,6 +546,8 @@ def main() -> None:
     delta_targets: dict[str, list[torch.Tensor]] = {
         stratum: [] for stratum in ("all", "stable", "unstable")
     }
+    completed_oracle_values: list[torch.Tensor] = []
+    completed_oracle_targets: list[torch.Tensor] = []
 
     with torch.inference_mode():
         for index in range(len(dataset)):
@@ -377,6 +586,9 @@ def main() -> None:
                 "material_id": material_id,
                 "atoms": graph.num_nodes,
                 "printed_internal_strain_blocks": int(graph.dfpt_internal_strain_count.item()),
+                "symmetry_completed_internal_strain": int(
+                    bool(graph.internal_strain_full_mask)
+                ),
             }
             true_born = graph.y_born
             predicted_lambda = components.internal_strain
@@ -463,10 +675,30 @@ def main() -> None:
                 metrics = accumulators[name].add(prediction, target)
                 for key, value in metrics.items():
                     row[f"{name}_{key}"] = value
+            if bool(graph.internal_strain_full_mask):
+                completed_target = graph.dfpt_internal_strain_full
+                completed_metrics = accumulators["internal_strain_full"].add(
+                    predicted_lambda, completed_target
+                )
+                for key, value in completed_metrics.items():
+                    row[f"internal_strain_full_{key}"] = value
+                completed_oracle_values.append(
+                    ionic_piezo_from_factors(
+                        model.response,
+                        true_born,
+                        force_target,
+                        completed_target,
+                        volume,
+                        "regularized",
+                    ).detach().cpu()
+                )
+                completed_oracle_targets.append(ionic_target.detach().cpu())
             rows.append(row)
             total_predictions.append(components.tensor.cpu())
             total_targets.append(graph.y.cpu())
             electronic_predictions.append(components.electronic_piezo.cpu())
+            ionic_predictions.append(components.ionic_piezo.cpu())
+            ionic_targets.append(graph.y_ionic_piezo.cpu())
 
     total_prediction = torch.cat(total_predictions)
     total_target = torch.cat(total_targets)
@@ -478,47 +710,71 @@ def main() -> None:
             oracle_summary[stratum] = {"materials": 0}
             delta_summary[stratum] = {"materials": 0}
             continue
-        target = torch.stack(oracle_targets[stratum])
+        target_rows = oracle_targets[stratum]
         oracle_summary[stratum] = {
-            "materials": target.shape[0],
+            "materials": len(target_rows),
+            "canonical_operator_policy": "regularized",
+            "canonical_experiment": "true_z_true_phi_pred_lambda_regularized",
             "experiments": {
-                name: pair_metrics(
-                    torch.stack(values), target, FACTOR_FLOORS["ionic_piezo"]
-                )
+                name: {
+                    **_ionic_metric_bundle(values, target_rows, FACTOR_FLOORS["ionic_piezo"]),
+                    "operator_policy": _oracle_operator_policy(name, model.response.optical_solve_policy),
+                }
                 for name, values in oracle_values[stratum].items()
                 if values and torch.isfinite(torch.stack(values)).all()
             },
         }
-        delta_target = torch.stack(delta_targets[stratum])
+        canonical_values = oracle_values[stratum]["true_z_true_phi_pred_lambda_regularized"]
+        oracle_summary[stratum]["canonical_metrics"] = _ionic_metric_bundle(
+            canonical_values, target_rows, FACTOR_FLOORS["ionic_piezo"]
+        )
+        delta_target_rows = delta_targets[stratum]
         delta_summary[stratum] = {
-            "materials": delta_target.shape[0],
+            "materials": len(delta_target_rows),
+            "operator_policy": "regularized",
             "regularized_true_z_true_phi_pred_lambda": {
-                str(delta): pair_metrics(
-                    torch.stack(delta_values[stratum][delta]),
-                    delta_target,
-                    FACTOR_FLOORS["ionic_piezo"],
-                )
+                str(delta): {
+                    **_ionic_metric_bundle(
+                        delta_values[stratum][delta], delta_target_rows, FACTOR_FLOORS["ionic_piezo"]
+                    ),
+                    "regularization_eV_per_A2": delta,
+                }
                 for delta in delta_grid
             },
         }
 
     summary: dict[str, object] = {
-        "schema": 2,
+        "schema": 3,
         "checkpoint": str(args.checkpoint.resolve()),
         "checkpoint_epoch": int(checkpoint["epoch"]),
+        "checkpoint_declared_device": checkpoint_device,
+        "runtime_device": str(device),
         "split": args.split,
         "formula_disjoint": True,
         "material_count": len(dataset),
         "material_ids": [str(record["JARVIS_ID"]) for record in dataset.records],
         "factor_denominator_floors": FACTOR_FLOORS,
-        "factors": {name: accumulator.summary() for name, accumulator in accumulators.items()},
+        "factors": {
+            name: accumulator.summary()
+            for name, accumulator in accumulators.items()
+            if accumulator.predictions
+        },
         "total_response_skill": response_tensor_skill(total_prediction, total_target),
         "electronic_only_response_skill": response_tensor_skill(electronic_prediction, total_target),
         "zero_response_skill": response_tensor_skill(torch.zeros_like(total_target), total_target),
+        "ionic_response_aggregation": _ionic_metric_bundle(
+            ionic_predictions, ionic_targets, FACTOR_FLOORS["ionic_piezo"]
+        ),
+        "response_decomposition": response_decomposition_metrics(
+            electronic_predictions, ionic_predictions, total_targets, ionic_targets
+        ),
         "coverage": {
             "atoms": sum(int(row["atoms"]) for row in rows),
             "printed_internal_strain_blocks": sum(int(row["printed_internal_strain_blocks"]) for row in rows),
             "mean_printed_blocks_per_material": _mean_rows(rows, "printed_internal_strain_blocks"),
+            "strict_symmetry_completed_materials": sum(
+                int(row["symmetry_completed_internal_strain"]) for row in rows
+            ),
         },
         "stability": {
             "cutoff_eV_per_A2": model.response.optical_stability_cutoff,
@@ -536,15 +792,26 @@ def main() -> None:
             )
         },
         "oracle_factor_replacement": oracle_summary,
+        "strict_symmetry_completed_lambda_oracle": (
+            {
+                "materials": len(completed_oracle_targets),
+                "operator_policy": "regularized",
+                "metrics": _ionic_metric_bundle(
+                    completed_oracle_values, completed_oracle_targets, FACTOR_FLOORS["ionic_piezo"]
+                ),
+            }
+            if completed_oracle_targets else {"materials": 0}
+        ),
         "delta_sensitivity": delta_summary,
         "unavailable_oracles": {
-            "true_lambda": (
-                "The public archives expose only symmetry-inequivalent OUTCAR internal-strain "
-                "blocks, not a complete atom-coordinate Lambda. Missing blocks are not padded, "
-                "zero-filled, or symmetry-fabricated."
+            "true_lambda_all_materials": (
+                "A complete Lambda is unavailable for the full split. Strict space-group plus "
+                "acoustic-null completion is reported only for samples whose printed blocks "
+                "uniquely determine the invariant tensor and pass redundant-block and ionic "
+                "closure gates; all other samples remain masked."
             ),
-            "modewise_strain_coupling_target": "Requires the unavailable complete true Lambda.",
-            "true_factor_exact_upper_bound": "Requires the unavailable complete true Lambda.",
+            "modewise_strain_coupling_target_all_materials": "Requires complete true Lambda for every material.",
+            "true_factor_exact_upper_bound_all_materials": "Requires complete true Lambda for every material.",
         },
     }
     output = args.output or args.checkpoint.parent / f"dfpt_factor_evaluation_{args.split}.json"
@@ -552,7 +819,9 @@ def main() -> None:
     output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     csv_path = output.with_suffix(".csv")
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(
+            handle, fieldnames=sorted({key for row in rows for key in row})
+        )
         writer.writeheader()
         writer.writerows(rows)
     print(json.dumps(summary, indent=2))

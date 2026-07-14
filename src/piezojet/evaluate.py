@@ -75,7 +75,10 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--max-equivalence-samples", type=int, default=32)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.max_equivalence_samples < 1:
+        raise ValueError("--max-equivalence-samples must be at least 1")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cfg = checkpoint["config"]
     device = device_from_config(cfg["device"])
@@ -177,7 +180,8 @@ def main() -> None:
     metrics["sketch_loss"] = float(sketch)
     metrics["full_peak_cuda_bytes"] = int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
     metrics["sketch_peak_cuda_bytes"] = int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
-    output = Path(cfg["output_dir"]) / f"evaluation_{args.split}.json"
+    output = args.output or Path(cfg["output_dir"]) / f"evaluation_{args.split}.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(metrics, indent=2))
 

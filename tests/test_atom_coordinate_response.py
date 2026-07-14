@@ -103,3 +103,35 @@ def test_learned_equivariant_strain_map_changes_lambda_without_rewriting_phi():
     assert torch.allclose(before.force_constants_flat, after.force_constants_flat)
     assert not torch.allclose(before.internal_strain, after.internal_strain)
     assert after.internal_strain.sum(dim=0).abs().max() < 1e-5
+
+
+def test_local_star_cross_bond_energy_expands_hessian_without_breaking_constraints():
+    torch.manual_seed(53)
+    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[17], 5.0, 32)
+    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+    model = PiezoJet(
+        cutoff=5.0,
+        num_blocks=1,
+        factor_architecture="energy_learned_star",
+        star_rank=2,
+    ).eval()
+    with torch.no_grad():
+        model.energy_factors.node_star_stiffness[-1].bias.copy_(
+            torch.tensor([0.2, -0.1])
+        )
+        model.energy_factors.edge_star_map[-1].bias[1::4] = 0.3
+        factors = model.predict_factors(graph)
+    atoms = graph.num_nodes
+    blocks = factors.force_constants_flat.reshape(atoms, atoms, 3, 3)
+    matrix = blocks.permute(0, 2, 1, 3).reshape(3 * atoms, 3 * atoms)
+    assert torch.allclose(matrix, matrix.T, atol=2e-5, rtol=2e-5)
+    assert matrix.reshape(atoms, 3, atoms, 3).sum(dim=2).abs().max() < 5e-5
+    assert factors.internal_strain.sum(dim=0).abs().max() < 5e-5
+    cross_block_asymmetry = (blocks - blocks.transpose(-1, -2)).abs().amax(dim=(-1, -2))
+    assert cross_block_asymmetry.max() > 1e-5
+    assert torch.allclose(
+        factors.strain_curvature,
+        factors.strain_curvature.transpose(-1, -2),
+        atol=1e-5,
+        rtol=1e-5,
+    )

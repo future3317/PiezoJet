@@ -58,3 +58,13 @@ def test_static_dielectric_and_susceptibility_definitions():
     static = static_dielectric(electronic, ionic)
     assert torch.allclose(static, electronic + ionic)
     assert torch.allclose(susceptibility_from_relative_permittivity(static), ionic)
+
+
+def test_linear_response_background_returns_relative_permittivity():
+    from piezojet.model import LinearResponseBackground
+
+    background = LinearResponseBackground(context_dim=4)
+    context = torch.zeros(2, 4)
+    _, epsilon_relative = background(context)
+    eigenvalues = torch.linalg.eigvalsh(epsilon_relative)
+    assert torch.all(eigenvalues > 1.0)
