@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "frozen": true,
+  "policy": "formula-disjoint, deterministic stratified panel; do not reassign future strict completions into test or validation",
+  "seed": 42,
+  "source_completion_manifest": "data\\processed\\jarvis_strain_completion_v4\\manifest.json",
+  "splits": {
+    "train": [
+      "JVASP-10479",
+      "JVASP-10480",
+      "JVASP-10675",
+      "JVASP-11133",
+      "JVASP-1192",
+      "JVASP-12983",
+      "JVASP-1312",
+      "JVASP-1957",
+      "JVASP-19629",
+      "JVASP-20202",
+      "JVASP-22445",
+      "JVASP-22518",
+      "JVASP-22529",
+      "JVASP-22715",
+      "JVASP-25051",
+      "JVASP-25095",
+      "JVASP-25286",
+      "JVASP-25288",
+      "JVASP-25340",
+      "JVASP-25416",
+      "JVASP-266",
+      "JVASP-272",
+      "JVASP-29317",
+      "JVASP-29556",
+      "JVASP-29752",
+      "JVASP-30472",
+      "JVASP-31168",
+      "JVASP-3183",
+      "JVASP-32150",
+      "JVASP-32828",
+      "JVASP-34228",
+      "JVASP-34262",
+      "JVASP-35109",
+      "JVASP-35668",
+      "JVASP-35756",
+      "JVASP-36119",
+      "JVASP-36165",
+      "JVASP-36274",
+      "JVASP-36322",
+      "JVASP-36365",
+      "JVASP-36402",
+      "JVASP-36403",
+      "JVASP-36873",
+      "JVASP-37017",
+      "JVASP-3726",
+      "JVASP-38",
+      "JVASP-3942",
+      "JVASP-40811",
+      "JVASP-56261",
+      "JVASP-56488",
+      "JVASP-56593",
+      "JVASP-56798",
+      "JVASP-57746",
+      "JVASP-58260",
+      "JVASP-58345",
+      "JVASP-66109",
+      "JVASP-7630",
+      "JVASP-7835",
+      "JVASP-7844",
+      "JVASP-78629",
+      "JVASP-78630",
+      "JVASP-8108",
+      "JVASP-8119",
+      "JVASP-9085",
+      "JVASP-9089",
+      "JVASP-9097",
+      "JVASP-9152",
+      "JVASP-9444",
+      "JVASP-96"
+    ],
+    "val": [
+      "JVASP-1756",
+      "JVASP-35748",
+      "JVASP-3987",
+      "JVASP-4364",
+      "JVASP-54667",
+      "JVASP-54668",
+      "JVASP-66430",
+      "JVASP-8185",
+      "JVASP-8554",
+      "JVASP-95"
+    ],
+    "test": [
+      "JVASP-10190",
+      "JVASP-1372",
+      "JVASP-1963",
+      "JVASP-22602",
+      "JVASP-29560",
+      "JVASP-33066",
+      "JVASP-36023",
+      "JVASP-36413",
+      "JVASP-37833",
+      "JVASP-50131",
+      "JVASP-50160",
+      "JVASP-51150",
+      "JVASP-54761",
+      "JVASP-5845",
+      "JVASP-7774",
+      "JVASP-7833",
+      "JVASP-79259",
+      "JVASP-8047",
+      "JVASP-8757",
+      "JVASP-8814"
+    ]
+  },
+  "summary": {
+    "train": {
+      "materials": 69,
+      "formulas": 64,
+      "response_bins": {
+        "1": 13,
+        "2": 16,
+        "4": 11,
+        "0": 15,
+        "3": 14
+      },
+      "crystal_systems": {
+        "hexagonal": 14,
+        "cubic": 39,
+        "monoclinic": 3,
+        "orthorhombic": 2,
+        "tetragonal": 11
+      },
+      "polar": 6,
+      "negative_optical_modes": 4,
+      "atom_count_min_max": [
+        4,
+        28
+      ]
+    },
+    "val": {
+      "materials": 10,
+      "formulas": 9,
+      "response_bins": {
+        "1": 1,
+        "3": 2,
+        "0": 2,
+        "2": 3,
+        "4": 2
+      },
+      "crystal_systems": {
+        "cubic": 2,
+        "hexagonal": 3,
+        "orthorhombic": 1,
+        "monoclinic": 1,
+        "trigonal": 2,
+        "tetragonal": 1
+      },
+      "polar": 5,
+      "negative_optical_modes": 1,
+      "atom_count_min_max": [
+        4,
+        20
+      ]
+    },
+    "test": {
+      "materials": 20,
+      "formulas": 20,
+      "response_bins": {
+        "1": 4,
+        "4": 4,
+        "2": 4,
+        "0": 4,
+        "3": 4
+      },
+      "crystal_systems": {
+        "hexagonal": 4,
+        "cubic": 4,
+        "trigonal": 2,
+        "orthorhombic": 4,
+        "triclinic": 1,
+        "tetragonal": 3,
+        "monoclinic": 2
+      },
+      "polar": 9,
+      "negative_optical_modes": 6,
+      "atom_count_min_max": [
+        3,
+        24
+      ]
+    }
+  }
+}

@@ -1,7 +1,20 @@
 {
   "schema": 2,
-  "requested": 128,
-  "cached": 128,
-  "failed": [],
+  "requested": 250,
+  "cached": 247,
+  "failed": [
+    {
+      "jid": "JVASP-51854",
+      "error": "JVASP-51854: malformed OUTCAR internal-strain block"
+    },
+    {
+      "jid": "JVASP-53954",
+      "error": "JVASP-53954: malformed OUTCAR internal-strain block"
+    },
+    {
+      "jid": "JVASP-8682",
+      "error": "JVASP-8682: malformed OUTCAR internal-strain block"
+    }
+  ],
   "source": "JARVIS public raw_files / DFPT archives"
 }
