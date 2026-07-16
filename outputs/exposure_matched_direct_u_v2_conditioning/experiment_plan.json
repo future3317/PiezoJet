@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "experiment_id": "exposure_matched_direct_u_v2_conditioning",
+  "driver": "scripts/run_exposure_matched_replay.ps1",
+  "passes": [1, 5, 10, 20],
+  "seeds": [42, 7, 1729],
+  "conditions": ["physical", "matched_direct_total"],
+  "config": "config.yaml",
+  "split": "data/processed/full_corpus_multitask_train149_v1.json",
+  "checkpoint_selection": "validation_loss_only",
+  "frozen_validation_count": 10,
+  "frozen_test_count": 20,
+  "interpretation": "Physical direct-U learning and the isolated macro-only matched control are separate registered experiments; the control cannot support an ionic-factor claim.",
+  "registration_note": "The replay began before automatic ledger hooks were added. This immutable plan was reconstructed from the running driver arguments without changing the process or selecting a result."
+}

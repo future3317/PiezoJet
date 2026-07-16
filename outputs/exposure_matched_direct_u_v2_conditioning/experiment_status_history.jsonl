@@ -1,0 +1,2 @@
+{"time_utc":"2026-07-15T17:53:07Z","status":"running","detail":"PID 175612; registered passes=1,5,10,20 seeds=42,7,1729; retroactively indexed without modifying the active run"}
+{"time_utc":"2026-07-15T19:34:46.4621056Z","status":"completed","detail":"watched PID 175612 exited; physical evaluations=12/12, direct evaluations=12/12"}
