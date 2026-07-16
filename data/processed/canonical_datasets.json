@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "policy": "One canonical role per maintained workflow. Versioned directories are immutable provenance, not runtime fallbacks.",
+  "roles": {
+    "gmtnet_source": "E:\\DATA\\PiezoJet\\raw\\gmtnet",
+    "jarvis_dfpt": "E:\\DATA\\PiezoJet\\processed\\jarvis_dfpt_v9_full_public",
+    "jarvis_raw_index": "E:\\DATA\\PiezoJet\\jarvis_raw_index",
+    "jarvis_dft3d_index": "E:\\DATA\\PiezoJet\\jarvis_dft3d_index",
+    "jarvis_dfpt_quarantine": "E:\\DATA\\PiezoJet\\raw\\jarvis_dfpt_v9_quarantine",
+    "strict_internal_strain": "E:\\DATA\\PiezoJet\\processed\\jarvis_strain_completion_v10_zero_dimensional_fix",
+    "strict_split": "data/processed/strict_completion_benchmark_train_v10_full_public.json",
+    "multitask_split": "data/processed/full_corpus_multitask_train1603_v1.json",
+    "elastic_auxiliary": "E:\\DATA\\PiezoJet\\processed\\jarvis_elastic_auxiliary_v2_reynolds\\accepted_targets_gpa.pt",
+    "materials_project_auxiliary": "E:\\DATA\\PiezoJet\\external\\materials_project_summary_v1\\materials_project_summary.jsonl"
+  },
+  "coverage": {
+    "public_archives_accounted": 4998,
+    "parsed_dfpt_payloads": 4995,
+    "raw_quarantines": 3,
+    "strict_complete": 1638,
+    "strict_train": 1603,
+    "frozen_validation": 10,
+    "frozen_test": 20
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "schema": 2,
+  "sources": [
+    "data\\processed\\jarvis_strain_completion_v2",
+    "outputs\\jarvis_dfpt_expansion_v1\\strict_completion"
+  ],
+  "accepted": 28,
+  "policy": "merged only schema-validated, accepted strict completions; duplicate tensors must agree exactly to tolerance",
+  "material_ids": [
+    "JVASP-12983",
+    "JVASP-22518",
+    "JVASP-22529",
+    "JVASP-22715",
+    "JVASP-266",
+    "JVASP-29556",
+    "JVASP-29560",
+    "JVASP-29752",
+    "JVASP-30472",
+    "JVASP-3183",
+    "JVASP-33066",
+    "JVASP-35109",
+    "JVASP-35756",
+    "JVASP-36023",
+    "JVASP-3726",
+    "JVASP-37833",
+    "JVASP-38",
+    "JVASP-3942",
+    "JVASP-3987",
+    "JVASP-4364",
+    "JVASP-50131",
+    "JVASP-54761",
+    "JVASP-57746",
+    "JVASP-5845",
+    "JVASP-8108",
+    "JVASP-8119",
+    "JVASP-8554",
+    "JVASP-9444"
+  ]
+}

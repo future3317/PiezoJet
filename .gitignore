@@ -2,8 +2,18 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 *.egg-info/
+.tmp/
+.paper_work/
 
-outputs/
+# Experiment payloads stay local/data-release scoped, but the lightweight
+# ledger and registered-plan metadata are versioned for auditability.
+outputs/*
+!outputs/EXPERIMENT_REGISTRY.json
+!outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl
+!outputs/exposure_matched_direct_u_v2_conditioning/
+outputs/exposure_matched_direct_u_v2_conditioning/*
+!outputs/exposure_matched_direct_u_v2_conditioning/experiment_plan.json
+!outputs/exposure_matched_direct_u_v2_conditioning/experiment_status_history.jsonl
 data/raw/*
 !data/raw/gmtnet/
 data/raw/gmtnet/*
