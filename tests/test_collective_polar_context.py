@@ -37,8 +37,8 @@ def test_tensorial_collective_operator_preserves_rotation_equivariance():
     model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
     with torch.no_grad():
         features, transformed_features = model.encode(graph), model.encode(_rotated(graph, rotation))
-        direct = model.head(features, graph.batch)
-        transformed_direct = model.head(transformed_features, graph.batch)
+        direct = model.electronic_head(features, graph.batch)
+        transformed_direct = model.electronic_head(transformed_features, graph.batch)
         _, operator = model.global_context(graph, graph.batch, model.local_polar_mode(features), return_operator=True)
         _, transformed_operator = model.global_context(
             _rotated(graph, rotation), graph.batch, model.local_polar_mode(transformed_features), return_operator=True

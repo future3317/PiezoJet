@@ -12,14 +12,15 @@ import json
 from pathlib import Path
 
 import torch
-import yaml
 from torch import nn
 from torch_geometric.loader import DataLoader
 from torch_geometric.utils import scatter
 
 from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .model import model_from_config
-from .train import device_from_config, seed_everything
+from .pretraining_protocol import provenance
+from .project_config import load_project_config
+from .train import device_from_config, load_explicit_splits, seed_everything
 
 
 class StructurePretrainingHead(nn.Module):
@@ -54,22 +55,39 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--updates", type=int, default=None, help="Exact optimizer-update budget; takes precedence over --epochs.")
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--splits-file", type=Path,
+        help="Frozen train/val/test panel. Production pretraining uses its train IDs only.",
+    )
     parser.add_argument("--max-samples", type=int, default=None, help="Bounded smoke-run only; the production pipeline uses all structures.")
     args = parser.parse_args()
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    cfg = load_project_config(args.config)
     epochs = int(cfg["pretrain_epochs"] if args.epochs is None else args.epochs)
     output = Path(cfg["pretraining_output_dir"] if args.output_dir is None else args.output_dir)
     if epochs < 1:
         raise ValueError("Pretraining epochs must be positive")
+    if args.updates is not None and args.updates < 1:
+        raise ValueError("--updates must be positive")
     seed_everything(int(cfg["seed"]))
     device = device_from_config(cfg["device"])
     records = load_gmtnet_records(cfg["data_root"])
-    all_ids = sorted(str(record["JARVIS_ID"]) for record in records)
+    split_file = args.splits_file or (
+        Path(cfg["pretrain_splits_file"]) if cfg.get("pretrain_splits_file") else None
+    )
+    if split_file is None or not split_file.is_file():
+        raise ValueError(
+            "Inductive production pretraining requires --splits-file (or pretrain_splits_file in config)."
+        )
+    splits = load_explicit_splits(split_file, {str(record["JARVIS_ID"]) for record in records})
+    all_ids = sorted(splits["train"])
+    pretraining_provenance = provenance(all_ids, split_file, "train")
     if args.max_samples is not None:
         if args.max_samples < 1:
             raise ValueError("--max-samples must be positive")
         all_ids = all_ids[: args.max_samples]
+        pretraining_provenance = provenance(all_ids, split_file, "train")
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
     dataset = PiezoDataset(records, all_ids, float(cfg["cutoff"]), int(cfg["max_neighbors"]), processed_dir=cfg["processed_dir"], cache_key=cache_key, project_targets=False)
     loader_options = {"num_workers": int(cfg["num_workers"]), "pin_memory": device.type == "cuda"}
@@ -77,11 +95,12 @@ def main() -> None:
         loader_options["persistent_workers"] = True
     loader = DataLoader(dataset, batch_size=int(cfg["batch_size"]), shuffle=True, **loader_options)
     model = model_from_config(cfg).to(device)
-    head = StructurePretrainingHead(model.encoder.input[-2].out_features, model.encoder.channels).to(device)
+    head = StructurePretrainingHead(model.encoder.scalar_dim, model.encoder.channels).to(device)
     optimizer = torch.optim.AdamW(list(model.encoder.parameters()) + list(head.parameters()), lr=float(cfg["pretrain_learning_rate"]), weight_decay=float(cfg["weight_decay"]))
     output.mkdir(parents=True, exist_ok=True)
     best = float("inf")
     history = []
+    updates_completed = 0
     for epoch in range(1, epochs + 1):
         model.train()
         head.train()
@@ -98,20 +117,26 @@ def main() -> None:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(model.encoder.parameters()) + list(head.parameters()), max_norm=10.0)
             optimizer.step()
+            updates_completed += 1
             total += float(loss.detach()) * batch.num_graphs
             count += batch.num_graphs
+            if args.updates is not None and updates_completed >= args.updates:
+                break
         value = total / max(count, 1)
-        history.append({"epoch": epoch, "loss": value})
+        history.append({"epoch": epoch, "loss": value, "optimizer_updates": updates_completed})
         payload = {
             "encoder": model.encoder.state_dict(), "config": cfg, "epoch": epoch, "loss": value,
             "architecture": "cartesian_local_environment_v1",
             "objective": "masked_species_plus_translation_free_coordinate_denoising",
+            "pretraining_provenance": pretraining_provenance,
         }
         torch.save(payload, output / "last_encoder.pt")
         if value < best:
             best = value
             torch.save(payload, output / "best_encoder.pt")
         print(f"pretrain epoch={epoch} loss={value:.6g}")
+        if args.updates is not None and updates_completed >= args.updates:
+            break
     (output / "history.json").write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
 
 

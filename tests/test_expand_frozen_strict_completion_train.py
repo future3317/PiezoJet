@@ -1,5 +1,3 @@
-import pytest
-
 from piezojet.expand_frozen_strict_completion_train import expand_frozen_train_panel
 
 
@@ -12,9 +10,10 @@ def test_expand_preserves_frozen_panels_and_adds_only_new_train_ids():
     assert result["added_train_ids"] == ["d", "e"]
 
 
-def test_expand_rejects_new_formula_that_leaks_into_frozen_panel():
+def test_expand_quarantines_new_formula_that_leaks_into_frozen_panel():
     base = {"splits": {"train": ["a"], "val": ["b"], "test": ["c"]}}
-    with pytest.raises(ValueError, match="overlap frozen"):
-        expand_frozen_train_panel(
-            base, {"a", "d"}, {"a": "A", "b": "B", "c": "C", "d": "B"}, "new.json"
-        )
+    result = expand_frozen_train_panel(
+        base, {"a", "d"}, {"a": "A", "b": "B", "c": "C", "d": "B"}, "new.json"
+    )
+    assert result["splits"] == base["splits"]
+    assert result["excluded_frozen_formula_ids"] == ["d"]

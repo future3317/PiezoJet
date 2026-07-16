@@ -7,10 +7,11 @@ import json
 from pathlib import Path
 
 import torch
-import yaml
 
 from piezojet.data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
-from piezojet.metrics import response_tensor_skill
+from piezojet.metrics import material_bootstrap_confidence_interval, response_tensor_skill
+from piezojet.project_config import load_project_config
+from piezojet.train import load_explicit_splits
 
 
 def _metrics(prediction: torch.Tensor, target: torch.Tensor, floor: float) -> dict[str, float | int | dict[str, float | int]]:
@@ -29,10 +30,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--splits-file", type=Path, help="Frozen explicit split used by every matched baseline")
+    parser.add_argument("--bootstrap-resamples", type=int, default=2000)
+    parser.add_argument("--bootstrap-seed", type=int, default=20270715)
     args = parser.parse_args()
-    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    config = load_project_config(args.config)
+    if args.bootstrap_resamples < 1:
+        raise ValueError("--bootstrap-resamples must be positive")
     records = load_gmtnet_records(config["data_root"])
-    splits = create_or_load_splits(records, config["processed_dir"], int(config["seed"]))
+    splits = (
+        load_explicit_splits(args.splits_file, {str(record["JARVIS_ID"]) for record in records})
+        if args.splits_file is not None
+        else create_or_load_splits(records, config["processed_dir"], int(config["seed"]))
+    )
     cache_key = graph_cache_key(records, config["cutoff"], config["max_neighbors"])
     train_set = PiezoDataset(records, splits["train"], config["cutoff"], config["max_neighbors"], processed_dir=config["processed_dir"], cache_key=cache_key)
     test_set = PiezoDataset(records, splits["test"], config["cutoff"], config["max_neighbors"], processed_dir=config["processed_dir"], cache_key=cache_key)
@@ -41,11 +51,27 @@ def main() -> None:
     train_voigt = torch.cat([train_set[index].y_voigt for index in range(len(train_set))])
     scale = torch.sqrt(train_voigt.square().mean())
     floor = float(scale * 0.05 * (18.0 ** 0.5))
+    def response_ci(prediction: torch.Tensor) -> dict[str, float | int | str]:
+        return material_bootstrap_confidence_interval(
+            list(prediction),
+            list(test),
+            lambda values, labels: response_tensor_skill(
+                torch.stack(values), torch.stack(labels)
+            )["tensor_response_skill_vs_zero"],
+            resamples=args.bootstrap_resamples,
+            seed=args.bootstrap_seed,
+        )
+
+    zero = torch.zeros_like(test)
+    mean = train.mean(dim=0, keepdim=True).expand_as(test)
     result = {
         "split_sizes": {name: len(ids) for name, ids in splits.items()},
+        "split_file": None if args.splits_file is None else str(args.splits_file),
+        "formula_disjoint": args.splits_file is not None,
+        "test_material_ids": splits["test"],
         "equivariance_norm_floor": floor,
-        "zero": _metrics(torch.zeros_like(test), test, floor),
-        "train_mean": _metrics(train.mean(dim=0, keepdim=True).expand_as(test), test, floor),
+        "zero": {**_metrics(zero, test, floor), "response_skill_bootstrap_95": response_ci(zero)},
+        "train_mean": {**_metrics(mean, test, floor), "response_skill_bootstrap_95": response_ci(mean)},
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

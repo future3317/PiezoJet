@@ -15,8 +15,8 @@ from torch_geometric.loader import DataLoader
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
 from .model import model_from_config
 from .metrics import response_tensor_skill, stabilized_relative_residual, tensor_metrics
-from .tensor_ops import cartesian_to_piezo_voigt, rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
-from .train import device_from_config, full_loss, sketch_loss
+from .tensor_ops import rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
+from .train import device_from_config, full_loss
 
 
 def _random_rotation(dtype: torch.dtype, device: torch.device) -> torch.Tensor:
@@ -173,13 +173,7 @@ def main() -> None:
         full = full_loss(model(batch), batch.y, scale)
         metrics["full_loss_seconds"] = time.perf_counter() - start
         metrics["full_loss"] = float(full)
-    start = time.perf_counter()
-    with torch.no_grad():
-        sketch = sketch_loss(model, batch, cartesian_to_piezo_voigt(batch.y))
-    metrics["sketch_loss_seconds"] = time.perf_counter() - start
-    metrics["sketch_loss"] = float(sketch)
     metrics["full_peak_cuda_bytes"] = int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
-    metrics["sketch_peak_cuda_bytes"] = int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
     output = args.output or Path(cfg["output_dir"]) / f"evaluation_{args.split}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")

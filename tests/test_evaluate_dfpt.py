@@ -3,16 +3,21 @@ import torch
 
 from piezojet.evaluate_dfpt import (
     FactorAccumulator,
+    _read_material_ids,
     _oracle_operator_policy,
     clean_force_constant_target,
     ionic_aggregate_metrics,
     ionic_piezo_from_factors,
+    low_rank_displacement_oracle,
     optical_eigensystem,
     pair_metrics,
     replace_printed_internal_strain,
+    response_active_alignment_metrics,
+    response_weighted_log_stiffness_bias,
     response_decomposition_metrics,
     selected_internal_strain,
     soft_mode_metrics,
+    spectrum_regularization_regions,
 )
 from piezojet.model import AtomCoordinateResponsePotential
 from piezojet.tensor_ops import piezo_voigt_to_cartesian
@@ -25,6 +30,12 @@ def test_pair_metrics_reports_zero_baseline_skill_in_physical_units():
     assert perfect["component_mae"] == 0.0
     assert perfect["mae_skill_vs_zero"] == 1.0
     assert zero["mae_skill_vs_zero"] == pytest.approx(0.0)
+
+
+def test_material_id_reader_accepts_windows_utf8_bom(tmp_path):
+    path = tmp_path / "ids.json"
+    path.write_text('["JVASP-1"]', encoding="utf-8-sig")
+    assert _read_material_ids(path) == ["JVASP-1"]
 
 
 def test_factor_accumulator_separates_micro_and_material_macro_metrics():
@@ -84,9 +95,21 @@ def test_response_decomposition_exposes_branch_magnitude_and_cancellation():
 
 
 def test_oracle_operator_policies_are_explicitly_labelled():
-    assert _oracle_operator_policy("true_z_true_phi_pred_lambda_regularized", "auto") == "regularized"
-    assert _oracle_operator_policy("true_z_true_phi_pred_lambda_auto", "regularized") == "auto"
-    assert _oracle_operator_policy("pred_all_auto", "regularized") == "model_configured:regularized"
+    assert _oracle_operator_policy("true_z_true_phi_pred_lambda_regularized", "regularized") == "regularized"
+    assert (
+        _oracle_operator_policy("true_z_true_phi_pred_lambda_exact_true_stable", "regularized")
+        == "exact_true_dfpt_stable_diagnostic"
+    )
+    assert (
+        _oracle_operator_policy("direct_pred_z_pred_u_regularized", "regularized")
+        == "direct_displacement:no_inverse_in_forward"
+    )
+    assert (
+        _oracle_operator_policy(
+            "factorized_pred_z_pred_phi_pred_lambda_regularized", "regularized"
+        )
+        == "model_configured:regularized"
+    )
 
 
 def test_clean_force_constant_target_has_symmetry_and_three_translations():
@@ -135,6 +158,86 @@ def test_optical_eigensystem_removes_translations_and_soft_metrics_are_exact():
     assert metrics["mode_effective_charge_norm_mae"] == pytest.approx(0.0)
 
 
+def test_spectrum_regularization_regions_partition_modes_without_a_zero_crossing_branch():
+    regions = spectrum_regularization_regions(
+        torch.tensor([-0.5, 0.0, 0.9, 1.0, 2.0, 3.0, 10.0]), delta=1.0
+    )
+    assert regions["mode_count"] == 7
+    assert regions["below_delta_count"] == 3
+    assert regions["delta_to_3delta_count"] == 2
+    assert regions["above_3delta_count"] == 2
+    assert sum(
+        float(regions[name])
+        for name in (
+            "below_delta_fraction",
+            "delta_to_3delta_fraction",
+            "above_3delta_fraction",
+        )
+    ) == pytest.approx(1.0)
+
+
+def test_rank_six_displacement_oracle_is_exact_but_does_not_claim_six_phonon_modes():
+    torch.manual_seed(0)
+    displacement = torch.randn(12, 6, dtype=torch.float64)
+    born = torch.randn(4, 3, 3, dtype=torch.float64)
+    oracle = low_rank_displacement_oracle(displacement, born)
+    assert oracle["algebraic_rank_upper_bound"] == 6
+    assert oracle["numerical_rank"] == 6
+    assert oracle["per_rank"]["6"]["displacement_relative_frobenius_error"] < 1e-12
+    assert oracle["per_rank"]["6"]["response_relative_frobenius_error"] < 1e-12
+    assert oracle["per_rank"]["1"]["displacement_relative_frobenius_error"] > 0.0
+    assert "does not imply" in oracle["interpretation"]
+
+
+def test_response_active_alignment_uses_projectors_not_mode_pairing():
+    torch.manual_seed(4)
+    target = torch.randn(12, 6, dtype=torch.float64)
+    # An invertible mixing changes the six columns but preserves their span.
+    mixing = torch.eye(6, dtype=torch.float64)
+    mixing[0, 1] = 0.4
+    prediction = target @ mixing
+    born = torch.randn(4, 3, 3, dtype=torch.float64)
+    metrics = response_active_alignment_metrics(prediction, target, born)
+    assert metrics["displacement_subspace_projector_overlap"] == pytest.approx(
+        1.0, abs=1e-12
+    )
+    assert metrics["displacement_subspace_minimum_principal_cosine"] == pytest.approx(
+        1.0, abs=1e-12
+    )
+    assert metrics["target_displacement_rank"] == 6
+    assert metrics["predicted_displacement_rank"] == 6
+
+
+def test_response_active_alignment_cross_covariance_detects_sign_failure():
+    torch.manual_seed(5)
+    target = torch.randn(9, 6, dtype=torch.float64)
+    born = torch.randn(3, 3, 3, dtype=torch.float64)
+    metrics = response_active_alignment_metrics(-target, target, born)
+    # The coordinate subspace is identical, while the physical cross-covariance
+    # has the wrong sign.  The two diagnostics must not be conflated.
+    assert metrics["displacement_subspace_projector_overlap"] == pytest.approx(1.0)
+    assert metrics["true_charge_cross_covariance_directional_cosine"] == pytest.approx(-1.0)
+    assert metrics["true_charge_cross_covariance_amplitude_ratio"] == pytest.approx(1.0)
+
+
+def test_response_weighted_log_stiffness_bias_uses_true_mode_rayleigh_quotients():
+    values = torch.tensor([0.5, 1.5, 4.0], dtype=torch.float64)
+    target = _two_atom_blocks(values)
+    prediction = _two_atom_blocks(2.0 * values)
+    born = torch.randn(2, 3, 3, dtype=torch.float64)
+    born = born - born.mean(dim=0, keepdim=True)
+    coupling = torch.randn(6, 6, dtype=torch.float64)
+    metrics = response_weighted_log_stiffness_bias(
+        prediction, target, born, coupling, delta=1e-3
+    )
+    assert metrics["mean_log_abs_stiffness_bias"] == pytest.approx(
+        torch.log(torch.tensor(2.0, dtype=torch.float64)).item(), abs=1e-10
+    )
+    assert metrics["response_weighted_mean_log_abs_stiffness_bias"] == pytest.approx(
+        torch.log(torch.tensor(2.0, dtype=torch.float64)).item(), abs=1e-10
+    )
+
+
 def test_printed_lambda_replacement_changes_only_observed_blocks():
     prediction = torch.zeros(3, 3, 3, 3)
     target = torch.arange(18, dtype=torch.float32).reshape(2, 3, 3)
@@ -154,5 +257,8 @@ def test_oracle_ionic_response_uses_declared_exact_operator():
     internal = 0.5 * (internal + internal.transpose(-1, -2))
     internal = internal - internal.mean(dim=0, keepdim=True)
     exact = ionic_piezo_from_factors(response, born, blocks, internal, 10.0, "exact")
-    auto = ionic_piezo_from_factors(response, born, blocks, internal, 10.0, "auto")
-    assert torch.allclose(exact, auto, atol=1e-6, rtol=1e-6)
+    regularized = ionic_piezo_from_factors(
+        response, born, blocks, internal, 10.0, "regularized"
+    )
+    assert torch.isfinite(exact).all()
+    assert torch.isfinite(regularized).all()

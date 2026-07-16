@@ -31,3 +31,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+filterwarnings = [
+  "error",
+  "ignore:`torch\\.jit\\.script` is deprecated.*:DeprecationWarning",
+  "ignore:The TorchScript type system doesn't support instance-level annotations.*:UserWarning",
+  "ignore:displacements argument in __init__ will be deprecated.*:DeprecationWarning",
+  "ignore:forces argument in __init__ will be deprecated.*:DeprecationWarning",
+]

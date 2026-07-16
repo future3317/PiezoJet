@@ -56,6 +56,8 @@ def _failure_reasons(audit: dict) -> list[str]:
     if "error" in audit:
         return ["audit_error"]
     reasons = []
+    if not bool(audit.get("source_internal_strain_block_parse_complete", True)):
+        reasons.append("incomplete_source_block_parse")
     if not bool(audit.get("uniquely_determined", False)):
         reasons.append("not_uniquely_identifiable")
     if float(audit.get("maximum_mapping_error_angstrom", float("inf"))) > 2e-5:
@@ -67,6 +69,9 @@ def _failure_reasons(audit: dict) -> list[str]:
         reasons.append("redundant_block")
     if float(audit.get("ionic_closure_relative_error", float("inf"))) > 5e-2:
         reasons.append("ionic_closure")
+    stable_exact = audit.get("stable_exact_ionic_closure_relative_error")
+    if stable_exact is not None and float(stable_exact) > 5e-2:
+        reasons.append("stable_exact_ionic_closure")
     return reasons or ["unknown_gate"]
 
 
@@ -218,8 +223,8 @@ def _figures(rows: list[dict], output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, default=Path("data/raw/gmtnet"))
-    parser.add_argument("--dfpt-dir", type=Path, default=Path("data/processed/jarvis_dfpt_v1"))
+    parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument("--dfpt-dir", type=Path, required=True)
     parser.add_argument("--cohort", type=Path, required=True)
     parser.add_argument("--completion-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

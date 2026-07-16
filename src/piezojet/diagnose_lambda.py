@@ -25,6 +25,7 @@ from torch_geometric.loader import DataLoader
 
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
 from .model import AtomCoordinateResponsePotential, model_from_config
+from .project_config import load_project_config
 from .train import device_from_config, seed_everything
 
 
@@ -70,10 +71,12 @@ def _ionic_from_true_factors(batch, coupling: torch.Tensor, response) -> torch.T
         count = 9 * atoms * atoms
         blocks = batch.dfpt_force_constants_flat[offset : offset + count].reshape(atoms, atoms, 3, 3)
         offset += count
-        green = response.optical_operator(blocks, solve_policy="regularized")
         charge = batch.y_born[start:stop].reshape(3 * atoms, 3)
         volume = torch.linalg.det(cells[graph_index]).abs().clamp_min(torch.finfo(cells.dtype).eps)
-        values.append(response.PIEZO_C_PER_M2 * (charge.T @ green @ coupling[start:stop].reshape(3 * atoms, 6)) / volume)
+        relaxed = response.apply_optical_operator(
+            blocks, coupling[start:stop].reshape(3 * atoms, 6), solve_policy="regularized"
+        )
+        values.append(response.PIEZO_C_PER_M2 * (charge.T @ relaxed) / volume)
     if offset != batch.dfpt_force_constants_flat.numel():
         raise ValueError("Ragged force-constant targets do not match graph pointers")
     return torch.stack(values)
@@ -91,7 +94,7 @@ def _response_context(batch, response) -> list[tuple[int, int, torch.Tensor, tor
         offset += count
         entries.append((
             start, stop,
-            response.optical_operator(blocks, solve_policy="regularized"),
+            blocks,
             batch.y_born[start:stop].reshape(3 * atoms, 3),
             torch.linalg.det(cells[graph_index]).abs().clamp_min(torch.finfo(cells.dtype).eps),
         ))
@@ -102,8 +105,12 @@ def _response_context(batch, response) -> list[tuple[int, int, torch.Tensor, tor
 
 def _ionic_from_context(coupling: torch.Tensor, response, context) -> torch.Tensor:
     return torch.stack([
-        response.PIEZO_C_PER_M2 * (charge.T @ green @ coupling[start:stop].reshape(3 * (stop - start), 6)) / volume
-        for start, stop, green, charge, volume in context
+        response.PIEZO_C_PER_M2 * (
+            charge.T @ response.apply_optical_operator(
+                blocks, coupling[start:stop].reshape(3 * (stop - start), 6), solve_policy="regularized"
+            )
+        ) / volume
+        for start, stop, blocks, charge, volume in context
     ])
 
 
@@ -286,7 +293,7 @@ def main() -> None:
     args = parser.parse_args()
     if min(args.memory_steps, args.synthetic_steps, args.curve_steps) < 1 or args.learning_rate <= 0:
         raise ValueError("Steps and learning rate must be positive")
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    cfg = load_project_config(args.config)
     completion_dir = Path(cfg["jarvis_strain_completion_dir"])
     accepted = _strict_ids(completion_dir)
     records = load_gmtnet_records(cfg["data_root"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Iterable
 
 import torch
@@ -113,6 +114,50 @@ def response_tensor_skill(
         "high_response_amplitude_ratio": float((active_prediction_norm / active_target_norm).mean()),
     })
     return result
+
+
+def material_bootstrap_confidence_interval(
+    predictions: Iterable[torch.Tensor],
+    targets: Iterable[torch.Tensor],
+    statistic: Callable[[list[torch.Tensor], list[torch.Tensor]], float],
+    *,
+    resamples: int = 2000,
+    seed: int = 20270715,
+) -> dict[str, float | int | str]:
+    """Percentile confidence interval by resampling complete materials.
+
+    Tensor components within a crystal are correlated.  The material, rather
+    than the component, is therefore the only valid resampling unit here.
+    This post-evaluation helper contains no checkpoint-selection logic.
+    """
+    prediction_rows = [value.detach().cpu() for value in predictions]
+    target_rows = [value.detach().cpu() for value in targets]
+    if len(prediction_rows) != len(target_rows) or not prediction_rows:
+        raise ValueError("Bootstrap requires equal non-empty material lists")
+    if resamples < 1:
+        raise ValueError("Bootstrap resamples must be positive")
+    point = float(statistic(prediction_rows, target_rows))
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    draws = torch.randint(len(prediction_rows), (resamples, len(prediction_rows)), generator=generator)
+    values = torch.empty(resamples, dtype=torch.float64)
+    for row, indices in enumerate(draws):
+        selected = indices.tolist()
+        values[row] = float(statistic(
+            [prediction_rows[index] for index in selected],
+            [target_rows[index] for index in selected],
+        ))
+    if not torch.isfinite(values).all():
+        raise FloatingPointError("Bootstrap statistic produced a non-finite draw")
+    interval = torch.quantile(values, torch.tensor([0.025, 0.975], dtype=values.dtype))
+    return {
+        "point_estimate": point,
+        "lower_95": float(interval[0]),
+        "upper_95": float(interval[1]),
+        "resamples": resamples,
+        "seed": seed,
+        "resampling_unit": "material",
+        "interval": "percentile_95",
+    }
 
 
 def centro_fp(prediction: torch.Tensor, centrosymmetric: torch.Tensor) -> dict[str, float]:

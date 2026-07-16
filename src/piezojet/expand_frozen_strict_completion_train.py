@@ -28,10 +28,9 @@ def expand_frozen_train_panel(
     if missing:
         raise ValueError(f"Formula lookup missing IDs: {missing[:5]}")
     frozen_formulas = {formula_by_id[jid] for jid in original["val"] + original["test"]}
-    additions = sorted(accepted_ids - set(all_original))
-    unsafe = [jid for jid in additions if formula_by_id[jid] in frozen_formulas]
-    if unsafe:
-        raise ValueError(f"New strict completions overlap frozen validation/test formulas: {unsafe[:5]}")
+    candidates = sorted(accepted_ids - set(all_original))
+    unsafe = [jid for jid in candidates if formula_by_id[jid] in frozen_formulas]
+    additions = [jid for jid in candidates if formula_by_id[jid] not in frozen_formulas]
     expanded = {
         "train": sorted(original["train"] + additions),
         "val": original["val"],
@@ -51,10 +50,12 @@ def expand_frozen_train_panel(
         "base_benchmark": base.get("source_completion_manifest", "unknown"),
         "source_completion_manifest": source_completion_manifest,
         "added_train_ids": additions,
+        "excluded_frozen_formula_ids": unsafe,
         "splits": expanded,
         "summary": {
             "base_train_materials": len(original["train"]),
             "added_train_materials": len(additions),
+            "excluded_frozen_formula_materials": len(unsafe),
             "train_materials": len(expanded["train"]),
             "validation_materials_unchanged": len(expanded["val"]),
             "test_materials_unchanged": len(expanded["test"]),
@@ -64,7 +65,7 @@ def expand_frozen_train_panel(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, default=Path("data/raw/gmtnet"))
+    parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--base-benchmark", type=Path, required=True)
     parser.add_argument("--completion-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -73,7 +74,22 @@ def main() -> None:
         raise FileExistsError(f"Refusing to overwrite expanded frozen benchmark: {args.output}")
     base = json.loads(args.base_benchmark.read_text(encoding="utf-8"))
     completion = json.loads(args.completion_manifest.read_text(encoding="utf-8"))
-    accepted = {str(value) for value in completion["material_ids"]}
+    # Early completion manifests stored a compact ``material_ids`` list;
+    # current strict audits retain one provenance row per requested material.
+    # Support both representations, always filtering the latter by its strict
+    # acceptance gate rather than treating every audited archive as a label.
+    if isinstance(completion.get("material_ids"), list):
+        accepted = {str(value) for value in completion["material_ids"]}
+    elif isinstance(completion.get("rows"), list):
+        accepted = {
+            str(row["jid"])
+            for row in completion["rows"]
+            if isinstance(row, dict) and bool(row.get("accepted", False)) and row.get("jid")
+        }
+    else:
+        raise ValueError("Completion manifest must contain material_ids or per-material strict-audit rows")
+    if not accepted:
+        raise ValueError("Completion manifest contains no accepted strict-completion labels")
     records = load_gmtnet_records(args.data_root)
     formula_by_id = {str(record["JARVIS_ID"]): formula(record) for record in records}
     payload = expand_frozen_train_panel(base, accepted, formula_by_id, str(args.completion_manifest))

@@ -1,6 +1,12 @@
 import torch
 
-from piezojet.metrics import response_tensor_skill, stabilized_relative_residual, stratified_metrics, tensor_metrics
+from piezojet.metrics import (
+    material_bootstrap_confidence_interval,
+    response_tensor_skill,
+    stabilized_relative_residual,
+    stratified_metrics,
+    tensor_metrics,
+)
 from piezojet.tensor_ops import rotate_piezo
 from piezojet.train import full_loss, response_bin_weights
 
@@ -41,6 +47,17 @@ def test_response_tensor_skill_is_calibrated_against_zero_and_rotation_invariant
     rotation, _ = torch.linalg.qr(torch.randn(3, 3))
     rotated = response_tensor_skill(rotate_piezo(target, rotation), rotate_piezo(target, rotation))
     assert abs(float(rotated["signal_weighted_relative_frobenius_error"])) < 1e-6
+
+
+def test_material_bootstrap_resamples_whole_materials_deterministically():
+    target = [torch.full((3, 3, 3), value) for value in (0.1, 1.0, 2.0)]
+    prediction = [value.clone() for value in target]
+    statistic = lambda values, labels: response_tensor_skill(torch.stack(values), torch.stack(labels))["tensor_response_skill_vs_zero"]
+    first = material_bootstrap_confidence_interval(prediction, target, statistic, resamples=32, seed=3)
+    second = material_bootstrap_confidence_interval(prediction, target, statistic, resamples=32, seed=3)
+    assert first == second
+    assert first["point_estimate"] == 1.0
+    assert first["resampling_unit"] == "material"
 
 
 def test_balanced_robust_loss_retains_zero_negatives_and_is_rotation_invariant():

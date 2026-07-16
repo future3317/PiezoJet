@@ -15,10 +15,10 @@ from typing import Any
 
 import spglib
 import torch
-import yaml
 from pymatgen.core import Element
 
 from .data import PIEZO_FIELD, PIEZO_FILE, create_or_load_splits, load_gmtnet_records
+from .project_config import load_project_config
 
 
 def sha256_file(path: Path) -> str:
@@ -72,7 +72,7 @@ def _centrosymmetric(record: dict[str, Any]) -> bool:
 
 
 def build_audit(config_path: Path, output: Path) -> None:
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config = load_project_config(config_path)
     data_root = Path(config["data_root"])
     raw_path = data_root / "data" / PIEZO_FILE
     with raw_path.open("rb") as handle:

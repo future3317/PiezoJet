@@ -13,7 +13,15 @@ from torch import nn
 from torch.nn import functional as F
 from torch_geometric.utils import scatter
 
-from .tensor_ops import PIEZO_TYPE, piezo_from_irreps, piezo_voigt_to_cartesian, voigt_to_symmetric_matrix
+from .tensor_ops import (
+    PIEZO_TYPE,
+    cartesian_to_piezo_voigt,
+    piezo_from_irreps,
+    piezo_voigt_to_cartesian,
+    voigt_to_symmetric_matrix,
+)
+from .projectors import translation_projector
+from .elastic_dielectric_ops import elastic_cartesian_to_voigt
 
 
 def _radial_basis(distance: torch.Tensor, centers: torch.Tensor, cutoff: float) -> torch.Tensor:
@@ -164,6 +172,10 @@ class CartesianLocalEnvironmentEncoder(nn.Module):
     ):
         super().__init__()
         self.cutoff, self.radial_basis, self.channels = cutoff, radial_basis, cartesian_channels
+        # Public contract for downstream readout heads.  Keep this independent
+        # of the private layout of ``self.input`` so encoder refactors cannot
+        # silently select the wrong layer.
+        self.scalar_dim = radial_hidden
         self.register_buffer("radial_centers", torch.linspace(0, cutoff, radial_basis), persistent=False)
         self.register_buffer("identity", torch.eye(3), persistent=False)
         self.embedding = nn.Embedding(119, embedding_dim)
@@ -247,6 +259,75 @@ class CartesianPiezoTensorHead(nn.Module):
         return scatter(node_tensor, batch_index, dim=0, dim_size=int(batch_index.max()) + 1, reduce="mean")
 
 
+class CartesianMacroDielectricHead(nn.Module):
+    """Independent O(3)-equivariant SPD total-dielectric head."""
+
+    def __init__(self, scalar_dim: int, channels: int):
+        super().__init__()
+        self.coefficients = nn.Sequential(
+            nn.Linear(scalar_dim, scalar_dim), nn.SiLU(),
+            nn.Linear(scalar_dim, 1 + channels),
+        )
+        self.register_buffer("identity", torch.eye(3), persistent=False)
+
+    def forward(self, features: CartesianNodeFeatures, batch_index: torch.Tensor) -> torch.Tensor:
+        coefficients = self.coefficients(features.scalar)
+        identity = self.identity.to(dtype=features.scalar.dtype)
+        symmetric = (
+            coefficients[:, 0, None, None] * identity
+            + torch.einsum("nc,ncij->nij", coefficients[:, 1:], features.quadrupole)
+        )
+        graphs = int(batch_index.max()) + 1
+        symmetric = scatter(symmetric, batch_index, dim=0, dim_size=graphs, reduce="mean")
+        # Every SPD relative dielectric >= I has an equivariant symmetric
+        # square-root representation. No physical-factor feature is consumed.
+        return identity + symmetric @ symmetric.transpose(-1, -2)
+
+
+class CartesianMacroElasticHead(nn.Module):
+    """Independent O(3)-equivariant positive total-stiffness head.
+
+    The isotropic bulk/shear projectors cover high-symmetry crystals even when
+    every graph quadrupole vanishes. Structure-conditioned symmetric modes add
+    a positive semidefinite anisotropic stiffness in Cartesian tensor space.
+    """
+
+    def __init__(self, scalar_dim: int, channels: int, modes: int = 16):
+        super().__init__()
+        self.modes = int(modes)
+        self.moduli = nn.Sequential(
+            nn.Linear(scalar_dim, scalar_dim), nn.SiLU(),
+            nn.Linear(scalar_dim, 2 + modes),
+        )
+        self.identity_mix = nn.Parameter(torch.zeros(modes))
+        self.quadrupole_mix = nn.Parameter(torch.randn(modes, channels) / channels**0.5)
+        self.register_buffer("identity", torch.eye(3), persistent=False)
+
+    def forward(self, features: CartesianNodeFeatures, batch_index: torch.Tensor) -> torch.Tensor:
+        graphs = int(batch_index.max()) + 1
+        scalar = scatter(features.scalar, batch_index, dim=0, dim_size=graphs, reduce="mean")
+        quadrupole = scatter(features.quadrupole, batch_index, dim=0, dim_size=graphs, reduce="mean")
+        parameters = F.softplus(self.moduli(scalar))
+        bulk, shear, weights = parameters[:, 0], parameters[:, 1], parameters[:, 2:]
+        identity = self.identity.to(dtype=features.scalar.dtype)
+        delta_delta = torch.einsum("ij,kl->ijkl", identity, identity)
+        identity_symmetric = 0.5 * (
+            torch.einsum("ik,jl->ijkl", identity, identity)
+            + torch.einsum("il,jk->ijkl", identity, identity)
+        )
+        deviatoric = identity_symmetric - delta_delta / 3.0
+        stiffness = (
+            bulk[:, None, None, None, None] * delta_delta
+            + 2.0 * shear[:, None, None, None, None] * deviatoric
+        )
+        modes = (
+            self.identity_mix[None, :, None, None] * identity
+            + torch.einsum("mc,bcij->bmij", self.quadrupole_mix, quadrupole)
+        )
+        stiffness = stiffness + torch.einsum("bm,bmij,bmkl->bijkl", weights, modes, modes)
+        return elastic_cartesian_to_voigt(stiffness)
+
+
 class CartesianBornChargeHead(nn.Module):
     """Node-resolved Born effective charges in an explicitly Cartesian basis.
 
@@ -288,16 +369,6 @@ def _graph_ptr(batch_index: torch.Tensor) -> torch.Tensor:
     return torch.cat((counts.new_zeros(1), counts.cumsum(0)))
 
 
-def _translation_projector(atoms: int, reference: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Cartesian optical projector and its three normalized translations."""
-    size = 3 * atoms
-    translation = reference.new_zeros(size, 3)
-    axes = torch.arange(3, device=reference.device)
-    translation[axes.repeat(atoms) + 3 * torch.arange(atoms, device=reference.device).repeat_interleave(3), axes.repeat(atoms)] = atoms ** -0.5
-    projector = torch.eye(size, dtype=reference.dtype, device=reference.device) - translation @ translation.transpose(0, 1)
-    return projector, translation
-
-
 class CartesianInternalStrainHead(nn.Module):
     """Atom-coordinate strain forces ``Lambda[kappa, alpha, j, k]``.
 
@@ -333,105 +404,32 @@ class CartesianInternalStrainHead(nn.Module):
         mean = scatter(internal_strain, batch_index, dim=0, dim_size=graphs, reduce="mean")
         return internal_strain - mean[batch_index]
 
+class IndependentQuadraticResponseHead(nn.Module):
+    """Independent coefficients of one atom-coordinate quadratic energy.
 
-class CartesianForceConstantHead(nn.Module):
-    """Variable-size atom-coordinate Hessian with exact translation nullspace.
+    Directed periodic bonds predict a symmetric signed stiffness ``K_e`` for
+    ``Phi``.  A separate equivariant, acoustic-projected head predicts the
+    mixed derivative ``Lambda``.  Together with the affine strain curvature,
+    the coefficients define the single scalar energy
 
-    Equivariant edge blocks first form an unrestricted symmetric operator
-    ``H``.  For each graph we return
+    ``1/2 u^T Phi u - u^T Lambda eta + 1/2 eta^T C_aff eta``.
 
-    ``Phi = P (H + H^T) P / 2``,
-
-    where ``P`` removes the three uniform translations. This gives block
-    transpose symmetry and the acoustic sum rule while retaining genuine
-    negative/unstable DFPT modes. Stability is handled by the signed damped
-    pseudoinverse in ``AtomCoordinateResponsePotential``. Per-graph matrices
-    are concatenated in flattened form to avoid cross-graph padding.
-    """
-
-    def __init__(self, scalar_dim: int, radial_basis: int, cutoff: float):
-        super().__init__()
-        self.cutoff = float(cutoff)
-        self.register_buffer("radial_centers", torch.linspace(0, cutoff, radial_basis), persistent=False)
-        hidden = max(32, scalar_dim)
-        self.edge_coefficients = nn.Sequential(
-            nn.Linear(2 * scalar_dim + radial_basis, hidden), nn.SiLU(), nn.Linear(hidden, 4)
-        )
-        self.register_buffer("identity", torch.eye(3), persistent=False)
-
-    def forward(
-        self,
-        features: CartesianNodeFeatures,
-        local_polar: torch.Tensor,
-        batch,
-    ) -> torch.Tensor:
-        source, target = batch.edge_index
-        vectors = batch.pos[source] - batch.pos[target] + batch.edge_shift
-        distance = torch.linalg.vector_norm(vectors, dim=-1)
-        direction = vectors / distance.clamp_min(torch.finfo(vectors.dtype).eps).unsqueeze(-1)
-        radial = _radial_basis(distance, self.radial_centers, self.cutoff)
-        symmetric_scalar = features.scalar[source] + features.scalar[target]
-        contrast = (features.scalar[source] - features.scalar[target]).abs()
-        coefficients = self.edge_coefficients(torch.cat((symmetric_scalar, contrast, radial), dim=-1))
-        identity = self.identity.to(dtype=vectors.dtype)
-        rr = direction.unsqueeze(-1) * direction.unsqueeze(-2)
-        polar_r = local_polar[source].unsqueeze(-1) * direction.unsqueeze(-2)
-        r_polar = direction.unsqueeze(-1) * local_polar[target].unsqueeze(-2)
-        edge_blocks = (
-            coefficients[:, 0, None, None] * identity
-            + coefficients[:, 1, None, None] * rr
-            + coefficients[:, 2, None, None] * polar_r
-            + coefficients[:, 3, None, None] * r_polar
-        )
-        ptr = _graph_ptr(batch.batch)
-        flattened = []
-        for graph_index in range(ptr.numel() - 1):
-            start, stop = int(ptr[graph_index]), int(ptr[graph_index + 1])
-            atoms = stop - start
-            edge_mask = batch.batch[target] == graph_index
-            local_source, local_target = source[edge_mask] - start, target[edge_mask] - start
-            blocks = edge_blocks[edge_mask]
-            raw_blocks = blocks.new_zeros(atoms, atoms, 3, 3)
-            raw_blocks.index_put_((local_source, local_target), blocks, accumulate=True)
-            raw = raw_blocks.permute(0, 2, 1, 3).reshape(3 * atoms, 3 * atoms)
-            raw = 0.5 * (raw + raw.transpose(0, 1))
-            projector, _ = _translation_projector(atoms, raw)
-            force_constants = projector @ raw @ projector
-            blocks_out = force_constants.reshape(atoms, 3, atoms, 3).permute(0, 2, 1, 3)
-            flattened.append(blocks_out.reshape(-1))
-        return torch.cat(flattened)
-
-
-class StrainAwareQuadraticEnergyHead(nn.Module):
-    """Joint Hessian and strain-force factors from one quadratic bond energy.
-
-    For every directed periodic bond, the model predicts a symmetric signed
-    stiffness ``K_e``.  The shared local energy is
-
-    ``1/2 (B_e u + S_e eta)^T K_e (B_e u + S_e eta)``.
-
-    Consequently ``Phi = sum B_e^T K_e B_e`` and
-    ``Lambda = -sum B_e^T K_e S_e`` are integrable derivatives of the same
-    strain-aware scalar.  Signed stiffnesses retain unstable optical modes.
-    Reciprocal/global context conditions ``K_e`` so collective information is
-    part of the ionic path instead of only an electronic side branch.
+    Thus Maxwell/integrability is retained without imposing the extra and
+    generally unjustified model-class restriction ``Lambda=B^T K S``.  Signed
+    stiffnesses retain unstable optical modes.  Reciprocal/global context
+    conditions ``K_e`` so collective information remains in the ionic path.
     """
 
     def __init__(
         self,
         scalar_dim: int,
+        channels: int,
         radial_basis: int,
         cutoff: float,
         context_dim: int,
-        learned_strain_map: bool = False,
-        star_rank: int = 0,
     ):
         super().__init__()
         self.cutoff = float(cutoff)
-        self.learned_strain_map = bool(learned_strain_map)
-        if star_rank < 0:
-            raise ValueError("star_rank must be non-negative")
-        self.star_rank = int(star_rank)
         self.register_buffer("radial_centers", torch.linspace(0, cutoff, radial_basis), persistent=False)
         self.register_buffer("identity", torch.eye(3), persistent=False)
         self.register_buffer(
@@ -447,50 +445,7 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden, 4),
         )
-        if self.learned_strain_map:
-            self.edge_strain_map = nn.Sequential(
-                nn.Linear(2 * scalar_dim + radial_basis + context_dim, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, 7),
-            )
-            # Start from the physical affine bond strain and let direct Lambda
-            # plus ionic-response supervision learn only the required residual.
-            nn.init.zeros_(self.edge_strain_map[-1].weight)
-            nn.init.zeros_(self.edge_strain_map[-1].bias)
-        if self.star_rank:
-            self.edge_star_map = nn.Sequential(
-                nn.Linear(2 * scalar_dim + radial_basis + context_dim, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, self.star_rank * 4),
-            )
-            self.node_star_stiffness = nn.Sequential(
-                nn.Linear(scalar_dim + context_dim, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, self.star_rank),
-            )
-            nn.init.zeros_(self.edge_star_map[-1].weight)
-            nn.init.zeros_(self.edge_star_map[-1].bias)
-            with torch.no_grad():
-                self.edge_star_map[-1].bias[0::4] = 1.0
-            nn.init.zeros_(self.node_star_stiffness[-1].weight)
-            nn.init.zeros_(self.node_star_stiffness[-1].bias)
-
-    @staticmethod
-    def _internal_tensor(coupling: torch.Tensor) -> torch.Tensor:
-        """Map canonical engineering-Voigt coupling to symmetric Cartesian form."""
-        atoms = coupling.shape[0]
-        output = coupling.new_zeros(atoms, 3, 3, 3)
-        output[..., 0, 0] = coupling[..., 0]
-        output[..., 1, 1] = coupling[..., 1]
-        output[..., 2, 2] = coupling[..., 2]
-        output[..., 1, 2] = output[..., 2, 1] = coupling[..., 3]
-        output[..., 0, 2] = output[..., 2, 0] = coupling[..., 4]
-        output[..., 0, 1] = output[..., 1, 0] = coupling[..., 5]
-        return output
+        self.cross_derivative_head = CartesianInternalStrainHead(scalar_dim, channels)
 
     def forward(
         self,
@@ -527,59 +482,10 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
         strain_map = torch.einsum(
             "mij,ej->eim", self.unit_strains.to(dtype=vectors.dtype), vectors
         )
-        if self.learned_strain_map:
-            strain_coefficients = self.edge_strain_map(edge_context)
-            r, p = direction, polar
-            r_identity = torch.einsum("ei,jk->eijk", r, identity)
-            identity_r = 0.5 * (
-                torch.einsum("ij,ek->eijk", identity, r)
-                + torch.einsum("ik,ej->eijk", identity, r)
-            )
-            rrr = torch.einsum("ei,ej,ek->eijk", r, r, r)
-            p_identity = torch.einsum("ei,jk->eijk", p, identity)
-            identity_p = 0.5 * (
-                torch.einsum("ij,ek->eijk", identity, p)
-                + torch.einsum("ik,ej->eijk", identity, p)
-            )
-            p_rr = torch.einsum("ei,ej,ek->eijk", p, r, r)
-            r_pr = 0.5 * (
-                torch.einsum("ei,ej,ek->eijk", r, p, r)
-                + torch.einsum("ei,ek,ej->eijk", r, p, r)
-            )
-            bases = torch.stack(
-                (r_identity, identity_r, rrr, p_identity, identity_p, p_rr, r_pr),
-                dim=1,
-            )
-            correction = torch.einsum("ec,ecijk->eijk", strain_coefficients, bases)
-            correction = correction * distance[:, None, None, None]
-            correction_voigt = torch.stack(
-                (
-                    correction[..., 0, 0], correction[..., 1, 1], correction[..., 2, 2],
-                    correction[..., 1, 2], correction[..., 0, 2], correction[..., 0, 1],
-                ),
-                dim=-1,
-            )
-            strain_map = strain_map + correction_voigt
         stiffness_strain = stiffness @ strain_map
-        star_map = None
-        star_stiffness = None
-        if self.star_rank:
-            star_coefficients = self.edge_star_map(edge_context).reshape(
-                -1, self.star_rank, 4
-            )
-            star_map = (
-                star_coefficients[..., 0, None, None] * identity
-                + star_coefficients[..., 1, None, None] * rr[:, None]
-                + star_coefficients[..., 2, None, None] * polar_r[:, None]
-                + star_coefficients[..., 3, None, None] * pp[:, None]
-            )
-            node_context = torch.cat(
-                (features.scalar, context[batch.batch]), dim=-1
-            )
-            star_stiffness = self.node_star_stiffness(node_context)
-
+        internal_strain = self.cross_derivative_head(features, batch.batch)
         ptr = _graph_ptr(batch.batch)
-        force_flat, internal, strain_curvature = [], [], []
+        force_flat, strain_curvature = [], []
         for graph_index in range(ptr.numel() - 1):
             start, stop = int(ptr[graph_index]), int(ptr[graph_index + 1])
             atoms = stop - start
@@ -587,7 +493,7 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
             local_source = source[edge_mask] - start
             local_target = target[edge_mask] - start
             local_stiffness = stiffness[edge_mask]
-            local_strain = stiffness_strain[edge_mask]
+            local_stiffness_strain = stiffness_strain[edge_mask]
 
             blocks = local_stiffness.new_zeros(atoms, atoms, 3, 3)
             blocks.index_put_((local_source, local_source), local_stiffness, accumulate=True)
@@ -596,69 +502,15 @@ class StrainAwareQuadraticEnergyHead(nn.Module):
             blocks.index_put_((local_target, local_source), -local_stiffness, accumulate=True)
             blocks = 0.5 * (blocks + blocks.permute(1, 0, 3, 2))
 
-            coupling = local_stiffness.new_zeros(atoms, 3, 6)
-            # Lambda = -B^T K S for the declared quadratic energy.
-            coupling.index_put_((local_source,), -local_strain, accumulate=True)
-            coupling.index_put_((local_target,), local_strain, accumulate=True)
             local_map = strain_map[edge_mask]
             local_curvature = torch.einsum(
-                "eai,eaj->ij", local_map, local_strain
+                "eai,eaj->ij", local_map, local_stiffness_strain
             )
-            if star_map is not None and star_stiffness is not None:
-                local_star_map = star_map[edge_mask]
-                rank = self.star_rank
-                edge_count = local_source.numel()
-                centers = local_target[:, None].expand(edge_count, rank).reshape(-1)
-                ranks = torch.arange(rank, device=centers.device)[None].expand(
-                    edge_count, rank
-                ).reshape(-1)
-                sources = local_source[:, None].expand(edge_count, rank).reshape(-1)
-                targets = local_target[:, None].expand(edge_count, rank).reshape(-1)
-                map_values = local_star_map.reshape(-1, 3, 3)
-                derivative_blocks = local_stiffness.new_zeros(
-                    atoms, rank, atoms, 3, 3
-                )
-                derivative_blocks.index_put_(
-                    (centers, ranks, sources), map_values, accumulate=True
-                )
-                derivative_blocks.index_put_(
-                    (centers, ranks, targets), -map_values, accumulate=True
-                )
-                derivative = derivative_blocks.permute(0, 1, 3, 2, 4).reshape(
-                    atoms * rank * 3, 3 * atoms
-                )
-                star_strain_values = torch.einsum(
-                    "erab,ebm->eram", local_star_map, strain_map[edge_mask]
-                )
-                star_strain = local_stiffness.new_zeros(atoms, rank, 3, 6)
-                star_strain.index_put_(
-                    (centers, ranks),
-                    star_strain_values.reshape(-1, 3, 6),
-                    accumulate=True,
-                )
-                star_strain_matrix = star_strain.reshape(atoms * rank * 3, 6)
-                weights = star_stiffness[start:stop].unsqueeze(-1).expand(
-                    atoms, rank, 3
-                ).reshape(-1)
-                weighted_derivative = weights[:, None] * derivative
-                star_phi = derivative.transpose(0, 1) @ weighted_derivative
-                star_lambda = -derivative.transpose(0, 1) @ (
-                    weights[:, None] * star_strain_matrix
-                )
-                star_curvature = star_strain_matrix.transpose(0, 1) @ (
-                    weights[:, None] * star_strain_matrix
-                )
-                blocks = blocks + star_phi.reshape(
-                    atoms, 3, atoms, 3
-                ).permute(0, 2, 1, 3)
-                coupling = coupling + star_lambda.reshape(atoms, 3, 6)
-                local_curvature = local_curvature + star_curvature
             force_flat.append(blocks.reshape(-1))
-            internal.append(self._internal_tensor(coupling))
             strain_curvature.append(
                 0.5 * (local_curvature + local_curvature.transpose(0, 1))
             )
-        return torch.cat(force_flat), torch.cat(internal), torch.stack(strain_curvature)
+        return torch.cat(force_flat), internal_strain, torch.stack(strain_curvature)
 
 
 class LinearResponseBackground(nn.Module):
@@ -685,20 +537,33 @@ class LinearResponseBackground(nn.Module):
         dielectric = (1.0 + susceptibility)[:, None, None] * identity
         return elastic, dielectric
 
-
 class AtomCoordinatePrediction(NamedTuple):
     """Responses propagated through the physical ``3N-3`` optical space."""
 
     tensor: torch.Tensor
+    macro_dielectric: torch.Tensor
+    macro_elastic: torch.Tensor
+    physical_tensor: torch.Tensor
     electronic_piezo: torch.Tensor
+    # Maintained ionic prediction from the independent displacement-response
+    # field U_eta.  It is not constructed by inverting a predicted observable
+    # map or by propagating the predicted Lambda.
     ionic_piezo: torch.Tensor
+    # Independent Phi/Lambda propagation retained as a physical diagnostic.
+    factorized_ionic_piezo: torch.Tensor
+    displacement_response: torch.Tensor
     born_charges: torch.Tensor
     force_constants_flat: torch.Tensor
     internal_strain: torch.Tensor
+    # This is empty in the normal training/inference path.  A full Green
+    # operator is quadratic in the atom count and is only materialized by an
+    # explicit diagnostic request (``return_optical_operator=True``).
     optical_operator_flat: torch.Tensor
     shared_clamped_elastic: torch.Tensor
     elastic_background: torch.Tensor
     dielectric_background: torch.Tensor
+    ionic_dielectric: torch.Tensor
+    elastic_softening: torch.Tensor
     dielectric: torch.Tensor
     elastic: torch.Tensor
 
@@ -889,21 +754,19 @@ class AtomCoordinateResponsePotential(nn.Module):
     PIEZO_C_PER_M2 = 16.02176634
     DIELECTRIC_RELATIVE = 180.9512817
     EV_PER_A3_TO_GPA = 160.2176634
-    TRANSLATION_PENALTY = 1.0
-
     def __init__(
         self,
         optical_regularization: float = 1e-3,
         optical_stability_cutoff: float = 1e-4,
-        optical_solve_policy: str = "auto",
+        optical_solve_policy: str = "regularized",
     ):
         super().__init__()
         if optical_regularization <= 0:
             raise ValueError("optical_regularization must be positive")
         if optical_stability_cutoff <= 0:
             raise ValueError("optical_stability_cutoff must be positive")
-        if optical_solve_policy not in {"auto", "exact", "regularized"}:
-            raise ValueError("optical_solve_policy must be auto, exact, or regularized")
+        if optical_solve_policy not in {"exact", "regularized"}:
+            raise ValueError("optical_solve_policy must be exact or regularized")
         self.optical_regularization = float(optical_regularization)
         self.optical_stability_cutoff = float(optical_stability_cutoff)
         self.optical_solve_policy = optical_solve_policy
@@ -924,47 +787,155 @@ class AtomCoordinateResponsePotential(nn.Module):
     def _blocks_from_matrix(matrix: torch.Tensor, atoms: int) -> torch.Tensor:
         return matrix.reshape(atoms, 3, atoms, 3).permute(0, 2, 1, 3)
 
+    def internal_quadratic_energy(
+        self,
+        force_constants: torch.Tensor,
+        internal_strain: torch.Tensor,
+        strain_curvature: torch.Tensor,
+        displacement: torch.Tensor,
+        eta6: torch.Tensor,
+    ) -> torch.Tensor:
+        """Evaluate the explicit scalar energy generating ``Phi/Lambda/C``.
+
+        ``Lambda`` is VASP's printed force derivative ``dF/deta``.  Therefore
+        the mixed energy is ``-u^T Lambda eta``.  The coefficients may be
+        predicted by independent equivariant heads; equality of mixed
+        derivatives follows from this scalar assembly and does not require
+        the extra factorization ``Lambda=B^T K S``.
+        """
+        atoms = int(force_constants.shape[0])
+        if force_constants.shape != (atoms, atoms, 3, 3):
+            raise ValueError("force_constants must have shape [N,N,3,3]")
+        if internal_strain.shape != (atoms, 3, 3, 3):
+            raise ValueError("internal_strain must have shape [N,3,3,3]")
+        if strain_curvature.shape != (6, 6):
+            raise ValueError("strain_curvature must have shape [6,6]")
+        if displacement.numel() != 3 * atoms or eta6.shape != (6,):
+            raise ValueError("displacement and eta6 must have shapes [N,3]/[3N] and [6]")
+        u = displacement.reshape(3 * atoms)
+        matrix = self._matrix_from_blocks(force_constants)
+        coupling = self._coupling_voigt(internal_strain).reshape(3 * atoms, 6)
+        curvature = 0.5 * (strain_curvature + strain_curvature.transpose(0, 1))
+        return (
+            0.5 * torch.einsum("i,ij,j->", u, matrix, u)
+            - torch.einsum("i,ij,j->", u, coupling, eta6)
+            + 0.5 * torch.einsum("i,ij,j->", eta6, curvature, eta6)
+        )
+
     @staticmethod
     def _finalize_operator(matrix: torch.Tensor, atoms: int, dtype: torch.dtype) -> torch.Tensor:
         """Symmetrize and re-project after a possible float64-to-float32 cast."""
         matrix = (0.5 * (matrix + matrix.transpose(0, 1))).to(dtype)
-        projector, _ = _translation_projector(atoms, matrix)
+        projector, _ = translation_projector(atoms, matrix)
         matrix = projector @ matrix @ projector
         return 0.5 * (matrix + matrix.transpose(0, 1))
 
     @staticmethod
-    def _optical_eigenvalues(matrix: torch.Tensor) -> torch.Tensor:
-        """Return all non-translational eigenvalues of an ASR-projected matrix."""
-        values = torch.linalg.eigvalsh(matrix)
-        if values.numel() <= 3:
-            return values.new_empty(0)
-        keep = torch.argsort(values.abs())[3:]
-        return values[keep]
+    def _optical_basis(atoms: int, reference: torch.Tensor) -> torch.Tensor:
+        """Orthonormal Cartesian basis for displacements orthogonal to translations.
 
-    def exact_optical_inverse(self, force_constants: torch.Tensor) -> torch.Tensor:
-        """Exact inverse on a nonsingular optical subspace.
-
-        The translation block is lifted only to make the full-coordinate solve
-        nonsingular; the outer projectors remove it from the returned operator.
-        This is the stationary response of the original quadratic form.  It is
-        also well-defined for an indefinite saddle when no optical eigenvalue
-        is zero, although ``auto`` selects it only for stable structures.
+        A Helmert basis is deterministic, exactly orthogonal in exact
+        arithmetic, and independent of a coordinate-frame choice.  Its span
+        is the physical optical subspace; changing its columns merely applies
+        a similarity transform to the reduced solve.  We deliberately solve
+        in this ``3N-3`` basis rather than lifting translations by an arbitrary
+        energy-scale penalty in full Cartesian coordinates.
         """
+        if atoms < 1:
+            raise ValueError("A force-constant matrix must contain at least one atom")
+        if atoms == 1:
+            return reference.new_empty(3, 0)
+        indices = torch.arange(atoms - 1, device=reference.device)
+        # Form the normalization in the solve dtype.  Taking ``sqrt`` of the
+        # integer index product first silently creates a float32 tensor in
+        # PyTorch, which limits a nominal float64 optical solve to ~1e-7 basis
+        # orthogonality.
+        indices_float = indices.to(dtype=reference.dtype)
+        denominator = torch.sqrt((indices_float + 1) * (indices_float + 2))
+        helmert = reference.new_zeros(atoms, atoms - 1)
+        rows = torch.arange(atoms, device=reference.device).unsqueeze(1)
+        columns = indices.unsqueeze(0)
+        helmert = torch.where(rows <= columns, denominator.reciprocal().unsqueeze(0), helmert)
+        helmert[indices + 1, indices] = -(indices_float + 1) / denominator
+        identity = torch.eye(3, dtype=reference.dtype, device=reference.device)
+        return torch.kron(helmert, identity)
+
+    def _reduced_operator(
+        self,
+        force_constants: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.dtype]:
+        """Return ``(Q, Q^T Phi Q, output_dtype)`` in a stable solve dtype."""
         atoms = force_constants.shape[0]
         matrix = self._matrix_from_blocks(force_constants)
         output_dtype = matrix.dtype
         if matrix.dtype in (torch.float16, torch.bfloat16, torch.float32):
             matrix = matrix.to(torch.float64)
-        projector, translation = _translation_projector(atoms, matrix)
-        translation_projector = translation @ translation.transpose(0, 1)
-        optical = self._optical_eigenvalues(matrix)
-        if optical.numel() and bool((optical.abs().min() <= self.optical_stability_cutoff).item()):
-            raise RuntimeError(
-                "Exact optical inverse requested with a mode at or below the stability cutoff"
-            )
-        augmented = matrix + self.TRANSLATION_PENALTY * translation_projector
-        inverse = projector @ torch.linalg.solve(augmented, projector) @ projector
-        return self._finalize_operator(inverse, atoms, output_dtype)
+        basis = self._optical_basis(atoms, matrix)
+        return basis, basis.transpose(0, 1) @ matrix @ basis, output_dtype
+
+    def _optical_eigenvalues(self, force_constants: torch.Tensor) -> torch.Tensor:
+        """Return eigenvalues on the exact ``3N-3`` optical subspace."""
+        _, reduced, _ = self._reduced_operator(force_constants)
+        return torch.linalg.eigvalsh(reduced) if reduced.numel() else reduced.new_empty(0)
+
+    def apply_optical_operator(
+        self,
+        force_constants: torch.Tensor,
+        rhs: torch.Tensor,
+        solve_policy: str | None = None,
+        regularization: float | None = None,
+    ) -> torch.Tensor:
+        """Apply the declared optical response operator without materializing it.
+
+        ``rhs`` has shape ``[3N, K]``.  The exact path returns the stationary
+        optical displacement ``Q (Q^T Phi Q)^{-1} Q^T rhs``.  The regularized
+        path computes the signed resolvent with one complex reduced solve,
+        ``Re[(Phi_o + i delta I)^{-1}]``.  Both paths project translations by
+        construction, so there is no auxiliary translation penalty or squared
+        condition number from a normal-equation solve.
+        """
+        policy = self.optical_solve_policy if solve_policy is None else solve_policy
+        if policy not in {"exact", "regularized"}:
+            raise ValueError("solve_policy must be exact or regularized")
+        matrix = self._matrix_from_blocks(force_constants)
+        if rhs.ndim != 2 or rhs.shape[0] != matrix.shape[0]:
+            raise ValueError("rhs must have shape [3N, K] for the supplied force constants")
+        basis, reduced, output_dtype = self._reduced_operator(force_constants)
+        if reduced.numel() == 0:
+            return rhs.new_zeros(rhs.shape)
+        rhs_solve = rhs.to(dtype=reduced.dtype)
+        rhs_optical = basis.transpose(0, 1) @ rhs_solve
+        if policy == "exact":
+            eigenvalues = torch.linalg.eigvalsh(reduced)
+            if bool((eigenvalues.min() <= self.optical_stability_cutoff).item()):
+                raise RuntimeError(
+                    "Exact optical inverse is restricted to a positive stable optical spectrum"
+                )
+            reduced_solution = torch.linalg.solve(reduced, rhs_optical)
+        else:
+            delta = self.optical_regularization if regularization is None else float(regularization)
+            if delta <= 0:
+                raise ValueError("regularization must be positive")
+            complex_dtype = torch.complex128 if reduced.dtype == torch.float64 else torch.complex64
+            identity = torch.eye(reduced.shape[0], dtype=complex_dtype, device=reduced.device)
+            shifted = reduced.to(complex_dtype) + (1j * delta) * identity
+            reduced_solution = torch.linalg.solve(shifted, rhs_optical.to(complex_dtype)).real
+        return (basis @ reduced_solution).to(dtype=output_dtype)
+
+    def exact_optical_inverse(self, force_constants: torch.Tensor) -> torch.Tensor:
+        """Exact inverse on a nonsingular optical subspace.
+
+        This diagnostic-only convenience API materializes the operator from
+        applications to Cartesian unit vectors.  The solve itself remains in
+        the reduced optical basis; translations are never lifted by a
+        numerical penalty. It is intentionally restricted to a positive
+        true-DFPT stable spectrum.
+        """
+        atoms = force_constants.shape[0]
+        matrix = self._matrix_from_blocks(force_constants)
+        identity = torch.eye(matrix.shape[0], dtype=matrix.dtype, device=matrix.device)
+        inverse = self.apply_optical_operator(force_constants, identity, solve_policy="exact")
+        return self._finalize_operator(inverse, atoms, matrix.dtype)
 
     def signed_regularized_optical_green(
         self,
@@ -977,29 +948,13 @@ class AtomCoordinateResponsePotential(nn.Module):
         response generator for soft or unstable structures, not the stationary
         solution of the unregularized quadratic potential.
         """
-        delta = self.optical_regularization if regularization is None else float(regularization)
-        if delta <= 0:
-            raise ValueError("regularization must be positive")
         atoms = force_constants.shape[0]
         matrix = self._matrix_from_blocks(force_constants)
-        output_dtype = matrix.dtype
-        # delta^2 can be 1e-6 in native eV/Angstrom^2 units. Perform the
-        # small per-crystal solve in float64 so rotations do not get amplified
-        # by float32 conditioning near a soft crossing.
-        if matrix.dtype in (torch.float16, torch.bfloat16, torch.float32):
-            matrix = matrix.to(torch.float64)
-        projector, translation = _translation_projector(atoms, matrix)
-        translation_projector = translation @ translation.transpose(0, 1)
-        # Signed Tikhonov/Moore--Penrose filter lambda/(lambda^2+delta^2):
-        # negative and unstable modes retain their sign, exact translations
-        # remain zero, and gradients stay finite at soft-mode crossings.
-        normal = (
-            matrix @ matrix
-            + delta ** 2 * projector
-            + self.TRANSLATION_PENALTY * translation_projector
+        identity = torch.eye(matrix.shape[0], dtype=matrix.dtype, device=matrix.device)
+        inverse = self.apply_optical_operator(
+            force_constants, identity, solve_policy="regularized", regularization=regularization
         )
-        inverse = projector @ torch.linalg.solve(normal, matrix) @ projector
-        return self._finalize_operator(inverse, atoms, output_dtype)
+        return self._finalize_operator(inverse, atoms, matrix.dtype)
 
     def optical_operator(
         self,
@@ -1009,20 +964,48 @@ class AtomCoordinateResponsePotential(nn.Module):
     ) -> torch.Tensor:
         """Choose the declared exact or regularized optical response policy."""
         policy = self.optical_solve_policy if solve_policy is None else solve_policy
-        if policy not in {"auto", "exact", "regularized"}:
-            raise ValueError("solve_policy must be auto, exact, or regularized")
+        if policy not in {"exact", "regularized"}:
+            raise ValueError("solve_policy must be exact or regularized")
         if policy == "exact":
             return self.exact_optical_inverse(force_constants)
-        if policy == "regularized":
-            return self.signed_regularized_optical_green(force_constants, regularization)
-
-        matrix = self._matrix_from_blocks(force_constants)
-        spectral_matrix = matrix.to(torch.float64) if matrix.dtype in (torch.float16, torch.bfloat16, torch.float32) else matrix
-        optical = self._optical_eigenvalues(spectral_matrix)
-        stable = optical.numel() == 0 or bool((optical.min() > self.optical_stability_cutoff).item())
-        if stable:
-            return self.exact_optical_inverse(force_constants)
         return self.signed_regularized_optical_green(force_constants, regularization)
+
+    def ionic_piezo_from_displacement_response(
+        self,
+        born_charges: torch.Tensor,
+        displacement_response: torch.Tensor,
+        batch,
+    ) -> torch.Tensor:
+        """Contract an independent internal-displacement response with BEC.
+
+        ``displacement_response[kappa,a,j,k]`` is the production regularized
+        coordinate ``U_{eta,delta}`` in Cartesian coordinates, with symmetric
+        strain indices and zero mean over atoms.  It is not an equilibrium
+        ``du/deta`` for an unstable reference.  This path contains no inverse,
+        pseudoinverse, SVD cutoff, or chart-dependent gradient.
+        """
+        ptr = _graph_ptr(batch.batch)
+        cell = getattr(batch, "cell", None)
+        cells = (
+            torch.eye(3, dtype=born_charges.dtype, device=born_charges.device)
+            .expand(ptr.numel() - 1, 3, 3)
+            if cell is None else cell.reshape(-1, 3, 3)
+        )
+        values: list[torch.Tensor] = []
+        for graph_index in range(ptr.numel() - 1):
+            start, stop = int(ptr[graph_index]), int(ptr[graph_index + 1])
+            atoms = stop - start
+            charge = born_charges[start:stop].reshape(3 * atoms, 3)
+            displacement = self._coupling_voigt(
+                displacement_response[start:stop]
+            ).reshape(3 * atoms, 6)
+            volume = torch.linalg.det(cells[graph_index]).abs().clamp_min(
+                torch.finfo(cells.dtype).eps
+            )
+            values.append(
+                self.PIEZO_C_PER_M2 * charge.transpose(0, 1) @ displacement / volume
+            )
+        return piezo_voigt_to_cartesian(torch.stack(values))
 
     def responses(
         self,
@@ -1036,7 +1019,8 @@ class AtomCoordinateResponsePotential(nn.Module):
         dielectric_background: torch.Tensor,
         solve_policy: str | None = None,
         regularization: float | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return_optical_operator: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         ptr = _graph_ptr(batch.batch)
         cell = getattr(batch, "cell", None)
         cells = (
@@ -1052,17 +1036,21 @@ class AtomCoordinateResponsePotential(nn.Module):
             block_values = 9 * atoms * atoms
             blocks = force_constants_flat[force_offset : force_offset + block_values].reshape(atoms, atoms, 3, 3)
             force_offset += block_values
-            operator = self.optical_operator(blocks, solve_policy, regularization)
-            inverse_flat.append(self._blocks_from_matrix(operator, atoms).reshape(-1))
             coupling = self._coupling_voigt(internal_strain[start:stop]).reshape(3 * atoms, 6)
             # VASP BEC rows are atomic force/displacement directions and
             # columns are electric-field/polarization directions.
             charge = born_charges[start:stop].reshape(3 * atoms, 3)
-            inverse_coupling = operator @ coupling
+            relaxed = self.apply_optical_operator(
+                blocks, torch.cat((charge, coupling), dim=-1), solve_policy, regularization
+            )
+            inverse_charge, inverse_coupling = relaxed[:, :3], relaxed[:, 3:]
+            if return_optical_operator:
+                operator = self.optical_operator(blocks, solve_policy, regularization)
+                inverse_flat.append(self._blocks_from_matrix(operator, atoms).reshape(-1))
             volume = torch.linalg.det(cells[graph_index]).abs().clamp_min(torch.finfo(cells.dtype).eps)
             ionic_piezo.append(self.PIEZO_C_PER_M2 * (charge.transpose(0, 1) @ inverse_coupling) / volume)
             ionic_dielectric.append(
-                self.DIELECTRIC_RELATIVE * (charge.transpose(0, 1) @ operator @ charge) / volume
+                self.DIELECTRIC_RELATIVE * (charge.transpose(0, 1) @ inverse_charge) / volume
             )
             shared_clamped.append(
                 self.EV_PER_A3_TO_GPA * strain_curvature[graph_index] / volume
@@ -1071,17 +1059,21 @@ class AtomCoordinateResponsePotential(nn.Module):
                 self.EV_PER_A3_TO_GPA * (coupling.transpose(0, 1) @ inverse_coupling) / volume
             )
         ionic_piezo_cart = piezo_voigt_to_cartesian(torch.stack(ionic_piezo))
-        dielectric = dielectric_background + torch.stack(ionic_dielectric)
+        ionic_dielectric_tensor = torch.stack(ionic_dielectric)
+        elastic_softening_tensor = torch.stack(elastic_softening)
+        dielectric = dielectric_background + ionic_dielectric_tensor
         shared_clamped_tensor = torch.stack(shared_clamped)
         # Case A in the energy decomposition: the separately predicted
         # background is K_direct, while S^T K S is included exactly once here.
-        elastic = elastic_background + shared_clamped_tensor - torch.stack(elastic_softening)
+        elastic = elastic_background + shared_clamped_tensor - elastic_softening_tensor
         return (
             electronic_piezo + ionic_piezo_cart,
             dielectric,
             elastic,
-            torch.cat(inverse_flat),
+            torch.cat(inverse_flat) if inverse_flat else force_constants_flat.new_empty(0),
             shared_clamped_tensor,
+            ionic_dielectric_tensor,
+            elastic_softening_tensor,
         )
 
     def forward(
@@ -1123,50 +1115,54 @@ class PiezoJet(nn.Module):
         reciprocal_cutoff: float = 7.0,
         optical_regularization: float = 1e-3,
         optical_stability_cutoff: float = 1e-4,
-        optical_solve_policy: str = "auto",
-        factor_architecture: str = "energy_learned_strain",
-        star_rank: int = 4,
+        optical_solve_policy: str = "regularized",
+        factor_architecture: str = "independent_quadratic_response",
+        background_architecture: str = "isotropic",
         **encoder_kwargs,
     ):
         super().__init__()
         self.encoder = CartesianLocalEnvironmentEncoder(**encoder_kwargs)
-        self.head = CartesianPiezoTensorHead(self.encoder.input[-2].out_features, self.encoder.channels)
-        self.born_head = CartesianBornChargeHead(self.encoder.input[-2].out_features, self.encoder.channels)
-        self.local_polar_mode = CartesianPolarReadout(self.encoder.input[-2].out_features, self.encoder.channels)
+        self.electronic_head = CartesianPiezoTensorHead(
+            self.encoder.scalar_dim, self.encoder.channels
+        )
+        # Total-only labels have a branch-allocation gauge and therefore use
+        # an independent macro tower. Their gradients cannot enter the
+        # physical encoder or any Z/Phi/Lambda/U_eta decoder.
+        self.macro_encoder = CartesianLocalEnvironmentEncoder(**encoder_kwargs)
+        self.macro_total_head = CartesianPiezoTensorHead(
+            self.macro_encoder.scalar_dim, self.macro_encoder.channels
+        )
+        self.macro_dielectric_head = CartesianMacroDielectricHead(
+            self.macro_encoder.scalar_dim, self.macro_encoder.channels
+        )
+        self.macro_elastic_head = CartesianMacroElasticHead(
+            self.macro_encoder.scalar_dim, self.macro_encoder.channels
+        )
+        if background_architecture != "isotropic":
+            raise ValueError("PiezoJet supports only the maintained isotropic background")
+        self.ionic_parameterization = "direct_displacement"
+        self.displacement_response_head = CartesianInternalStrainHead(
+            self.encoder.scalar_dim, self.encoder.channels
+        )
+        self.born_head = CartesianBornChargeHead(self.encoder.scalar_dim, self.encoder.channels)
+        self.local_polar_mode = CartesianPolarReadout(self.encoder.scalar_dim, self.encoder.channels)
         self.global_context = CrystalGlobalContext(
             global_context_dim, spectral_channels, spectral_shells, polar_fluctuation_shells, reciprocal_cutoff
         )
-        if factor_architecture not in {
-            "legacy", "energy", "energy_learned_strain", "energy_learned_star"
-        }:
+        if factor_architecture != "independent_quadratic_response":
             raise ValueError(
-                "factor_architecture must be legacy, energy, "
-                "energy_learned_strain, or energy_learned_star"
+                "PiezoJet supports only factor_architecture="
+                "independent_quadratic_response"
             )
         self.factor_architecture = factor_architecture
-        if factor_architecture == "legacy":
-            self.force_constants = CartesianForceConstantHead(
-                self.encoder.input[-2].out_features,
-                int(encoder_kwargs.get("radial_basis", 12)),
-                float(encoder_kwargs.get("cutoff", 5.0)),
-            )
-            self.internal_strain = CartesianInternalStrainHead(
-                self.encoder.input[-2].out_features, self.encoder.channels
-            )
-        else:
-            self.energy_factors = StrainAwareQuadraticEnergyHead(
-                self.encoder.input[-2].out_features,
-                int(encoder_kwargs.get("radial_basis", 12)),
-                float(encoder_kwargs.get("cutoff", 5.0)),
-                global_context_dim,
-                learned_strain_map=factor_architecture in {
-                    "energy_learned_strain", "energy_learned_star"
-                },
-                star_rank=(
-                    int(star_rank)
-                    if factor_architecture == "energy_learned_star" else 0
-                ),
-            )
+        self.response_factors = IndependentQuadraticResponseHead(
+            self.encoder.scalar_dim,
+            self.encoder.channels,
+            int(encoder_kwargs.get("radial_basis", 12)),
+            float(encoder_kwargs.get("cutoff", 5.0)),
+            global_context_dim,
+        )
+        self.background_architecture = background_architecture
         self.background = LinearResponseBackground(global_context_dim)
         self.response = AtomCoordinateResponsePotential(
             optical_regularization,
@@ -1188,15 +1184,9 @@ class PiezoJet(nn.Module):
         context, spectral_operator = self.global_context(
             batch, batch.batch, local_polar, return_operator=True
         )
-        if self.factor_architecture == "legacy":
-            force_constants_flat = self.force_constants(features, local_polar, batch)
-            internal_strain = self.internal_strain(features, batch.batch)
-            graphs = int(batch.batch.max()) + 1
-            strain_curvature = force_constants_flat.new_zeros(graphs, 6, 6)
-        else:
-            force_constants_flat, internal_strain, strain_curvature = self.energy_factors(
-                features, local_polar, context, batch
-            )
+        force_constants_flat, internal_strain, strain_curvature = self.response_factors(
+            features, local_polar, context, batch
+        )
         factors = AtomCoordinateFactors(
             born_charges, force_constants_flat, internal_strain, strain_curvature
         )
@@ -1206,21 +1196,77 @@ class PiezoJet(nn.Module):
         """Predict DFPT factors without evaluating their stiff inverse product."""
         return self._factor_features(batch)[2]
 
-    def predict_components(self, batch) -> AtomCoordinatePrediction:
-        features, local_polar, factors, context, spectral_operator = self._factor_features(batch)
-        direct = self.head(features, batch.batch)
-        electronic_piezo = 0.5 * (direct + spectral_operator + (direct + spectral_operator).transpose(-1, -2))
-        elastic_background, dielectric_background = self.background(context)
-        tensor, dielectric, elastic, optical_operator_flat, shared_clamped_elastic = self.response.responses(
-            electronic_piezo, factors.born_charges, factors.internal_strain,
-            factors.force_constants_flat, factors.strain_curvature, batch,
-            elastic_background, dielectric_background
+    def predict_macro_responses(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Predict total-only responses on a tower isolated from physical factors."""
+        macro_features = self.macro_encoder(batch)
+        macro_total = self.macro_total_head(macro_features, batch.batch)
+        macro_total = 0.5 * (macro_total + macro_total.transpose(-1, -2))
+        return (
+            macro_total,
+            self.macro_dielectric_head(macro_features, batch.batch),
+            self.macro_elastic_head(macro_features, batch.batch),
         )
-        ionic_piezo = tensor - electronic_piezo
+
+    def predict_macro_total(self, batch) -> torch.Tensor:
+        """Backward-compatible total-piezo-only entry point."""
+        return self.predict_macro_responses(batch)[0]
+
+    def predict_displacement_response(self, batch) -> torch.Tensor:
+        """Predict the independent translation-free regularized response field.
+
+        This intentionally bypasses the BEC, Hessian, Lambda, electronic, and
+        macro branches.  It is used only in the teacher-forced U curriculum,
+        where a nonzero DFPT target must establish a well-conditioned learning
+        signal before the bilinear ``Z*^T U`` loss and the homogeneous normal
+        equation are enabled.
+        """
+        return self.displacement_response_head(self.encode(batch), batch.batch)
+
+    def predict_components(self, batch, return_optical_operator: bool = False) -> AtomCoordinatePrediction:
+        """Predict response components.
+
+        Full optical Green matrices are excluded from the regular path.  They
+        can be requested only for a small, explicitly diagnostic calculation.
+        """
+        features, local_polar, factors, context, spectral_operator = self._factor_features(batch)
+        electronic_direct = self.electronic_head(features, batch.batch)
+        electronic_piezo = 0.5 * (
+            electronic_direct + spectral_operator
+            + (electronic_direct + spectral_operator).transpose(-1, -2)
+        )
+        macro_total, macro_dielectric, macro_elastic = self.predict_macro_responses(batch)
+        internal_strain = factors.internal_strain
+        displacement_response = self.displacement_response_head(features, batch.batch)
+        ionic_piezo = self.response.ionic_piezo_from_displacement_response(
+            factors.born_charges, displacement_response, batch
+        )
+        elastic_background, dielectric_background = self.background(context)
+        (
+            factorized_tensor, dielectric, elastic, optical_operator_flat,
+            shared_clamped_elastic, ionic_dielectric, elastic_softening,
+        ) = self.response.responses(
+            electronic_piezo, factors.born_charges, internal_strain,
+            factors.force_constants_flat, factors.strain_curvature, batch,
+            elastic_background, dielectric_background,
+            return_optical_operator=return_optical_operator,
+        )
+        factorized_ionic_piezo = factorized_tensor - electronic_piezo
+        physical_tensor = electronic_piezo + ionic_piezo
         return AtomCoordinatePrediction(
-            0.5 * (tensor + tensor.transpose(-1, -2)), electronic_piezo, ionic_piezo,
-            factors.born_charges, factors.force_constants_flat, factors.internal_strain, optical_operator_flat,
-            shared_clamped_elastic, elastic_background, dielectric_background, dielectric, elastic,
+            # The direct and reciprocal terms are strain-symmetric by
+            # construction.  Retain this final projection because the
+            # regularized optical solve and finite-precision subtraction above
+            # can introduce roundoff-level antisymmetry in the assembled
+            # response; this is a numerical invariant enforcement, not a
+            # second learned symmetrization.
+            macro_total,
+            macro_dielectric, macro_elastic,
+            0.5 * (physical_tensor + physical_tensor.transpose(-1, -2)),
+            electronic_piezo, ionic_piezo,
+            factorized_ionic_piezo, displacement_response,
+            factors.born_charges, factors.force_constants_flat, internal_strain, optical_operator_flat,
+            shared_clamped_elastic, elastic_background, dielectric_background,
+            ionic_dielectric, elastic_softening, dielectric, elastic,
         )
 
     def forward(self, batch) -> torch.Tensor:
@@ -1229,12 +1275,33 @@ class PiezoJet(nn.Module):
     def potential(self, batch, field: torch.Tensor, eta6: torch.Tensor) -> torch.Tensor:
         components = self.predict_components(batch)
         return self.response(
-            components.tensor, components.elastic, components.dielectric, field, eta6,
+            components.physical_tensor, components.elastic, components.dielectric, field, eta6,
         )
 
 
 def model_from_config(config: Mapping[str, object]) -> PiezoJet:
     """Construct the single production PiezoJet architecture from a run config."""
+    factor_architecture = str(
+        config.get("factor_architecture", "independent_quadratic_response")
+    )
+    if factor_architecture != "independent_quadratic_response":
+        raise ValueError(
+            "Production PiezoJet requires "
+            "factor_architecture=independent_quadratic_response; "
+            "legacy architecture switches are not accepted by model_from_config"
+        )
+    solve_policy = str(config.get("optical_solve_policy", "regularized"))
+    if solve_policy != "regularized":
+        raise ValueError(
+            "Production PiezoJet requires optical_solve_policy=regularized; "
+            "exact propagation is available only through explicit DFPT diagnostics"
+        )
+    background_architecture = str(config.get("background_architecture", "isotropic"))
+    if background_architecture != "isotropic":
+        raise ValueError(
+            "Production PiezoJet requires background_architecture=isotropic; "
+            "the unselected anisotropic candidate is not a maintained fallback"
+        )
     return PiezoJet(
         embedding_dim=int(config["embedding_dim"]), cutoff=float(config["cutoff"]),
         num_blocks=int(config["num_blocks"]), radial_basis=int(config["radial_basis"]), radial_hidden=int(config["radial_hidden"]),
@@ -1244,7 +1311,7 @@ def model_from_config(config: Mapping[str, object]) -> PiezoJet:
         reciprocal_cutoff=float(config.get("reciprocal_cutoff", 7.0)),
         optical_regularization=float(config.get("optical_regularization", 1e-3)),
         optical_stability_cutoff=float(config.get("optical_stability_cutoff", 1e-4)),
-        optical_solve_policy=str(config.get("optical_solve_policy", "auto")),
-        factor_architecture=str(config.get("factor_architecture", "legacy")),
-        star_rank=int(config.get("star_rank", 4)),
+        optical_solve_policy=solve_policy,
+        factor_architecture=factor_architecture,
+        background_architecture=background_architecture,
     )

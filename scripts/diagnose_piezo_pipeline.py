@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import yaml
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from torch_geometric.loader import DataLoader
@@ -22,6 +21,7 @@ from torch_geometric.loader import DataLoader
 from piezojet.data import PiezoDataset, create_or_load_splits, formula, graph_cache_key, load_gmtnet_records
 from piezojet.metrics import response_tensor_skill
 from piezojet.model import model_from_config
+from piezojet.project_config import load_project_config
 from piezojet.tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, rotate_piezo, source_voigt_to_canonical
 from piezojet.train import device_from_config
 
@@ -206,7 +206,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--symmetry-samples", type=int, default=128)
     args = parser.parse_args()
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    cfg = load_project_config(args.config)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     records = load_gmtnet_records(cfg["data_root"])
     records_by_id = {str(record["JARVIS_ID"]): record for record in records}

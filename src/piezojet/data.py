@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 from uuid import uuid4
 import random
 from hashlib import sha256
@@ -17,44 +16,16 @@ from pymatgen.core import Element
 from torch_geometric.data import Data, Dataset
 
 from .jarvis_dfpt import JarvisDFPTCache
+from .gmtnet_io import PIEZO_FIELD, PIEZO_FILE, load_gmtnet_records
 from .projector import get_cartesian_point_group_operations, project_piezo_to_point_group
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 
-PIEZO_FILE = "jarvis_diele_piezo.pkl"
-PIEZO_FIELD = "piezoelectric_C_m2"
 GRAPH_CACHE_SCHEMA = 3
 SPLIT_SCHEMA = 2
 SYMMETRY_TARGET_CACHE_SCHEMA = 2
 RESPONSE_NORM_BOUNDS = (0.0, 0.05, 0.5, 1.0)
 MAX_POINT_GROUP_OPERATIONS = 48
-
-
-def load_gmtnet_records(root: str | Path) -> list[dict[str, Any]]:
-    path = Path(root) / "data" / PIEZO_FILE
-    if not path.is_file():
-        raise FileNotFoundError(f"Expected official GMTNet piezoelectric file: {path}")
-    with path.open("rb") as handle:
-        records = pickle.load(handle)
-    if not isinstance(records, list) or not records:
-        raise ValueError(f"Expected a non-empty list in {path}")
-    required = {"JARVIS_ID", "atoms", PIEZO_FIELD}
-    missing = required.difference(records[0])
-    if missing:
-        raise ValueError(f"Missing required GMTNet fields: {sorted(missing)}")
-    valid: list[dict[str, Any]] = []
-    for record in records:
-        value = record.get(PIEZO_FIELD)
-        tensor = torch.as_tensor(value, dtype=torch.float32) if value is not None else None
-        if tensor is None or tensor.shape != (3, 6):
-            continue
-        # Match GMTNet_piezo/data.py's documented screening exactly.
-        if not torch.isfinite(tensor).all() or tensor.abs().max() >= 100:
-            continue
-        valid.append(record)
-    if not valid:
-        raise ValueError("No finite 3x6 piezoelectric records found")
-    return valid
 
 
 def formula(record: dict[str, Any]) -> str:
@@ -371,7 +342,7 @@ def precompute_pbc_graphs(records: list[dict[str, Any]], processed_dir: str | Pa
 
 
 class PiezoDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None):
+    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None, elastic_targets_path: str | Path | None = None, dfpt_total_consistency_relative_tolerance: float = 0.05, dfpt_total_consistency_absolute_tolerance: float = 0.05):
         super().__init__()
         wanted = set(ids)
         self.records = [record for record in records if str(record["JARVIS_ID"]) in wanted]
@@ -385,6 +356,16 @@ class PiezoDataset(Dataset):
         self._strain_completion_dir = (
             Path(strain_completion_dir) if strain_completion_dir is not None else None
         )
+        self._elastic_targets: dict[str, torch.Tensor] = {}
+        if elastic_targets_path is not None:
+            payload = torch.load(elastic_targets_path, map_location="cpu", weights_only=False)
+            if payload.get("schema") != 1 or payload.get("unit") != "GPa" or not isinstance(payload.get("targets"), dict):
+                raise ValueError("Elastic auxiliary payload must be schema-1 GPa targets")
+            self._elastic_targets = {str(jid): torch.as_tensor(value) for jid, value in payload["targets"].items()}
+        if dfpt_total_consistency_relative_tolerance < 0 or dfpt_total_consistency_absolute_tolerance < 0:
+            raise ValueError("DFPT/GMTNet total-piezo consistency tolerances must be non-negative")
+        self._dfpt_total_consistency_relative_tolerance = float(dfpt_total_consistency_relative_tolerance)
+        self._dfpt_total_consistency_absolute_tolerance = float(dfpt_total_consistency_absolute_tolerance)
 
     def target(self, record: dict[str, Any]) -> torch.Tensor:
         return _raw_cartesian_target(record) if self._target_cache is None else self._target_cache.get(record)
@@ -416,6 +397,12 @@ class PiezoDataset(Dataset):
             has_dielectric = dielectric.shape == (3, 3) and bool(torch.isfinite(dielectric).all())
             graph.y_dielectric = (dielectric if has_dielectric else torch.zeros(3, 3, dtype=target.dtype)).unsqueeze(0)
             graph.dielectric_mask = torch.tensor(has_dielectric, dtype=torch.bool)
+            elastic_target = self._elastic_targets.get(str(record["JARVIS_ID"]))
+            has_elastic = elastic_target is not None and elastic_target.shape == (6, 6) and bool(torch.isfinite(elastic_target).all())
+            graph.y_elastic_gpa = (
+                elastic_target.to(dtype=target.dtype) if has_elastic else torch.zeros(6, 6, dtype=target.dtype)
+            ).unsqueeze(0)
+            graph.elastic_mask = torch.tensor(has_elastic, dtype=torch.bool)
             # BEC is a node-aligned tensor and can therefore be batched safely.
             # The variable-length Gamma-mode arrays are retained in flattened
             # form plus their dimensions for downstream mode-specific audits.
@@ -462,13 +449,70 @@ class PiezoDataset(Dataset):
                 graph.dfpt_force_constants_flat = dfpt["force_constants"].reshape(-1).to(dtype=target.dtype)
                 graph.force_constant_mask = torch.tensor(True, dtype=torch.bool)
                 ionic_source = dfpt["ionic_piezo_source"].to(dtype=target.dtype)
-                graph.y_ionic_piezo = piezo_voigt_to_cartesian(source_voigt_to_canonical(ionic_source)).unsqueeze(0)
+                ionic_cartesian = piezo_voigt_to_cartesian(
+                    source_voigt_to_canonical(ionic_source)
+                )
+                graph.y_ionic_piezo = project_piezo_to_point_group(
+                    ionic_cartesian, rotations
+                ).unsqueeze(0)
                 graph.ionic_piezo_mask = torch.tensor(True, dtype=torch.bool)
+                # These three branch labels all come from the same JARVIS
+                # OUTCAR.  They are intentionally distinct from the GMTNet
+                # corpus target: the latter remains the all-material total
+                # response objective, while branch supervision never mixes
+                # sources or invents an electronic label for a missing archive.
+                total_source = dfpt["total_piezo_source"].to(dtype=target.dtype)
+                total_cartesian = piezo_voigt_to_cartesian(
+                    source_voigt_to_canonical(total_source)
+                )
+                graph.y_dfpt_total_piezo = project_piezo_to_point_group(
+                    total_cartesian, rotations
+                ).unsqueeze(0)
+                graph.y_electronic_piezo = graph.y_dfpt_total_piezo - graph.y_ionic_piezo
+                # Every branch is now in the same Reynolds-projected target
+                # space as the GMTNet objective. Linearity guarantees
+                # P_G(e_el)+P_G(e_ion)=P_G(e_total) to floating-point roundoff.
+                # A material for which the two projected training totals still
+                # disagree beyond both physical tolerances cannot safely
+                # receive simultaneous macro ionic/electronic/branch losses.
+                # Keep its GMTNet total target, retain the source arrays for
+                # forensic reporting, and mask only the conflicting DFPT
+                # response supervision until its structure/response symmetry
+                # convention is resolved.
+                total_difference = torch.linalg.vector_norm(
+                    target - graph.y_dfpt_total_piezo.squeeze(0)
+                )
+                total_scale = torch.linalg.vector_norm(
+                    graph.y_dfpt_total_piezo.squeeze(0)
+                ).clamp_min(0.05 * (18.0 ** 0.5))
+                graph.dfpt_total_consistency_abs_c_per_m2 = total_difference.reshape(1)
+                graph.dfpt_total_consistency_rel = (total_difference / total_scale).reshape(1)
+                consistent_total = not bool(
+                    (total_difference > self._dfpt_total_consistency_absolute_tolerance)
+                    & (total_difference / total_scale > self._dfpt_total_consistency_relative_tolerance)
+                )
+                graph.dfpt_total_consistency_mask = torch.tensor(consistent_total, dtype=torch.bool)
+                graph.ionic_piezo_mask = torch.tensor(consistent_total, dtype=torch.bool)
+                graph.dfpt_branch_mask = torch.tensor(consistent_total, dtype=torch.bool)
                 graph.dfpt_internal_strain_flat = dfpt["internal_strain_tensors"].reshape(-1).to(dtype=target.dtype)
                 graph.dfpt_internal_strain_ions = dfpt["internal_strain_ions"]
                 graph.dfpt_internal_strain_directions = dfpt["internal_strain_directions"]
                 graph.dfpt_internal_strain_count = torch.tensor(
                     [dfpt["internal_strain_tensors"].shape[0]], dtype=torch.long
+                )
+                epsilon_ion = torch.as_tensor(
+                    dfpt.get("epsilon", {}).get("epsilon_ion", []), dtype=target.dtype
+                )
+                has_ionic_dielectric = (
+                    epsilon_ion.shape == (3, 3)
+                    and bool(torch.isfinite(epsilon_ion).all())
+                )
+                graph.y_dfpt_ionic_dielectric = (
+                    0.5 * (epsilon_ion + epsilon_ion.transpose(-1, -2))
+                    if has_ionic_dielectric else torch.zeros(3, 3, dtype=target.dtype)
+                ).unsqueeze(0)
+                graph.dfpt_ionic_dielectric_mask = torch.tensor(
+                    has_ionic_dielectric, dtype=torch.bool
                 )
             else:
                 modes = 0
@@ -478,10 +522,18 @@ class PiezoDataset(Dataset):
                 graph.force_constant_mask = torch.tensor(False, dtype=torch.bool)
                 graph.y_ionic_piezo = torch.zeros(1, 3, 3, 3, dtype=target.dtype)
                 graph.ionic_piezo_mask = torch.tensor(False, dtype=torch.bool)
+                graph.y_dfpt_total_piezo = torch.zeros(1, 3, 3, 3, dtype=target.dtype)
+                graph.y_electronic_piezo = torch.zeros(1, 3, 3, 3, dtype=target.dtype)
+                graph.dfpt_branch_mask = torch.tensor(False, dtype=torch.bool)
+                graph.dfpt_total_consistency_abs_c_per_m2 = torch.zeros(1, dtype=target.dtype)
+                graph.dfpt_total_consistency_rel = torch.zeros(1, dtype=target.dtype)
+                graph.dfpt_total_consistency_mask = torch.tensor(False, dtype=torch.bool)
                 graph.dfpt_internal_strain_flat = torch.empty(0, dtype=target.dtype)
                 graph.dfpt_internal_strain_ions = torch.empty(0, dtype=torch.long)
                 graph.dfpt_internal_strain_directions = torch.empty(0, dtype=torch.long)
                 graph.dfpt_internal_strain_count = torch.tensor([0], dtype=torch.long)
+                graph.y_dfpt_ionic_dielectric = torch.zeros(1, 3, 3, dtype=target.dtype)
+                graph.dfpt_ionic_dielectric_mask = torch.tensor(False, dtype=torch.bool)
             if completion is not None:
                 full_internal = completion["internal_strain_full"].to(dtype=target.dtype)
                 if full_internal.shape != (graph.num_nodes, 3, 3, 3):
