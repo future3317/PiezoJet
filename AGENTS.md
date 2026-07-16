@@ -15,6 +15,9 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   data, tensor, train, or evaluator changes.
 - Use `apply_patch` for source and configuration edits. Preserve unrelated
   dirty-worktree changes.
+- Treat `data/processed` and `E:\DATA\PiezoJet\processed` as one mapped
+  physical store even when Windows reports no `LinkType`. Never recursively
+  delete or move either root during repository cleanup.
 
 ## Non-negotiable scientific rules
 
@@ -36,24 +39,53 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 
 ## Current data protocol
 
-- `data/processed/jarvis_strain_completion_v4/` holds 99 schema-validated,
-  accepted strict completions.
-- `data/processed/jarvis_strain_completion_v5/` adds the 28 accepted labels
-  from the first information-gain cohort (127 total); its cohort is strongly
-  cubic-heavy and must not be described as a uniform scaling result.
-- `data/processed/jarvis_strain_completion_v6/` is the current fresh union
-  (138 accepted). It adds 11 accepted labels from a coverage-aware JARVIS-only
-  queue of 100 formulas. That queue reserved retrieval slots by the frozen
-  test-panel crystal-system frequencies, excluded previously audited IDs, and
-  retained every strict gate. Of 98 available archives it accepted 5 cubic, 3
-  hexagonal, 2 tetragonal, and 1 orthorhombic materials; it accepted none of
-  the retrieved trigonal, monoclinic, or triclinic materials. Do not claim
-  coverage of those unresolved classes.
-- `data/processed/strict_completion_benchmark_v1.json` is frozen at
+- `data/processed/canonical_datasets.json` is the only maintained role map.
+  Code and scripts must not scan older versioned directories as fallbacks.
+
+- The full public archive accounting is complete: 4,995 schema-4 parsed
+  payloads are in `E:\DATA\PiezoJet\processed\jarvis_dfpt_v9_full_public`,
+  and the three non-labelable raw ZIPs are SHA256-indexed in
+  `E:\DATA\PiezoJet\raw\jarvis_dfpt_v9_quarantine`. Together these account
+  for all 4,998 requested archives. Never fabricate aligned labels for
+  JVASP-1048 (structure mismatch), JVASP-34237, or JVASP-7658 (malformed XML).
+- `E:\DATA\PiezoJet\processed\jarvis_strain_completion_v10_zero_dimensional_fix`
+  is the current strict cohort: 1,638 accepted of 4,995 audited payloads. Its
+  zero-dimensional invariant-space correction treats the unique zero tensor
+  as condition number 1 and pseudoinverse norm 0; no acceptance threshold was
+  relaxed.
+- `data/processed/strict_completion_benchmark_train_v10_full_public.json` is
+  the current frozen-panel-safe factor split: train1603/val10/test20. The five
+  accepted records sharing frozen validation/test formulas are excluded from
+  train. Validation and test IDs remain byte-for-byte frozen.
+- `data/processed/full_corpus_multitask_train1603_v1.json` combines the 4,961
+  formula-disjoint GMTNet macro train records with the strict train1603 factor
+  records. Factor losses remain availability-masked.
+- The v10 coverage audit records severe selection bias. In particular strict
+  acceptance is 40/1,005 for trigonal records and 0/46 for 1--2 atom records.
+  Do not describe strict-complete coverage as uniform or unbiased.
+- The v4--v7 cache/completion cohorts below are retained historical convention
+  and learning-curve evidence. They are not the current full-public training
+  cohort and must not be pooled with v9/v10.
+
+- Historical v4--v7 completion/cache details and their biased acquisition
+  cohorts are documented in `docs/EXPERIMENTAL_ARCHIVE.md` and the experiment
+  registry, not in the maintained runtime protocol. Their central convention
+  result still applies: source `Z[i,j]=dP_i/du_j` becomes internal `Z[j,i]`,
+  while printed OUTCAR internal strain is already `dF/deta=Lambda`.
+- `outputs/gmtnet_outcar_total_consistency_v1/` records the required total-label
+  audit. Raw GMTNet and same-ID OUTCAR totals agree exactly after one common
+  conversion for all 610 archives. The Reynolds-projected GMTNet training
+  target conflicts with source OUTCAR branch labels only for global-train
+  JVASP-42995 and JVASP-28862 under the fixed 0.05 C/m2 and 5% double gate;
+  retain their GMTNet total target but mask DFPT macro ionic/electronic/branch
+  supervision pending convention resolution. Neither belongs to the frozen
+  strict 149/10/20 panel.
+- `data/processed/_historical_splits/strict_completion_benchmark_v1.json` is frozen at
   69/10/20 formula-disjoint train/validation/test. Never reassign the 20 test
   IDs as new data arrive.
-- `data/processed/strict_completion_benchmark_train97_v1.json` and
-  `data/processed/strict_completion_benchmark_train108_v1.json` may add only
+- `data/processed/_historical_splits/strict_completion_benchmark_train97_v1.json`,
+  `data/processed/_historical_splits/strict_completion_benchmark_train108_v1.json`, and
+  `data/processed/_historical_splits/strict_completion_benchmark_train149_v1.json` may add only
   strict-complete, frozen-panel-formula-disjoint materials to train. Their
   validation/test IDs must remain byte-for-byte identical to the v1 panel.
 - The first nested learning curve uses splits in
@@ -65,13 +97,9 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - Every learning-curve point reports full-Lambda, response-active ionic, and
   low-mode metrics. Do not select checkpoints or hyperparameters using test
   outputs.
-- `outputs/feedback4_execution_v1/report/feedback4_report.md` records the
-  registered fixed-coverage A/B/C/D forensic, five one-seed resampled
-  35-label subsets, and one mode-aware smoke. Treat the A/B/C/D result as a
-  post-freeze optimization diagnostic, not a production performance table.
-- The gauge-safe `mode_aware_strain_loss_weight` is disabled by default. Its
-  one-seed smoke did not improve predicted ionic skill; do not enable it for a
-  production claim without a preregistered multi-seed comparison.
+- `outputs/feedback4_execution_v1/report/feedback4_report.md` is retained as a
+  historical fixed-coverage optimization forensic. Its former executable
+  protocol and mode-aware branches are not part of the maintained trainer.
 - `outputs/feedback5_execution_v1/report_v2/feedback5_report.md` is the
   canonical post-selection replay of A--E. Ionic claims must name the
   regularized operator and material-macro aggregation; component-micro cosine
@@ -92,32 +120,124 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   The 108-train coverage-aware addition improves ionic diagnostics but leaves
   total TRS negative, so it is not a production-model promotion.
 
-## Training conventions
+## Maintained parameterization and training
 
-- Production curve protocol: 100 fixed gradient updates (`batch_size=128`, so
-  one update per epoch for these subsets), no early stop, checkpoint chosen by
-  validation loss only.
-- Direct-factor curve protocol: 50 direct-factor updates plus 50 frozen-factor
-  joint updates; same seed, optimizer, batch size, and frozen panel.
-- Intermediate single-seed values are diagnostics. Three seeds are required
-  before comparing learning-curve points; do not describe the 23/50 phase-1
-  rows as three-seed results.
-- Protocol E is a registered negative follow-up: 100 direct-factor updates,
-  validation-factor restore, then 50 frozen-factor joint updates. Its three
-  seeds preserve factor direction but worsen total TRS; do not make it a
-  production default or tune it using test results. `--protocol all` in
-  `protocol_ablation` deliberately continues to mean only the legacy A--D set.
-- Protocols F/G are prospective three-seed factor-protected gradient
-  diagnostics. F projects conflicting response gradients off the direct-factor
-  direction on the B/E factor stack; G also unit-norm matches the projected
-  response gradient. Neither produces positive ionic skill or total TRS, so
-  neither is a production default or a loss-weight tuning basis. Their
-  canonical A--G report is
-  `outputs/factor_protected_norm_match_v1/report/feedback5_report.md`.
+- The production ionic path is `Z*^T U_{eta,delta}`, where `U_{eta,delta}` is
+  the regularized internal-displacement response coordinate predicted by an
+  independent translation-free atom-level head. It is not an equilibrium
+  `du/deta` on unstable references. `U_eta_stat=Phi_o^-1 Lambda_o` is reserved
+  for the true-stable exact diagnostic. Never reconstruct `Lambda`
+  from a macroscopic target through a pseudoinverse, ridge lift, active/null
+  projector, or detached predicted-factor chart.
+- `Phi/Lambda` propagation is an attached physical diagnostic. Strict labels
+  supervise `U_eta*=D_delta(Phi)Lambda` and the inverse-free normal equation
+  `(Phi^2+delta^2 I)U_eta=Phi Lambda`.
+- `Phi` and `Lambda` are independent coefficients of the same explicit scalar
+  quadratic response energy `0.5 u^T Phi u - u^T Lambda eta + 0.5 eta^T C eta`.
+  Do not reintroduce the extra restriction `Lambda=B^T K S`; integrability
+  does not require sharing the edge stiffness `K`.
+- Low-mode and mixed-probe operator losses use a material-relative spectral
+  floor for genuinely soft/inactive directions. Do not replace it with a
+  machine-epsilon denominator or tune weights using frozen validation/test.
+- Total-only GMTNet labels use an independent macro encoder/head. They must not
+  backpropagate into the physical encoder, electronic branch, `Z*`, `Phi`,
+  `Lambda`, or `U_eta`.
+- `model_from_config` accepts only `independent_quadratic_response`, isotropic
+  background, and the continuous `regularized` operator. Exact propagation is
+  an explicit true-DFPT stable diagnostic. There is no `auto` policy.
+- Tensor losses reduce complete Cartesian Frobenius norms before pseudo-Huber.
+  Do not reintroduce componentwise SmoothL1 for rotated tensor objectives.
+- One exposure epoch means complete passes: factor branch + factor strict,
+  followed during joint training by macro + branch + strict streams. Strict-
+  only losses must not be repeated on the branch stream.
+- `scripts/run_exposure_matched_replay.ps1` registers 1/5/10/20 passes for
+  seeds 42/7/1729 and runs a matched macro-only direct control. Checkpoints are
+  selected by validation loss only; test outputs never tune the model.
+- Intermediate single-seed and one-pass values are implementation diagnostics.
+  Three seeds are required before comparing registered exposure points.
+- Historical A--G, sketch, mode-aware, pInv/ridge, and architecture-switch
+  executors have been removed from the maintained package. Their persisted
+  outputs remain historical evidence and must not be presented as current
+  code paths.
+
+## Current direct-U candidate
+
+- `outputs/operator_learning_capacity_v2/summary.json` is a retained negative
+  same-ID capacity result: the operator bundle helps 1/8 materials but fails
+  at 32, including a Phi direction reversal. It does not authorize validation.
+- The follow-up independent-Lambda/material-spectral-floor replay must keep the
+  v5 operator weights fixed. Do not inspect frozen validation/test until its
+  32-material gate is judged; failed/partial launch directories remain in the
+  experiment registry rather than being reused.
+
+- `config.yaml` uses the 4,961-item formula-disjoint macro train pool, the
+  convention-corrected 4,995-payload v9 cache, strict v10 completions, and the full-
+  corpus inductive structural checkpoint. Frozen validation10/test20 IDs are
+  unchanged.
+- `src/piezojet/train_direct_baseline.py` is the matched control. It uses the
+  same macro passes, pretraining, graph, tensor convention, split, seed, and
+  validation-selection rule, without physical response factors.
+- The exposure replay is two parallel experiments: branch610/strict149 test
+  physical `U_{eta,delta}` learning, while macro4961 tests only the isolated
+  total predictor. Macro non-degradation is a negative control and must never
+  be described as evidence that total-only labels improve ionic factors.
+- `outputs/direct_u_multistream_smoke_v1/` is a one-pass end-to-end smoke, not
+  a performance claim. Total TRS is -0.00405; direct-U ionic macro cosine is
+  -0.01505 and amplitude ratio is 0.00537.
+- The same smoke's strict true-factor regularized closure has component MAE
+  0.00452 C/m2 and component-micro cosine 0.99997. This validates the declared
+  data/operator closure while locating the one-pass failure in learned factors
+  and displacement response.
+- `scripts/run_teacher_forced_zero_basin_probes.ps1` is the registered
+  noninductive 1/8/32-material capacity ladder. It first fits direct factors,
+  then supervises `U_{eta,delta}` with true `Phi,Lambda` and true-BEC ionic
+  contraction, and holds the homogeneous normal equation at zero during the
+  joint phase. Its same-ID results can falsify a zero-basin/capacity failure
+  but can never support a formula-disjoint performance claim. Do not expand
+  strict training data unless a subsequent matched validation-only comparison
+  improves; do not inspect frozen test outputs for that decision.
+- Its schema-6 audit finds all 480 true and 480 predicted test optical modes at
+  `|lambda| >= 3 delta`, so there is no evidence for a predicted-soft-mode
+  shortcut at this checkpoint. The rank-4 true-U oracle retains 95.98% of
+  displacement singular energy but has 19.81% true-BEC response error; never
+  interpret rank(U)<=6 as six physical phonon modes. True-BEC `Z*^T U_pred`
+  has mean cosine 0.1153 and amplitude ratio 0.0563. These remain one-pass
+  diagnostics, not performance claims.
+- The current periodic e3nn control is incomplete: its train149 structural
+  pretraining completed, but a desktop-session interruption stopped direct
+  seed 42 at update 29/100 before any test JSON was produced. It has no
+  performance result and must be rerun from a fresh output directory before
+  being cited or compared.
+- `data/processed/_historical_splits/full_corpus_multitask_train149_v1.json` is the registered
+  full-corpus multitask split: 4,961 GMTNet train records are formula-disjoint
+  from the frozen val10/test20 formulas, while val/test IDs remain identical to
+  the strict panel. It may use total GMTNet supervision on the full train pool;
+  DFPT and strict-Lambda terms must remain availability-masked. Its driver is
+  `scripts/run_full_corpus_multitask_replay.ps1`; it fixes 100 structural,
+  50 direct-factor, and 100 joint updates. Its completed v2 three-seed
+  diagnostic has factorized total TRS `0.00095 +/- 0.00708`, matched-direct
+  TRS `0.00444 +/- 0.01999`, and paired difference `-0.00349 +/- 0.01567`.
+  Factorized ionic macro MAE skill is `-0.00670 +/- 0.00216` with amplitude
+  ratio `0.03662 +/- 0.00261`; it is a negative diagnostic, not a promotion.
+- Production forward propagation must use
+  `AtomCoordinateResponsePotential.apply_optical_operator`, not materialized
+  dense inverse matrices. `optical_operator()` is diagnostic-only. Stable,
+  soft-positive, and unstable DFPT strata must remain separate in reports.
 
 ## Artifacts and paper
 
 - Put diagnostic outputs under `outputs/`; do not overwrite prior cohorts.
+- Every top-level output cohort must be present in
+  `outputs/EXPERIMENT_REGISTRY.json`; every persisted file must be indexed in
+  `outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl`. Regenerate both with
+  `python -m piezojet.experiment_registry` after a run changes state.
+- Preserve negative, failed, blocked, interrupted, partial, and running runs.
+  Never delete or reuse their output directories to make a result table look
+  complete. New attempts require a fresh cohort or run directory.
+- A performance number in the paper must point to a registered summary/test
+  artifact and its run-local split, seed, convention, and selection rule.
+  Directory existence or a training checkpoint without held-out evaluation is
+  not a performance result.
 - Paper source is `E:\PAPER\piezojet_equivariant_response_jets\piezojet.tex`.
   Only add evidence-backed statements and distinguish post-freeze diagnostics
   from production performance tables.

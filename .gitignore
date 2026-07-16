@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .tmp/
 .paper_work/
+.claude/
 
 # Experiment payloads stay local/data-release scoped, but the lightweight
 # ledger and registered-plan metadata are versioned for auditability.
