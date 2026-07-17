@@ -60,6 +60,13 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - `data/processed/full_corpus_multitask_train1603_v1.json` combines the 4,961
   formula-disjoint GMTNet macro train records with the strict train1603 factor
   records. Factor losses remain availability-masked.
+- The official 2022 `dft_3d` release at
+  `E:\DATA\PiezoJet\jarvis_dft3d_index\jdft_3d-12-12-2022.json.zip` has
+  75,993 unique JIDs and is an auxiliary structure/metadata source. Its
+  historical GMTNet overlap is 4,937/4,998 and some same-JID relaxed cells
+  differ, so it never replaces GMTNet-pinned benchmark structures or DFPT
+  response labels. Its integrity/overlap audit is
+  `outputs/jarvis_dft3d_official_audit/summary.json`.
 - The v10 coverage audit records severe selection bias. In particular strict
   acceptance is 40/1,005 for trigonal records and 0/46 for 1--2 atom records.
   Do not describe strict-complete coverage as uniform or unbiased.
@@ -200,26 +207,38 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 
 ## Electronic-generator adjudication
 
-- `data/processed/strict_train1603_development_folds_v1.json` is the only
-  method-development fold map for the new electronic candidate. It partitions
-  strict train1603 into five formula-disjoint development folds of
-  321/321/320/321/320 materials. It does not read frozen val10/test20 labels and
-  does not replace the canonical production split.
+- `data/processed/electrostatic_development_folds.json` is the current
+  response-generator development map. It contains 4,939 formula-safe records
+  with BEC, same-OUTCAR electronic piezo, electronic dielectric, and force
+  constants, without requiring strict Lambda. All 4,995 parsed payloads pass
+  explicit finite/shape gates for these fields. Its five formula-disjoint
+  development folds have 988/989/987/988/987 materials. Frozen val10/test20
+  labels are not read and the map does not replace the production split.
+- `data/processed/strict_train1603_development_folds_v1.json` remains the
+  development map only for tasks that require strict-complete Lambda.
 - The current Cartesian electronic head fails the samples32 same-ID capacity
   gate (active relative error 0.60814, cosine 0.39285), with the dominant
   residual in `l=3`. The explicit global-irrep `l<=3` control passes on the same
   panel (0.04492, 0.99973). These are train-only model-class diagnostics.
-- `DifferentialPolarizationTower` is the retained shared linearized
-  coefficient-generator control. It directly emits BEC/electronic
-  coefficients and must not be described as the literal perturbed-structure
-  polarization model. Its samples32 electronic/BEC relative errors are
-  0.03942/0.01933. Adding response-jet probes gives 0.04167/0.02104 and is not
-  an improvement.
-- `AutodiffDifferentialPolarizationTower` is the single nonlinear candidate:
+- `ElectromechanicalJetHead` is the exact displacement--strain part of the
+  first-order electromechanical jet.
+  It directly emits BEC/electronic coefficients and defines their common
+  first-order polarization increment. Do not demote it to a fidelity control
+  or describe it as a finite-perturbation polarization state. Its samples32
+  electronic/BEC relative errors are 0.03942/0.01933. Adding algebraically
+  redundant response-jet probes gives 0.04167/0.02104 and is not retained.
+- `IndependentElectrostaticHeads` is A0: statistically independent BEC and
+  electronic-piezo generators with no shared parameter tensors.
+- `NonlinearDifferentialPolarizationTower` has exactly two explicit candidates:
+  A2 Cartesian polarization and A3 reduced polarization
+  `P0=det(F)F^-1 P`, `F=I+eta`. There is no automatic variable switch. It uses
   `Delta P=P_theta(T_eta(x+u_o))-P_theta(x)`, with positions, cell, and periodic
   shifts deformed consistently and no absolute Berry-phase target. BEC and
   electronic piezo are three-output reverse-mode Jacobians of this map. Do not
-  wrap coefficient evaluation in `inference_mode`.
+  wrap coefficient evaluation in `inference_mode`. With only zero-point
+  Jacobian labels, its higher-order degrees of freedom have no additional
+  identifiable content; finite-perturbation/field labels are needed to test a
+  genuinely nonlinear advantage.
 - Differentiable reciprocal geometry is never retained in the fixed-geometry
   cache across optimizer steps. Large same-ID cohorts use material-count-
   weighted gradient accumulation; one optimizer update remains the exact
@@ -239,6 +258,24 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   optimizer time rises 964 -> 1,018 seconds. Preserve this mixed result, but
   do not add the algebraically redundant probe objective to the maintained
   candidate.
+- The A0--A3 formula-disjoint runner is
+  `piezojet.electrostatic_fold_adjudication`. Every architecture uses the same
+  fold-train-only structure checkpoint, random response heads, stochastic
+  mini-batches, `num_workers=0`, and development-only selection. A0 initializes
+  both independent encoder copies from the same checkpoint but shares no
+  trainable parameters. The diagnostic batch is fixed, response-active, and
+  norm-stratified; reports contain both all-task and shared-parameter gradient
+  norms/cosine.
+- The random-initialized A1 N=100/fold0/seed42 pilot is a retained negative
+  control: selected update 25 has electronic active relative error 0.99826,
+  cosine 0.06239, amplitude 0.00406, and BEC relative error about 0.99616.
+  Its response-active read-only audit has electronic/BEC all-parameter
+  gradient norms 0.04598/0.03224, shared norms 0.04547/0.03217, and shared
+  cosine -0.01883. The earlier 5,700-fold ratio came from a weak-target prefix
+  batch and must not be cited as global loss-scale evidence. It is not the fair
+  structure-pretrained Stage-A result. The corresponding A0
+  attempt was interrupted on 2026-07-17 at the user's request and has no
+  performance result; do not resume or overwrite its directory.
 
 - `outputs/operator_learning_capacity_v2/summary.json` is a retained negative
   same-ID capacity result: the operator bundle helps 1/8 materials but fails

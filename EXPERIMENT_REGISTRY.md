@@ -4,7 +4,7 @@ This is the human-readable index of every top-level cohort under `outputs/`. The
 
 Negative, failed, interrupted, partial, running, and historical runs are intentionally retained. A directory's existence never implies a valid performance result.
 
-Registered top-level cohorts: **135**.
+Registered top-level cohorts: **137**.
 
 | Cohort | Family | Execution | Result | Convention | Paper use | Runs (complete/partial) |
 |---|---|---|---|---|---|---:|
@@ -57,7 +57,8 @@ Registered top-level cohorts: **135**.
 | `dfpt_response_active_smoke` | historical_dfpt_diagnostic | completed_or_retained_partial | development_diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `diagnostic_smoke_20260712` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `direct_u_multistream_smoke_v1` | direct_u_implementation_smoke | completed | negative_one_pass_diagnostic | v7_bec_transpose_regularized_direct_u | appendix_implementation_check_only | 1 (1/0) |
-| `electronic_generator_adjudication_v1` | electronic_generator_model_class_adjudication | completed_controls_and_same_id_capacity_with_retained_failures | current_head_negative_global_irrep_linearized_and_literal_positive_same_id_capacity_literal_jet_mixed_negative_control | v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p | appendix_post_freeze_diagnostic | 19 (16/3) |
+| `electromechanical_jet_fold_adjudication` | electrostatic_generator_formula_disjoint_adjudication | partial_with_completed_a1_negative_and_a0_user_interruption | development_only_negative_and_incomplete_diagnostics | v10_full_public_electrostatic_a0_a3 | appendix_post_freeze_development_diagnostic | 9 (5/4) |
+| `electronic_generator_adjudication_v1` | electronic_generator_model_class_adjudication | completed_controls_and_same_id_capacity_with_retained_failures | current_head_negative_global_irrep_first_order_jet_and_literal_positive_same_id_capacity_redundant_probe_mixed_negative_control | v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p | appendix_post_freeze_diagnostic | 19 (16/3) |
 | `exposure_matched_direct_u_v2_conditioning` | registered_direct_u_exposure_replay | completed | registered_result_available | v7_bec_transpose_regularized_direct_u | appendix_registered_result | 25 (24/0) |
 | `factor_protected_norm_match_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 5 (3/0) |
 | `factor_protected_projection_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 5 (3/0) |
@@ -84,6 +85,7 @@ Registered top-level cohorts: **135**.
 | `information_gain_retrieval_v1` | jarvis_data_expansion | completed | retrieval_or_completion_audit | historical_v4_v6_strict_gates | appendix_data_history | 0 (0/0) |
 | `information_gain_retrieval_v2_test_crystal_coverage` | jarvis_data_expansion | completed | retrieval_or_completion_audit | historical_v4_v6_strict_gates | appendix_data_history | 0 (0/0) |
 | `jarvis_dfpt_expansion_v1` | jarvis_data_expansion | completed | retrieval_or_completion_audit | historical_v4_v6_strict_gates | appendix_data_history | 2 (0/2) |
+| `jarvis_dft3d_official_audit` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `lambda_diagnostics_smoke` | historical_dfpt_diagnostic | completed_or_retained_partial | development_diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (0/0) |
 | `lambda_diagnostics_v1` | historical_dfpt_diagnostic | completed_or_retained_partial | development_diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (0/0) |
 | `lambda_diagnostics_v2` | historical_dfpt_diagnostic | completed_or_retained_partial | development_diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (0/0) |

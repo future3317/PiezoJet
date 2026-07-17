@@ -1,4 +1,4 @@
-# Electronic generator and differential-polarization adjudication
+# Electromechanical-jet and differential-polarization adjudication
 
 Date: 2026-07-17
 
@@ -16,8 +16,8 @@ causes:
 1. trainer/control mismatch;
 2. current electronic output-basis restriction;
 3. insufficient explicit high-order/global representation;
-4. a mismatch between independently emitted response tensors and a genuine
-   differential polarization state.
+4. whether a shared first-order response jet or a nonlinear polarization state
+   generalizes better under the available labels.
 
 The CPU exact-clone control duplicates the macro/direct model, optimizer, data
 order, and ten updates. Prediction, loss, gradient, parameter, and optimizer
@@ -45,16 +45,20 @@ not in active cosine.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Current Cartesian electronic head | 32 | 28 | 0.60814 | 0.39285 | 0.53280 | n/a | n/a |
 | Explicit global-irrep `l<=3` | 32 | 28 | 0.04492 | 0.99973 | 0.04014 | n/a | n/a |
-| Shared linearized coefficient generator | 32 | 28 | 0.03942 | 0.99977 | 0.03593 | 0.01933 | 0.99918 |
-| Linearized generator + response-jet probes | 32 | 28 | 0.04167 | 0.99973 | 0.03835 | 0.02104 | 0.99907 |
+| First-order electromechanical jet | 32 | 28 | 0.03942 | 0.99977 | 0.03593 | 0.01933 | 0.99918 |
+| First-order jet + redundant probes | 32 | 28 | 0.04167 | 0.99973 | 0.03835 | 0.02104 | 0.99907 |
 | Literal autodiff differential polarization | 8 | 6 | 0.14986 | 0.99961 | 0.11294 | 0.02105 | 0.99937 |
 | Literal autodiff differential polarization | 32 | 28 | 0.09839 | 0.99786 | 0.07766 | 0.04673 | 0.99710 |
 | Literal autodiff + response-jet probes | 8 | 6 | 0.13981 | 0.99981 | 0.10529 | 0.02455 | 0.99931 |
 
 The global-irrep result falsifies the claim that the electronic labels are
 intrinsically unlearnable on the panel. The current head is specifically short
-of high-order/global span. The linearized joint coefficient generator also
-shows that BEC and electronic labels can be fit simultaneously. Adding response
+of high-order/global span. The displacement--strain first-order
+electromechanical jet also shows
+that BEC and electronic labels can be fit simultaneously. It is the exact
+identifiable map
+`Delta P^(1) = c_e/Omega sum_k Z*_k^T u_k + e_el:eta`, not a fidelity fallback
+and not a claim about finite-amplitude polarization. Adding response
 probes does not improve its fixed endpoint; these probes are an unbiased
 stochastic rewriting of already-complete coefficient supervision, not new
 label information.
@@ -68,10 +72,12 @@ Both runs pass their same-ID gate, but the probe term does not improve both
 Jacobians and contains no new label information. It is retained as a mixed
 negative control rather than added to the maintained objective.
 
-## Literal nonlinear model
+## First-order and literal nonlinear models
 
-The linearized control is not the requested differential-polarization model.
-The implemented nonlinear candidate instead defines
+`ElectromechanicalJetHead` is A1 and directly parameterizes the complete
+first-order jet. `IndependentElectrostaticHeads` is A0 and uses two statistically
+independent generators, so BEC and electronic losses have no shared parameter
+tensors. The implemented nonlinear A2/A3 candidates instead define
 
 ```text
 Delta P_theta(x; u, eta) = P_theta(T_eta(x + u_o)) - P_theta(x)
@@ -85,6 +91,14 @@ rebuilt inside a derivative. The state network is an O(3)-equivariant polar
 vector with explicit `l<=3` periodic message passing, invariant global
 attention, and reciprocal scalar context. No absolute polarization or
 Berry-phase branch label exists.
+
+A2 differentiates Cartesian polarization. A3 differentiates reduced
+polarization `P0=det(F)F^-1 P`, with `F=I+eta`; the variable is explicit and
+there is no automatic switch. The radial envelope is `(1-r/r_c)^3_+`, so the
+function and its first two derivatives vanish at the cutoff. Under zero-point
+BEC/electronic-Jacobian labels alone, A2/A3 contain no additional identifiable
+higher-order information beyond A1. Finite displacement/strain/field labels
+would be required to establish a nonlinear advantage.
 
 Three reverse-mode calls differentiate the three output components:
 
@@ -123,11 +137,13 @@ and one AdamW step per epoch up to expected floating-point reduction order.
 
 ## Development split and decision boundary
 
-`data/processed/strict_train1603_development_folds_v1.json` partitions strict
-train1603 into five indivisible reduced-formula folds. Development sizes are
-`321/321/320/321/320`, fit sizes are `1282/1282/1283/1282/1283`, and balancing
-uses crystal system and train-only GMTNet response-norm strata. Frozen val10 and
-test20 labels are not read.
+`data/processed/electrostatic_development_folds.json` partitions the 4,939
+formula-safe full-public electrostatic records into five indivisible
+reduced-formula folds. Development sizes are `988/989/987/988/987`. Every
+record has BEC, same-OUTCAR electronic piezo, electronic dielectric, and force
+constants; strict Lambda is not required. Frozen val10 and test20 labels are
+not read. The older strict1603 folds remain only for tasks requiring complete
+Lambda.
 
 At the samples8 gate the nonlinear model has genuine same-ID capacity and exact
 response semantics, but it is not promoted to production. The fixed samples32
@@ -144,11 +160,28 @@ microbatches preserve one cohort-mean AdamW update per epoch. The run takes
 memory.
 
 This is a model-class gate, not a development result. Each of the five
-development folds contains 2--11 of the samples32 IDs. Therefore the fitted
+development folds contains some samples32 IDs. Therefore the fitted
 samples32 checkpoint cannot initialize any fold without label leakage. A
-future fold run must use random response parameters or a structure-only
-pretrained state; its roughly 40-fold larger fit cohort makes a matched
-fixed-epoch run a separate, preregistered compute decision.
+fold run must use random response heads and the same fold-train-only
+structure-pretrained encoder state for A0--A3.
+
+The first formula-disjoint plumbing pilot uses fold0, seed42, fixed
+train100/development100 subsets, batch size 4, and 100 stochastic updates. A1
+selects update 25 but has electronic active relative error `0.99826`, cosine
+`0.06239`, amplitude `0.00406`, and BEC relative error about `0.99616`.
+Later checkpoints worsen, so random initialization collapses across formulas
+despite same-ID capacity. The gradient audit initially used the first four
+training records and was confounded by weak targets; the maintained audit now
+selects a fixed response-active, norm-stratified batch and reports all-task as
+well as shared-parameter gradient norms. The replacement batch uses
+JVASP-55695, JVASP-42957, JVASP-52196, and JVASP-11504, spanning electronic
+target norms `0.2432--8.8161 C/m2`. At the selected checkpoint,
+electronic/BEC all-parameter gradient norms are `0.04598/0.03224`, shared norms
+are `0.04547/0.03217`, and shared cosine is `-0.01883`. Thus the tasks have
+comparable active-panel scale and are nearly orthogonal/slightly conflicting;
+the old roughly 5,700-fold ratio is not global loss-scale evidence. The matched A0 run was interrupted at
+the user's request before producing a checkpoint; its `failure.json` is kept
+and it has no performance result.
 
 ## Artifacts
 
@@ -161,8 +194,11 @@ fixed-epoch run a separate, preregistered compute decision.
 - `outputs/electronic_generator_adjudication_v1/j1_differential_jet_capacity/`
 - `outputs/electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/`
 - `outputs/electronic_generator_adjudication_v1/j1_literal_autodiff_jet_capacity/`
+- `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/`
+- `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/active_gradient_audit.json`
+- `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a0_seed42/failure.json`
 
-The historical directory name `p1_differential_capacity` predates the fidelity
-correction. Its summary protocol is explicitly renamed
-`L1_shared_linearized_coefficient_generator_same_id_capacity`; it must not be
-cited as the literal nonlinear P1 model.
+The historical directory name `p1_differential_capacity` predates the current
+terminology. Its stored bytes remain immutable, but the maintained code calls
+this model the first-order electromechanical jet; it must not be cited as the
+literal nonlinear model.

@@ -8,7 +8,7 @@
     "historical_conventions_must_not_be_pooled": true,
     "artifact_index": "outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl"
   },
-  "cohort_count": 135,
+  "cohort_count": 137,
   "cohorts": [
     {
       "experiment_id": "audit",
@@ -2490,16 +2490,151 @@
       ]
     },
     {
+      "experiment_id": "electromechanical_jet_fold_adjudication",
+      "artifact_root": "outputs/electromechanical_jet_fold_adjudication",
+      "family": "electrostatic_generator_formula_disjoint_adjudication",
+      "archival_status": "current",
+      "execution_status": "partial_with_completed_a1_negative_and_a0_user_interruption",
+      "result_disposition": "development_only_negative_and_incomplete_diagnostics",
+      "convention_epoch": "v10_full_public_electrostatic_a0_a3",
+      "comparability_group": "fold0_train100_development100_random_initialization_pilots",
+      "paper_use": "appendix_post_freeze_development_diagnostic",
+      "interpretation_boundary": "Formula-disjoint full-public electrostatic method development. The completed random A1 pilot collapses and the A0 pilot was user-interrupted. Neither is the fair structure-pretrained A0--A3 adjudication; frozen val10/test20 are unread.",
+      "split": "electrostatic_development_folds fold0; frozen val10/test20 unread",
+      "artifact_summary": {
+        "file_count": 15,
+        "bytes": 155522875,
+        "last_modified_utc": "2026-07-17T14:41:04.628724Z",
+        "run_records": 9,
+        "completed_run_records": 5,
+        "partial_or_blocked_run_records": 4
+      },
+      "key_artifacts": [
+        "electromechanical_jet_fold_adjudication/pilot_n100_fold0_a0_seed42/failure.json",
+        "electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42/failure.json",
+        "electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/active_gradient_audit.json",
+        "electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/summary.json",
+        "electromechanical_jet_fold_adjudication/smoke_a0_fold0_seed42/summary.json",
+        "electromechanical_jet_fold_adjudication/smoke_a1_fold0_seed42/failure.json",
+        "electromechanical_jet_fold_adjudication/smoke_a1_fold0_seed42_retry1/summary.json",
+        "electromechanical_jet_fold_adjudication/smoke_a2_fold0_seed42/failure.json",
+        "electromechanical_jet_fold_adjudication/smoke_a2_fold0_seed42_retry1/summary.json",
+        "electromechanical_jet_fold_adjudication/smoke_a3_fold0_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "pilot_n100_fold0_a0_seed42",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "pilot_n100_fold0_a1_seed42",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "pilot_n100_fold0_a1_seed42_retry1",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "selected.pt"
+          ]
+        },
+        {
+          "path": "smoke_a0_fold0_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "selected.pt"
+          ]
+        },
+        {
+          "path": "smoke_a1_fold0_seed42",
+          "execution_status": "failed_or_has_failure_record",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "smoke_a1_fold0_seed42_retry1",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "selected.pt"
+          ]
+        },
+        {
+          "path": "smoke_a2_fold0_seed42",
+          "execution_status": "failed_or_has_failure_record",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "smoke_a2_fold0_seed42_retry1",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "selected.pt"
+          ]
+        },
+        {
+          "path": "smoke_a3_fold0_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "selected.pt"
+          ]
+        }
+      ]
+    },
+    {
       "experiment_id": "electronic_generator_adjudication_v1",
       "artifact_root": "outputs/electronic_generator_adjudication_v1",
       "family": "electronic_generator_model_class_adjudication",
       "archival_status": "current",
       "execution_status": "completed_controls_and_same_id_capacity_with_retained_failures",
-      "result_disposition": "current_head_negative_global_irrep_linearized_and_literal_positive_same_id_capacity_literal_jet_mixed_negative_control",
+      "result_disposition": "current_head_negative_global_irrep_first_order_jet_and_literal_positive_same_id_capacity_redundant_probe_mixed_negative_control",
       "convention_epoch": "v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p",
       "comparability_group": "exact_clone_val10_and_separate_same_id_train_capacity_cohorts",
       "paper_use": "appendix_post_freeze_diagnostic",
-      "interpretation_boundary": "E0 exact-clone, E1 validation10 factor substitution/oracle, E2 current-head, E3 global-irrep, linearized controls, and literal autodiff differential-polarization same-ID capacity. Same-ID rows are noninductive; the linearized generator is not the literal Delta-P model. Test20 is unread and no row authorizes a production or held-out performance claim.",
+      "interpretation_boundary": "E0 exact-clone, E1 validation10 factor substitution/oracle, E2 current-head, E3 global-irrep, first-order electromechanical jet, and literal nonlinear differential-polarization same-ID capacity. Same-ID rows are noninductive; the first-order jet is not the finite-perturbation Delta-P model. Test20 is unread and no row authorizes a production or held-out performance claim.",
       "split": "E1 frozen validation10 only; capacity rows use declared strict-train samples1/8/32; test20 unread",
       "artifact_summary": {
         "file_count": 71,
@@ -4843,6 +4978,41 @@
             "JVASP-38.pt",
             "JVASP-8119.pt"
           ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "jarvis_dft3d_official_audit",
+      "artifact_root": "outputs/jarvis_dft3d_official_audit",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 1,
+        "bytes": 2185,
+        "last_modified_utc": "2026-07-17T13:55:37.389546Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "jarvis_dft3d_official_audit/summary.json"
+      ],
+      "runs": [
+        {
+          "path": ".",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
         }
       ]
     },

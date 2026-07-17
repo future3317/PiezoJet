@@ -133,6 +133,17 @@ The production factor architecture likewise has one accepted identifier,
   formula-disjoint macro training records and preserves the frozen val10/test20
   IDs. Its strict factor train contains 1,603 records; five additional strict
   records sharing a frozen-panel formula are explicitly excluded.
+- The formula-safe full-public electrostatic pool contains 4,939 materials
+  with same-archive BEC, `OUTCAR total - ionic` electronic piezo, electronic
+  dielectric, and force-constant labels. All 4,995 parsed payloads pass explicit
+  finite/shape checks for these four label families. It does not require a completed
+  `Lambda`.  Five immutable reduced-formula-disjoint development folds have
+  sizes `988/989/987/988/987`; frozen val10/test20 labels are not read.
+- The official `jdft_3d-12-12-2022.json` release contains 75,993 unique JIDs
+  and is retained as a structure/metadata auxiliary table.  Its overlap with
+  the historical GMTNet piezo IDs is 4,937, and some same-JID relaxed cells
+  differ.  It therefore neither replaces the 4,998 GMTNet-pinned structures
+  nor silently supplies response labels.
 
 The high-quality partial factor pool covers 4,995/4,998 materials, but strict
 acceptance is selection-biased: 1,638/4,995 (32.79%) overall and only
@@ -204,11 +215,20 @@ the same train-only samples32 panel (active relative error `0.04492`, cosine
 `0.99973`).
 
 Two different notions of a polarization generator are kept distinct.  The
-shared *linearized coefficient-generator control* directly emits `Z*` and
-`e_el`, then defines their common first-order increment; on samples32 it fits
+`ElectromechanicalJetHead` directly emits `Z*` and `e_el` and thereby defines
+the complete identifiable displacement--strain first-order polarization jet
+
+\[
+\Delta P^{(1)}=\frac{c_e}{\Omega}\sum_\kappa Z_\kappa^{*\mathsf T}u_\kappa
++e^{\mathrm{el}}:\eta .
+\]
+
+This is a genuine first-order response model, not merely a fidelity control;
+it does not claim to be a finite-perturbation polarization state. On samples32 it fits
 electronic response to relative error `0.03942` and BEC to `0.01933`.  Adding
 stochastic response-jet probes does not improve either endpoint (`0.04167` and
-`0.02104`, respectively).  The nonlinear autodiff candidate instead evaluates
+`0.02104`, respectively).  The `NonlinearDifferentialPolarizationTower`
+instead evaluates
 
 \[
 \Delta P_\theta(x;u,\eta)=P_\theta(T_\eta(x+u_o))-P_\theta(x)
@@ -216,7 +236,12 @@ stochastic response-jet probes does not improve either endpoint (`0.04167` and
 
 on genuinely perturbed positions, cell, and periodic edge shifts, and obtains
 both tensors as Jacobians at zero.  It never assigns an absolute Berry-phase
-polarization target.  Exact-zero, uniform-translation, Jacobian,
+polarization target.  It has two explicit, non-fallback variants: Cartesian
+polarization and reduced polarization
+`P0 = det(F) F^-1 P`, with `F = I + eta`. With zero-point Jacobian labels
+alone, its higher-order degrees of freedom are not more identifiable than the
+first-order jet; finite perturbation/field labels would be required to learn
+genuinely additional nonlinear content. Exact-zero, uniform-translation, Jacobian,
 engineering-shear finite-difference, O(3), atom-permutation, batch-invariance,
 and second-order-training tests pass.  Its completed samples8/200 CUDA gate has
 electronic active relative error `0.14986`, cosine `0.99961`, BEC relative error
@@ -233,14 +258,25 @@ three probes) changes electronic active error from `0.14986` to `0.13981` and
 to `0.02455` and adds 5.5% runtime.  The mixed result does not justify adding
 the algebraically redundant probe objective to the maintained candidate.
 
-Method selection no longer needs the frozen val10 panel.  Five immutable,
-formula-disjoint folds partition strict train1603 only, with development sizes
-`321/321/320/321/320`; their role map is
-`data/processed/strict_train1603_development_folds_v1.json`.  Frozen val10 and
-test20 labels are not read when constructing these folds.  Every development
-fold contains some samples32 capacity IDs, so the fitted same-ID checkpoint is
-forbidden as a fold initializer; development must start from response-random
-or structure-only-pretrained parameters.
+Method selection no longer needs the frozen val10 panel.  The current
+electrostatic adjudication uses the 4,939-material five-fold map
+`data/processed/electrostatic_development_folds.json`; the older strict1603
+folds remain valid for tasks that require complete `Lambda`. Every development
+fold contains some samples32 capacity IDs, so a fitted same-ID checkpoint is
+forbidden as a fold initializer. The fair A0--A3 comparison uses one
+fold-train-only structure checkpoint for every encoder copy, random response
+heads, identical stochastic updates, and a fixed response-active gradient
+audit batch. A random-initialized N=100 A1 pilot selected update 25 but
+collapsed across formulas (electronic active relative error `0.99826`, cosine
+`0.06239`, amplitude `0.00406`; BEC relative error about `0.99616`). This is a
+negative pilot, not the structure-pretrained adjudication. A read-only audit on
+four fixed response-active, norm-stratified train materials corrects the
+misleading first-batch gradient ratio: electronic/BEC all-parameter norms are
+`0.04598/0.03224`, shared-parameter norms are `0.04547/0.03217`, and shared
+cosine is `-0.01883`. Thus there is no evidence for a 5,700-fold global task
+scale imbalance; the active-panel gradients are comparable and nearly
+orthogonal/slightly conflicting. The matched A0
+pilot was explicitly interrupted at the user's request and has no result.
 
 The explicit global-`l=3` displacement head resolves the former same-ID
 representation bottleneck.  On the preregistered samples32 capacity panel, a
