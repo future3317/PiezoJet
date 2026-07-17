@@ -151,6 +151,11 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - Total-only GMTNet labels use an independent macro encoder/head. They must not
   backpropagate into the physical encoder, electronic branch, `Z*`, `Phi`,
   `Lambda`, or `U_eta`.
+- `PiezoJet.macroscopic_response_density()` is a coefficient-level constitutive
+  wrapper for the physical direct-`U` piezo tensor and factor-derived elastic/
+  dielectric diagnostics. It must omit the total-only macro tower and must not
+  be described as a common microscopic generator or as enforcing
+  `U_eta=D_delta(Phi)Lambda`.
 - Same-OUTCAR electronic and true-BEC ionic labels supervise their own
   components. `branch_sum` remains a logged closure diagnostic with zero loss
   weight. Its target is algebraically redundant, and the train1603 audit found

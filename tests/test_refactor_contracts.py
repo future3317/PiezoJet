@@ -24,6 +24,8 @@ def test_model_from_config_defaults_to_the_energy_integrable_factor_architecture
         "radial_hidden": 11,
     })
     assert model.factor_architecture == "independent_quadratic_response"
+    assert hasattr(model, "macroscopic_response_density")
+    assert not hasattr(model, "potential")
 
 
 def test_cartesian_encoder_exposes_scalar_dimension_without_mlp_introspection():

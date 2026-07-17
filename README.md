@@ -90,6 +90,13 @@ This separation is required because total-only data cannot identify the
 electronic/ionic allocation. A macro-total gradient cannot enter the physical
 encoder, `Z*`, `Phi`, `Lambda`, `U_eta`, or electronic decoder.
 
+`PiezoJet.macroscopic_response_density()` is deliberately narrower than a
+microscopic energy model: it packages the direct-`U_eta` physical piezo tensor
+with factor-derived elastic/dielectric diagnostic blocks into a unit-consistent
+constitutive density. Its mixed derivatives enforce the reported Maxwell
+identity, but it neither evaluates the total-only macro tower nor asserts
+`U_eta = D_delta(Phi) Lambda`.
+
 Same-OUTCAR electronic and true-BEC ionic component labels supervise their
 own branches.  Their already-audited identity `total = electronic + ionic` is
 logged as `branch_sum` closure but has zero optimization weight: it contains no
