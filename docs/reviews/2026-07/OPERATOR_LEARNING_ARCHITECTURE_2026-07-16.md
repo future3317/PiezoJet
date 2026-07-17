@@ -1,5 +1,10 @@
 # Direct response-operator learning update
 
+> **Superseded historical proposal.** The same-ID 32-material gate reported
+> below failed. The associated auxiliary-loss module, capacity executor, and
+> launchers have been removed from the maintained package. This document and
+> its immutable output artifacts are retained only to explain that decision.
+
 ## Scope and status
 
 This update changes supervision, not the declared continuous response
