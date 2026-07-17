@@ -2054,7 +2054,7 @@ class AtomCoordinateResponsePotential(nn.Module):
             elastic_softening_tensor,
         )
 
-    def forward(
+    def macroscopic_response_density(
         self,
         piezo_c_per_m2: torch.Tensor,
         elastic_gpa: torch.Tensor,
@@ -2062,11 +2062,15 @@ class AtomCoordinateResponsePotential(nn.Module):
         field: torch.Tensor,
         eta6: torch.Tensor,
     ) -> torch.Tensor:
-        """Physical response energy density in eV/Angstrom^3.
+        """Return a coefficient-level macroscopic response density.
 
-        ``field`` is in V/Angstrom.  SI-valued response coefficients are first
+        ``field`` is in V/Angstrom. SI-valued response coefficients are first
         converted back to one coherent eV/Angstrom^3 convention before their
-        quadratic form is assembled.
+        quadratic form is assembled. This is a constitutive wrapper for
+        already predicted response blocks, not an assertion that every block
+        shares one microscopic energy generator. In particular, direct-U
+        piezoelectricity remains distinct from the factorized Phi/Lambda
+        diagnostic.
         """
         if field.shape[-1] != 3 or eta6.shape[-1] != 6:
             raise ValueError("Expected field [...,3] and eta6 [...,6]")
@@ -2081,6 +2085,19 @@ class AtomCoordinateResponsePotential(nn.Module):
             "bi,bij,bj->b", field, dielectric_internal, field
         )
         return mixed_energy + elastic_energy + dielectric_energy
+
+    def forward(
+        self,
+        piezo_c_per_m2: torch.Tensor,
+        elastic_gpa: torch.Tensor,
+        dielectric_relative: torch.Tensor,
+        field: torch.Tensor,
+        eta6: torch.Tensor,
+    ) -> torch.Tensor:
+        """Module-call alias for :meth:`macroscopic_response_density`."""
+        return self.macroscopic_response_density(
+            piezo_c_per_m2, elastic_gpa, dielectric_relative, field, eta6
+        )
 
 
 class PiezoJet(nn.Module):
@@ -2356,10 +2373,27 @@ class PiezoJet(nn.Module):
     def forward(self, batch) -> torch.Tensor:
         return self.predict_components(batch).tensor
 
-    def potential(self, batch, field: torch.Tensor, eta6: torch.Tensor) -> torch.Tensor:
-        components = self.predict_components(batch)
-        return self.response(
-            components.physical_tensor, components.elastic, components.dielectric, field, eta6,
+    def macroscopic_response_density(
+        self, batch, field: torch.Tensor, eta6: torch.Tensor
+    ) -> torch.Tensor:
+        """Package physical response blocks as a macroscopic density.
+
+        The isolated total-only macro tower is deliberately omitted. The
+        result has Maxwell-consistent coefficient derivatives, but it does not
+        make the independent direct-U coordinate an equilibrium Phi/Lambda
+        displacement response.
+        """
+        components = self.predict_components(
+            batch,
+            compute_macro_response=False,
+            compute_factorized_response=True,
+        )
+        return self.response.macroscopic_response_density(
+            components.physical_tensor,
+            components.elastic,
+            components.dielectric,
+            field,
+            eta6,
         )
 
 

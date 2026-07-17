@@ -6,7 +6,7 @@ from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
 from piezojet.tensor_ops import cartesian_to_piezo_voigt
 
 
-def test_response_energy_density_mixed_derivative_matches_predicted_piezo():
+def test_macroscopic_response_density_mixed_derivative_matches_physical_piezo():
     torch.manual_seed(37)
     graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[19], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
@@ -18,7 +18,11 @@ def test_response_energy_density_mixed_derivative_matches_predicted_piezo():
     with torch.no_grad():
         direct = cartesian_to_piezo_voigt(model.predict_components(graph).physical_tensor)
     _, mixed = jvp(
-        lambda field: jvp(lambda eta: model.potential(graph, field, eta), (eta0,), (strain_direction,))[1],
+        lambda field: jvp(
+            lambda eta: model.macroscopic_response_density(graph, field, eta),
+            (eta0,),
+            (strain_direction,),
+        )[1],
         (field0,),
         (field_direction,),
     )
@@ -134,6 +138,21 @@ def test_total_only_macro_tower_has_no_gradient_route_to_physical_factors():
     assert all(parameter.grad is None for parameter in model.displacement_response_head.parameters())
 
 
+def test_macroscopic_response_density_does_not_evaluate_total_only_macro_tower(monkeypatch):
+    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[6], 5.0, 32)
+    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+    model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("response density must not use total-only macro outputs")
+
+    monkeypatch.setattr(model, "predict_macro_responses", forbidden)
+    density = model.macroscopic_response_density(
+        graph, torch.randn(1, 3), torch.randn(1, 6)
+    )
+    assert density.shape == (1,)
+
+
 def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatch):
     torch.manual_seed(39)
     graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[7], 5.0, 32)
@@ -230,7 +249,9 @@ def test_response_generator_converts_all_si_blocks_to_one_energy_density_unit():
     dielectric = torch.eye(3).unsqueeze(0) * response.DIELECTRIC_RELATIVE
     field = torch.tensor([[1.0, 0.0, 0.0]])
     eta = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
-    energy_density = response(piezo, elastic, dielectric, field, eta)
+    energy_density = response.macroscopic_response_density(
+        piezo, elastic, dielectric, field, eta
+    )
     # -E e eta + 1/2 eta C eta - 1/2 E epsilon E = -1 here.
     assert torch.allclose(energy_density, torch.tensor([-1.0]))
 
