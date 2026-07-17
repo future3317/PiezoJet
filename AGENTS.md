@@ -266,6 +266,17 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   trainable parameters. The diagnostic batch is fixed, response-active, and
   norm-stratified; reports contain both all-task and shared-parameter gradient
   norms/cosine.
+- A0 backpropagates its two disjoint task losses sequentially within one
+  optimizer step. This is exactly the gradient of their sum, verified against
+  joint backward parameter by parameter, while only one tower's activation
+  graph is resident at a time. It is a memory optimization, not a changed
+  objective.
+- `piezojet.prepare_electrostatic_adjudication` only writes an auditable command
+  plan and can never launch training. The current Stage-A plan is
+  `outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`.
+  It requires a later explicit user request before execution. The fold-only
+  pretrainer derives schema-2 train IDs from the global population minus the
+  development subset; it must not expect a duplicated `fold["train"]` field.
 - The random-initialized A1 N=100/fold0/seed42 pilot is a retained negative
   control: selected update 25 has electronic active relative error 0.99826,
   cosine 0.06239, amplitude 0.00406, and BEC relative error about 0.99616.

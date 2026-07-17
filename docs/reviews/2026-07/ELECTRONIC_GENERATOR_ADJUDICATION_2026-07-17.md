@@ -183,6 +183,26 @@ the old roughly 5,700-fold ratio is not global loss-scale evidence. The matched 
 the user's request before producing a checkpoint; its `failure.json` is kept
 and it has no performance result.
 
+Training was then explicitly paused. No replacement process is running. Before
+the next authorized run, A0 was changed to evaluate and backpropagate its two
+parameter-disjoint towers sequentially inside the same optimizer update. A
+parameter-by-parameter CPU regression test confirms equality with backward on
+the summed objective, including matching unused-parameter masks. This reduces
+peak activation residency from two tower graphs to one without changing the
+loss, update count, batching, or comparison contract.
+
+The future matched Stage-A commands are recorded, not executed, in
+`outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`.
+The plan fixes fold0, seed42, train/development limits 100/100, one shared
+fold-train-only structure checkpoint, random response heads, fresh output
+directories, `num_workers=0`, and the same response-active norm-stratified
+gradient audit. It explicitly forbids automatic promotion or dataset expansion
+and certifies frozen validation/test labels unread. Preparation also exposed a
+schema-drift bug in `pretrain_e3nn`: schema-2 fold manifests intentionally omit
+duplicated train lists. The pretrainer now derives the formula-safe train panel
+from the global population minus the development subset and has a regression
+test for that path.
+
 ## Artifacts
 
 - `outputs/electronic_generator_adjudication_v1/e0_exact_clone_cpu/summary.json`
@@ -197,6 +217,7 @@ and it has no performance result.
 - `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/`
 - `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/active_gradient_audit.json`
 - `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a0_seed42/failure.json`
+- `outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`
 
 The historical directory name `p1_differential_capacity` predates the current
 terminology. Its stored bytes remain immutable, but the maintained code calls

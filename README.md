@@ -277,6 +277,14 @@ cosine is `-0.01883`. Thus there is no evidence for a 5,700-fold global task
 scale imbalance; the active-panel gradients are comparable and nearly
 orthogonal/slightly conflicting. The matched A0
 pilot was explicitly interrupted at the user's request and has no result.
+No replacement training is currently running. A0 now uses an exact sequential
+backward over its parameter-disjoint electronic and BEC towers, reducing peak
+activation residency without changing any parameter gradient; a CPU regression
+test compares it directly with backward on the summed objective. The next fair
+N=100 Stage-A comparison is recorded as a non-executing plan at
+`outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`.
+It shares one fold-train-only structural checkpoint across A0--A3, uses fresh
+run directories, and requires explicit authorization before any command is run.
 
 The explicit global-`l=3` displacement head resolves the former same-ID
 representation bottleneck.  On the preregistered samples32 capacity panel, a
