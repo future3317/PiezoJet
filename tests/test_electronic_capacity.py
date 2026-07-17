@@ -9,7 +9,7 @@ from piezojet.electronic_capacity import (
     irrep_balanced_capacity_loss,
     response_jet_probe_loss,
 )
-from piezojet.model import DifferentialPolarizationPrediction
+from piezojet.model import ElectromechanicalJetPrediction
 from piezojet.tensor_ops import piezo_from_irreps
 
 
@@ -55,9 +55,11 @@ def test_response_jet_probe_loss_is_zero_for_identical_jacobians():
     born = torch.randn(3, 3, 3)
     born = born - born.mean(dim=0)
     electronic = piezo_from_irreps(torch.randn(1, 18))
-    target = DifferentialPolarizationPrediction(born, electronic)
+    target = ElectromechanicalJetPrediction(born, electronic, None)
     assert response_jet_probe_loss(target, target, batch, probes=4) == pytest.approx(0.0)
-    shifted = DifferentialPolarizationPrediction(born * 0.5, electronic * 0.5)
+    shifted = ElectromechanicalJetPrediction(
+        born * 0.5, electronic * 0.5, None
+    )
     assert response_jet_probe_loss(shifted, target, batch, probes=32) > 0.01
 
 

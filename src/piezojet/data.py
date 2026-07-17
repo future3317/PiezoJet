@@ -16,7 +16,11 @@ from pymatgen.core import Element
 from torch_geometric.data import Data, Dataset
 
 from .jarvis_dfpt import JarvisDFPTCache
-from .gmtnet_io import PIEZO_FIELD, PIEZO_FILE, load_gmtnet_records
+from .gmtnet_io import (
+    PIEZO_FIELD,
+    PIEZO_FILE as _PIEZO_FILE,
+    load_gmtnet_records as _load_gmtnet_records,
+)
 from .projector import get_cartesian_point_group_operations, project_piezo_to_point_group
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, source_voigt_to_canonical
 
@@ -26,6 +30,18 @@ SPLIT_SCHEMA = 2
 SYMMETRY_TARGET_CACHE_SCHEMA = 2
 RESPONSE_NORM_BOUNDS = (0.0, 0.05, 0.5, 1.0)
 MAX_POINT_GROUP_OPERATIONS = 48
+# Stable public re-exports retained for the data-ingestion surface.
+PIEZO_FILE = _PIEZO_FILE
+load_gmtnet_records = _load_gmtnet_records
+
+
+def deterministic_subset(values: list[str], limit: int, seed: int) -> list[str]:
+    """Return a seeded subset while preserving the source-list order."""
+    if limit <= 0 or limit >= len(values):
+        return list(values)
+    generator = torch.Generator().manual_seed(seed)
+    order = torch.randperm(len(values), generator=generator)[:limit].tolist()
+    return [values[index] for index in sorted(order)]
 
 
 def formula(record: dict[str, Any]) -> str:
@@ -538,6 +554,32 @@ class PiezoDataset(Dataset):
                 graph.dfpt_ionic_dielectric_mask = torch.tensor(
                     has_ionic_dielectric, dtype=torch.bool
                 )
+                electronic_dielectric = torch.as_tensor(
+                    dfpt.get("epsilon", {}).get("epsilon", []),
+                    dtype=target.dtype,
+                )
+                has_electronic_dielectric = (
+                    electronic_dielectric.shape == (3, 3)
+                    and bool(torch.isfinite(electronic_dielectric).all())
+                )
+                if has_electronic_dielectric:
+                    electronic_dielectric = 0.5 * (
+                        electronic_dielectric + electronic_dielectric.transpose(-1, -2)
+                    )
+                    electronic_dielectric = torch.einsum(
+                        "rij,jk,rlk->il",
+                        rotations,
+                        electronic_dielectric,
+                        rotations,
+                    ) / rotations.shape[0]
+                else:
+                    electronic_dielectric = torch.zeros(
+                        3, 3, dtype=target.dtype
+                    )
+                graph.y_dfpt_electronic_dielectric = electronic_dielectric.unsqueeze(0)
+                graph.dfpt_electronic_dielectric_mask = torch.tensor(
+                    has_electronic_dielectric, dtype=torch.bool
+                )
             else:
                 modes = 0
                 graph.dfpt_dynamical_eigenvalues = torch.empty(0, dtype=target.dtype)
@@ -558,6 +600,12 @@ class PiezoDataset(Dataset):
                 graph.dfpt_internal_strain_count = torch.tensor([0], dtype=torch.long)
                 graph.y_dfpt_ionic_dielectric = torch.zeros(1, 3, 3, dtype=target.dtype)
                 graph.dfpt_ionic_dielectric_mask = torch.tensor(False, dtype=torch.bool)
+                graph.y_dfpt_electronic_dielectric = torch.zeros(
+                    1, 3, 3, dtype=target.dtype
+                )
+                graph.dfpt_electronic_dielectric_mask = torch.tensor(
+                    False, dtype=torch.bool
+                )
             if completion is not None:
                 full_internal = completion["internal_strain_full"].to(dtype=target.dtype)
                 if full_internal.shape != (graph.num_nodes, 3, 3, 3):

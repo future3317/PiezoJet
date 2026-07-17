@@ -15,13 +15,13 @@ from torch_geometric.utils import scatter
 
 from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .model import (
-    AutodiffDifferentialPolarizationTower,
+    NonlinearDifferentialPolarizationTower,
     CartesianLocalEnvironmentEncoder,
     CartesianPiezoTensorHead,
     CartesianPolarReadout,
     CrystalGlobalContext,
-    DifferentialPolarizationPrediction,
-    DifferentialPolarizationTower,
+    ElectromechanicalJetPrediction,
+    ElectromechanicalJetHead,
 )
 from .project_config import load_project_config
 from .tensor_ops import (
@@ -80,10 +80,10 @@ class CurrentElectronicCapacityModel(nn.Module):
         return 0.5 * (tensor + tensor.transpose(-1, -2))
 
 
-def differential_polarization_from_config(
+def electromechanical_jet_from_config(
     config: dict[str, object],
-) -> DifferentialPolarizationTower:
-    return DifferentialPolarizationTower(
+) -> ElectromechanicalJetHead:
+    return ElectromechanicalJetHead(
         embedding_dim=int(config["embedding_dim"]),
         cutoff=float(config["cutoff"]),
         lmax=max(3, int(config.get("lmax", 3))),
@@ -99,10 +99,11 @@ def differential_polarization_from_config(
     )
 
 
-def autodiff_differential_polarization_from_config(
+def nonlinear_polarization_from_config(
     config: dict[str, object],
-) -> AutodiffDifferentialPolarizationTower:
-    return AutodiffDifferentialPolarizationTower(
+) -> NonlinearDifferentialPolarizationTower:
+    return NonlinearDifferentialPolarizationTower(
+        polarization_variable=str(config["polarization_variable"]),
         embedding_dim=int(config["embedding_dim"]),
         cutoff=float(config["cutoff"]),
         lmax=max(3, int(config.get("lmax", 3))),
@@ -124,8 +125,8 @@ def _response_coefficients(
     architecture: str,
     *,
     create_graph: bool,
-) -> DifferentialPolarizationPrediction:
-    if architecture == "autodiff_differential":
+) -> ElectromechanicalJetPrediction:
+    if architecture in {"nonlinear_cartesian", "nonlinear_reduced"}:
         return model.coefficients(batch, create_graph=create_graph)
     return model.coefficients(batch)
 
@@ -154,7 +155,7 @@ def _evaluate_capacity_model(
     model.eval()
     context = (
         torch.no_grad()
-        if architecture == "autodiff_differential"
+        if architecture in {"nonlinear_cartesian", "nonlinear_reduced"}
         else torch.inference_mode()
     )
     with context:
@@ -341,8 +342,8 @@ def born_capacity_metrics(
 
 
 def response_jet_probe_loss(
-    prediction: DifferentialPolarizationPrediction,
-    target: DifferentialPolarizationPrediction,
+    prediction: ElectromechanicalJetPrediction,
+    target: ElectromechanicalJetPrediction,
     batch,
     probes: int = 3,
     floor_c_per_m2: float = 0.05,
@@ -368,20 +369,20 @@ def response_jet_probe_loss(
         displacement = displacement - scatter(
             displacement, batch.batch, dim=0, dim_size=graphs, reduce="mean"
         )[batch.batch]
-        predicted_u = DifferentialPolarizationTower.polarization_increment_from_coefficients(
+        predicted_u = ElectromechanicalJetHead.polarization_increment_from_coefficients(
             prediction, displacement, zero_strain, batch
         )
-        target_u = DifferentialPolarizationTower.polarization_increment_from_coefficients(
+        target_u = ElectromechanicalJetHead.polarization_increment_from_coefficients(
             target, displacement, zero_strain, batch
         )
         displacement_error = displacement_error + (predicted_u - target_u).square().sum(dim=-1)
 
         eta6 = torch.randn(graphs, 6, dtype=dtype, device=device)
         strain = voigt_to_symmetric_matrix(eta6)
-        predicted_eta = DifferentialPolarizationTower.polarization_increment_from_coefficients(
+        predicted_eta = ElectromechanicalJetHead.polarization_increment_from_coefficients(
             prediction, zero_displacement, strain, batch
         )
-        target_eta = DifferentialPolarizationTower.polarization_increment_from_coefficients(
+        target_eta = ElectromechanicalJetHead.polarization_increment_from_coefficients(
             target, zero_displacement, strain, batch
         )
         strain_error = strain_error + (predicted_eta - target_eta).square().sum(dim=-1)
@@ -397,7 +398,7 @@ def response_jet_probe_loss(
         dim_size=graphs,
         reduce="sum",
     )
-    born_energy = born_energy * (DifferentialPolarizationTower.PIEZO_C_PER_M2 / volume).square()
+    born_energy = born_energy * (ElectromechanicalJetHead.PIEZO_C_PER_M2 / volume).square()
     electronic_energy = cartesian_to_piezo_voigt(
         target.electronic_piezo
     ).square().sum(dim=(-1, -2))
@@ -421,8 +422,8 @@ def main() -> None:
     parser.add_argument(
         "--architecture",
         choices=(
-            "current", "global_irrep", "differential",
-            "autodiff_differential",
+            "current", "electromechanical_jet",
+            "nonlinear_cartesian", "nonlinear_reduced",
         ),
         default="current",
     )
@@ -442,7 +443,9 @@ def main() -> None:
         or args.checkpoint_interval < 1 or args.train_batch_size < 0
     ):
         raise ValueError("epochs, learning rate, and log interval must be positive")
-    response_architectures = ("differential", "autodiff_differential")
+    response_architectures = (
+        "electromechanical_jet", "nonlinear_cartesian", "nonlinear_reduced"
+    )
     if args.architecture not in response_architectures and (
         args.bec_weight != 1.0 or args.jet_weight != 0.0
     ):
@@ -479,10 +482,13 @@ def main() -> None:
     batch = batches[0]
     if args.architecture == "current":
         model = CurrentElectronicCapacityModel(config)
-    elif args.architecture == "autodiff_differential":
-        model = autodiff_differential_polarization_from_config(config)
+    elif args.architecture in {"nonlinear_cartesian", "nonlinear_reduced"}:
+        config["polarization_variable"] = (
+            "reduced" if args.architecture == "nonlinear_reduced" else "cartesian"
+        )
+        model = nonlinear_polarization_from_config(config)
     else:
-        model = differential_polarization_from_config(config)
+        model = electromechanical_jet_from_config(config)
     model = model.to(device)
     if device.type == "cuda" and (
         not batch.pos.is_cuda or not next(model.parameters()).is_cuda
@@ -560,8 +566,8 @@ def main() -> None:
             jet_loss = electronic_loss.new_zeros(())
             if args.architecture in response_architectures:
                 assert coefficient_prediction is not None
-                true_coefficients = DifferentialPolarizationPrediction(
-                    target_born, target
+                true_coefficients = ElectromechanicalJetPrediction(
+                    target_born, target, None
                 )
                 bec_loss = born_material_balanced_loss(
                     coefficient_prediction.born_charges,
@@ -676,18 +682,20 @@ def main() -> None:
     summary = {
         "schema": 1,
         "protocol": (
-            "J1_literal_autodiff_differential_polarization_with_response_jet"
-            if args.architecture == "autodiff_differential" and args.jet_weight > 0
-            else "J1_shared_linearized_coefficient_generator_with_response_jet"
-            if args.architecture == "differential" and args.jet_weight > 0
+            "J1_literal_nonlinear_differential_polarization_with_response_jet"
+            if args.architecture in {"nonlinear_cartesian", "nonlinear_reduced"} and args.jet_weight > 0
+            else "J1_first_order_electromechanical_jet_with_redundant_probes"
+            if args.architecture == "electromechanical_jet" and args.jet_weight > 0
             else {
                 "current": "E2_current_electronic_same_id_capacity",
-                "global_irrep": "E3_global_irrep_same_id_capacity",
-                "differential": (
-                    "L1_shared_linearized_coefficient_generator_same_id_capacity"
+                "electromechanical_jet": (
+                    "A1_exact_first_order_electromechanical_jet_same_id_capacity"
                 ),
-                "autodiff_differential": (
-                    "P1_literal_autodiff_differential_polarization_same_id_capacity"
+                "nonlinear_cartesian": (
+                    "A2_literal_nonlinear_cartesian_polarization_same_id_capacity"
+                ),
+                "nonlinear_reduced": (
+                    "A3_literal_nonlinear_reduced_polarization_same_id_capacity"
                 ),
             }[args.architecture]
         ),
@@ -727,10 +735,10 @@ def main() -> None:
             "gradient_accumulation_reduction": "material-count-weighted exact cohort mean",
             "batch_device": str(batch.pos.device),
             "parameter_device": str(next(model.parameters()).device),
-            "fixed_geometry_cache": args.architecture != "autodiff_differential",
+            "fixed_geometry_cache": args.architecture not in {"nonlinear_cartesian", "nonlinear_reduced"},
             "differentiable_geometry_cache": (
                 "disabled_to_avoid_retaining_second_order_graphs"
-                if args.architecture == "autodiff_differential"
+                if args.architecture in {"nonlinear_cartesian", "nonlinear_reduced"}
                 else "not_applicable"
             ),
             "reciprocal_execution": "padded batched GEMM/einsum",

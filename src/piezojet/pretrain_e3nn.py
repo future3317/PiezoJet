@@ -12,7 +12,13 @@ from torch import nn
 from torch_geometric.loader import DataLoader
 
 from .baselines import e3nn_direct_baseline_from_config
-from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
+from .build_electrostatic_development_folds import electrostatic_fold_train_ids
+from .data import (
+    PiezoDataset,
+    deterministic_subset,
+    graph_cache_key,
+    load_gmtnet_records,
+)
 from .pretrain import _corrupt_structure
 from .pretraining_protocol import provenance
 from .project_config import load_project_config
@@ -34,7 +40,11 @@ class E3nnStructurePretrainingHead(nn.Module):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--splits-file", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--splits-file", type=Path)
+    source.add_argument("--electrostatic-folds", type=Path)
+    parser.add_argument("--fold", type=int)
+    parser.add_argument("--train-limit", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -54,9 +64,40 @@ def main() -> None:
     seed_everything(int(cfg["seed"]))
     device = device_from_config(str(cfg["device"]))
     records = load_gmtnet_records(cfg["data_root"])
-    splits = load_explicit_splits(args.splits_file, {str(record["JARVIS_ID"]) for record in records})
-    ids = sorted(splits["train"])
-    pretraining_provenance = provenance(ids, args.splits_file, "train")
+    known_ids = {str(record["JARVIS_ID"]) for record in records}
+    if args.splits_file is not None:
+        if args.fold is not None or args.train_limit:
+            raise ValueError("--fold/--train-limit require --electrostatic-folds")
+        splits = load_explicit_splits(args.splits_file, known_ids)
+        ids = sorted(splits["train"])
+        pretraining_provenance = provenance(ids, args.splits_file, "train")
+    else:
+        if args.fold is None:
+            raise ValueError("--fold is required with --electrostatic-folds")
+        folds = json.loads(args.electrostatic_folds.read_text(encoding="utf-8-sig"))
+        fold = next(
+            (entry for entry in folds["folds"] if entry["fold"] == args.fold),
+            None,
+        )
+        if fold is None:
+            raise ValueError(f"Fold {args.fold} is absent from {args.electrostatic_folds}")
+        unknown = set(fold["train"]) - known_ids
+        if unknown:
+            raise ValueError(f"Unknown electrostatic train IDs: {sorted(unknown)[:5]}")
+        ids = deterministic_subset(
+            electrostatic_fold_train_ids(folds, args.fold),
+            args.train_limit,
+            int(cfg["seed"]) + 1000,
+        )
+        pretraining_provenance = provenance(
+            ids, args.electrostatic_folds, "train"
+        )
+        pretraining_provenance.update({
+            "development_fold": args.fold,
+            "train_limit": args.train_limit,
+            "selection_seed": int(cfg["seed"]) + 1000,
+            "frozen_validation_test_labels_read": False,
+        })
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
     dataset = PiezoDataset(
         records, ids, float(cfg["cutoff"]), int(cfg["max_neighbors"]),
@@ -64,7 +105,7 @@ def main() -> None:
     )
     loader = DataLoader(
         dataset, batch_size=int(cfg["batch_size"]), shuffle=True,
-        num_workers=int(cfg["num_workers"]), pin_memory=device.type == "cuda",
+        num_workers=0, pin_memory=device.type == "cuda",
     )
     model = e3nn_direct_baseline_from_config(cfg).to(device)
     head = E3nnStructurePretrainingHead(model.encoder.hidden_irreps).to(device)

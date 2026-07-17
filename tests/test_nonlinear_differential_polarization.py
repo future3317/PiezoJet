@@ -3,7 +3,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from piezojet.data import load_gmtnet_records, record_to_graph
-from piezojet.model import AutodiffDifferentialPolarizationTower
+from piezojet.model import NonlinearDifferentialPolarizationTower
 from piezojet.tensor_ops import (
     cartesian_to_piezo_voigt,
     rotate_piezo,
@@ -19,8 +19,9 @@ def _graph(index: int = 10):
     return graph
 
 
-def _model():
-    return AutodiffDifferentialPolarizationTower(
+def _model(polarization_variable: str = "cartesian"):
+    return NonlinearDifferentialPolarizationTower(
+        polarization_variable=polarization_variable,
         embedding_dim=8,
         cutoff=5.0,
         lmax=3,
@@ -94,6 +95,29 @@ def test_literal_increment_is_zero_and_coefficients_are_its_jacobians():
         rtol=3e-6,
     )
     assert torch.linalg.vector_norm(coefficients.born_charges.sum(dim=0)) < 2e-6
+
+
+def test_reduced_polarization_coefficients_match_the_reduced_increment_jacobian():
+    torch.manual_seed(102)
+    graph = _graph()
+    model = _model("reduced").eval()
+    zero_u = torch.zeros_like(graph.pos)
+    zero_eta = torch.zeros(1, 6)
+    coefficients = model.coefficients(graph, create_graph=False)
+    strain_jacobian = torch.autograd.functional.jacobian(
+        lambda value: model.polarization_increment(graph, zero_u, value),
+        zero_eta,
+    )[0, :, 0]
+    assert torch.equal(
+        model.polarization_increment(graph, zero_u, zero_eta),
+        torch.zeros(1, 3),
+    )
+    assert torch.allclose(
+        strain_jacobian,
+        cartesian_to_piezo_voigt(coefficients.electronic_piezo)[0],
+        atol=3e-6,
+        rtol=3e-6,
+    )
 
 
 def test_literal_response_coefficients_support_second_order_training():

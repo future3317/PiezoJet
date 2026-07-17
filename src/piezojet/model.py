@@ -24,13 +24,21 @@ from .tensor_ops import (
     voigt_to_symmetric_matrix,
 )
 from .projectors import translation_projector
-from .elastic_dielectric_ops import elastic_cartesian_to_voigt
+from .elastic_dielectric_ops import (
+    DIELECTRIC_TENSOR,
+    dielectric_from_irreps,
+    elastic_cartesian_to_voigt,
+)
 
 
 def _radial_basis(distance: torch.Tensor, centers: torch.Tensor, cutoff: float) -> torch.Tensor:
     centers = centers.to(dtype=distance.dtype)
     width = cutoff / max(centers.numel() - 1, 1)
-    envelope = (1 - distance / cutoff).clamp_min(0).square()
+    # The cubic compact-support envelope and its first two derivatives vanish
+    # at the cutoff.  This C2 contract is required by response models whose
+    # parameter gradients differentiate a geometry Jacobian; the former
+    # quadratic envelope was only C1 at the neighbor boundary.
+    envelope = (1 - distance / cutoff).clamp_min(0).pow(3)
     return torch.exp(-((distance.unsqueeze(-1) - centers) / width).square()) * envelope.unsqueeze(-1)
 
 
@@ -1184,11 +1192,12 @@ class CrystalGlobalContext(nn.Module):
         return (context, tensorial_operator) if return_operator else context
 
 
-class DifferentialPolarizationPrediction(NamedTuple):
-    """The two Jacobians of one reference-state polarization increment."""
+class ElectromechanicalJetPrediction(NamedTuple):
+    """Identifiable coefficients of one local electromechanical energy jet."""
 
     born_charges: torch.Tensor
     electronic_piezo: torch.Tensor
+    electronic_dielectric: torch.Tensor | None
 
 
 class _PerturbedCrystalBatch(NamedTuple):
@@ -1230,7 +1239,7 @@ class EquivariantGlobalAttention(nn.Module):
             self.value(node_features), batch_index, batch_size=graphs
         )
         if not torch.equal(mask, key_mask) or not torch.equal(mask, value_mask):
-            raise RuntimeError("Differential-polarization attention batching mismatch")
+            raise RuntimeError("Electrostatic attention batching mismatch")
         scores = torch.bmm(queries, keys.transpose(1, 2)) * self.scale
         scores = scores.masked_fill(~mask[:, None, :], -torch.inf)
         attention = torch.softmax(scores, dim=-1)
@@ -1238,11 +1247,12 @@ class EquivariantGlobalAttention(nn.Module):
         return node_features + torch.tanh(self.residual_gate) * attended
 
 
-class DifferentialPolarizationTower(nn.Module):
-    r"""Unified first-order polarization generator around a reference crystal.
+class ElectromechanicalJetHead(nn.Module):
+    r"""Exact first-order electromechanical jet around a reference crystal.
 
     The model never predicts an absolute Berry-phase polarization.  Instead it
-    represents the local response jet
+        represents the complete identifiable displacement--strain part of the
+        local polarization-response jet
 
     ``Delta P = c_e/Omega sum_k Z_k^T u_k + e_el : eta``.
 
@@ -1272,7 +1282,7 @@ class DifferentialPolarizationTower(nn.Module):
     ):
         super().__init__()
         if lmax < 3:
-            raise ValueError("DifferentialPolarizationTower requires explicit lmax >= 3")
+            raise ValueError("ElectromechanicalJetHead requires explicit lmax >= 3")
         self.encoder = PeriodicCrystalEncoder(
             embedding_dim=embedding_dim,
             cutoff=cutoff,
@@ -1293,6 +1303,7 @@ class DifferentialPolarizationTower(nn.Module):
         )
         self.electronic_irreps = o3.Linear(irreps, PIEZO_TYPE)
         self.born_irreps = o3.Linear(irreps, BEC_TYPE)
+        self.dielectric_irreps = o3.Linear(irreps, DIELECTRIC_TENSOR)
         self.electronic_context_gates = nn.Sequential(
             nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
             nn.Linear(global_context_dim, len(PIEZO_IRREP_SLICES)),
@@ -1318,7 +1329,9 @@ class DifferentialPolarizationTower(nn.Module):
             dim=-1,
         )
 
-    def coefficients(self, batch) -> DifferentialPolarizationPrediction:
+    def encode_response_features(
+        self, batch
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         node_features = self.encoder(batch)
         node_features = self.global_attention(node_features, batch.batch)
         local_polar = self.local_polar(node_features)
@@ -1327,29 +1340,65 @@ class DifferentialPolarizationTower(nn.Module):
         graph_features = scatter(
             node_features, batch.batch, dim=0, dim_size=graphs, reduce="mean"
         )
-        electronic_coordinates = self._gated_blocks(
-            self.electronic_irreps(graph_features),
-            self.electronic_context_gates(context),
-            PIEZO_IRREP_SLICES,
-        )
+        return node_features, graph_features, context
+
+    def decode_born(
+        self,
+        node_features: torch.Tensor,
+        context: torch.Tensor,
+        batch_index: torch.Tensor,
+    ) -> torch.Tensor:
+        graphs = context.shape[0]
         born_coordinates = self._gated_blocks(
             self.born_irreps(node_features),
-            self.born_context_gates(context)[batch.batch],
+            self.born_context_gates(context)[batch_index],
             BEC_IRREP_SLICES,
         )
         born = born_from_irreps(born_coordinates)
         # Acoustic charge neutrality is an exact response-Jacobian invariant.
         born = born - scatter(
-            born, batch.batch, dim=0, dim_size=graphs, reduce="mean"
-        )[batch.batch]
+            born, batch_index, dim=0, dim_size=graphs, reduce="mean"
+        )[batch_index]
+        return born
+
+    def decode_electronic(
+        self,
+        graph_features: torch.Tensor,
+        context: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        electronic_coordinates = self._gated_blocks(
+            self.electronic_irreps(graph_features),
+            self.electronic_context_gates(context),
+            PIEZO_IRREP_SLICES,
+        )
         electronic = piezo_from_irreps(electronic_coordinates)
         electronic = 0.5 * (electronic + electronic.transpose(-1, -2))
-        return DifferentialPolarizationPrediction(born, electronic)
+        dielectric_root = dielectric_from_irreps(
+            self.dielectric_irreps(graph_features)
+        )
+        identity = torch.eye(
+            3, dtype=dielectric_root.dtype, device=dielectric_root.device
+        )
+        electronic_dielectric = (
+            identity
+            + dielectric_root @ dielectric_root.transpose(-1, -2)
+        )
+        return electronic, electronic_dielectric
+
+    def coefficients(self, batch) -> ElectromechanicalJetPrediction:
+        node_features, graph_features, context = self.encode_response_features(batch)
+        born = self.decode_born(node_features, context, batch.batch)
+        electronic, electronic_dielectric = self.decode_electronic(
+            graph_features, context
+        )
+        return ElectromechanicalJetPrediction(
+            born, electronic, electronic_dielectric
+        )
 
     @classmethod
     def polarization_increment_from_coefficients(
         cls,
-        prediction: DifferentialPolarizationPrediction,
+        prediction: ElectromechanicalJetPrediction,
         displacement: torch.Tensor,
         strain: torch.Tensor,
         batch,
@@ -1360,7 +1409,7 @@ class DifferentialPolarizationTower(nn.Module):
         if strain.shape != (graphs, 3, 3):
             raise ValueError("Strain probe must have shape [graphs,3,3]")
         if not torch.allclose(strain, strain.transpose(-1, -2), atol=1e-7, rtol=1e-7):
-            raise ValueError("Differential-polarization strain probe must be symmetric")
+            raise ValueError("Electromechanical-jet strain probe must be symmetric")
         cells = batch.cell.reshape(graphs, 3, 3)
         volume = torch.linalg.det(cells).abs().clamp_min(
             torch.finfo(cells.dtype).eps
@@ -1386,6 +1435,41 @@ class DifferentialPolarizationTower(nn.Module):
     ) -> torch.Tensor:
         return self.polarization_increment_from_coefficients(
             self.coefficients(batch), displacement, strain, batch
+        )
+
+
+class IndependentElectrostaticHeads(nn.Module):
+    """A0 control with statistically independent BEC and piezo generators."""
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.born_generator = ElectromechanicalJetHead(**kwargs)
+        self.piezo_generator = ElectromechanicalJetHead(**kwargs)
+        # A0 has two independent backbones but no dead task heads.  Removing
+        # the unused decoders keeps its parameter count and optimizer state
+        # faithful to the actual control rather than silently carrying half of
+        # two A1 models.
+        del self.born_generator.electronic_irreps
+        del self.born_generator.dielectric_irreps
+        del self.born_generator.electronic_context_gates
+        del self.piezo_generator.born_irreps
+        del self.piezo_generator.born_context_gates
+
+    def coefficients(self, batch) -> ElectromechanicalJetPrediction:
+        born_features, _, born_context = (
+            self.born_generator.encode_response_features(batch)
+        )
+        _, piezo_features, piezo_context = (
+            self.piezo_generator.encode_response_features(batch)
+        )
+        born = self.born_generator.decode_born(
+            born_features, born_context, batch.batch
+        )
+        electronic, dielectric = self.piezo_generator.decode_electronic(
+            piezo_features, piezo_context
+        )
+        return ElectromechanicalJetPrediction(
+            born, electronic, dielectric,
         )
 
 
@@ -1454,7 +1538,7 @@ class PolarizationStateNetwork(nn.Module):
         return vector * (1.0 + torch.tanh(self.context_gate(context)))
 
 
-class AutodiffDifferentialPolarizationTower(nn.Module):
+class NonlinearDifferentialPolarizationTower(nn.Module):
     r"""Literal nonlinear differential-polarization response generator.
 
     ``Delta P_theta(x;u,eta) = P_theta(T_eta(x+u_o)) - P_theta(x)`` is
@@ -1463,11 +1547,32 @@ class AutodiffDifferentialPolarizationTower(nn.Module):
     deliberately separate from the retained shared linear-coefficient control.
     """
 
-    PIEZO_C_PER_M2 = DifferentialPolarizationTower.PIEZO_C_PER_M2
+    PIEZO_C_PER_M2 = ElectromechanicalJetHead.PIEZO_C_PER_M2
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, polarization_variable: str, **kwargs):
         super().__init__()
+        if polarization_variable not in {"cartesian", "reduced"}:
+            raise ValueError(
+                "polarization_variable must be exactly 'cartesian' or 'reduced'"
+            )
+        self.polarization_variable = polarization_variable
         self.state = PolarizationStateNetwork(**kwargs)
+
+    def _polarization_variable(
+        self,
+        cartesian: torch.Tensor,
+        eta6: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return raw P or reduced P0=det(F) F^-1 P for each graph."""
+        if self.polarization_variable == "cartesian":
+            return cartesian
+        strain = voigt_to_symmetric_matrix(eta6)
+        identity = torch.eye(3, dtype=eta6.dtype, device=eta6.device)
+        deformation = identity.unsqueeze(0) + strain
+        inverse_action = torch.linalg.solve(
+            deformation, cartesian.unsqueeze(-1)
+        ).squeeze(-1)
+        return torch.linalg.det(deformation).unsqueeze(-1) * inverse_action
 
     @staticmethod
     def _cells(batch, graphs: int) -> torch.Tensor:
@@ -1532,15 +1637,23 @@ class AutodiffDifferentialPolarizationTower(nn.Module):
         # bitwise zero without giving P_theta(x) an absolute physical branch.
         reference = self._perturbed_batch(batch, zeros_u, zeros_eta)
         perturbed = self._perturbed_batch(batch, displacement, eta6)
-        return self.state(perturbed) - self.state(reference)
+        perturbed_state = self._polarization_variable(self.state(perturbed), eta6)
+        reference_state = self._polarization_variable(self.state(reference), zeros_eta)
+        return perturbed_state - reference_state
 
     def coefficients(
         self,
         batch,
         *,
         create_graph: bool | None = None,
-    ) -> DifferentialPolarizationPrediction:
-        """Use three reverse-mode calls instead of a dense input Jacobian."""
+    ) -> ElectromechanicalJetPrediction:
+        """Use exactly three reverse VJPs, one per polarization component.
+
+        e3nn's scripted tensor products contain a detach view without a vmap
+        batching rule, so ``is_grads_batched`` is not a valid execution path.
+        The output dimension is physically fixed at three; this loop is
+        constant-size and is the sole maintained Jacobian implementation.
+        """
         create_graph = self.training if create_graph is None else bool(create_graph)
         graphs = int(batch.batch.max()) + 1
         # no_grad can be locally overridden; inference_mode must not wrap this
@@ -1557,9 +1670,9 @@ class AutodiffDifferentialPolarizationTower(nn.Module):
             # that second network evaluation is an exact derivative identity,
             # and halves the second-order training graph without changing the
             # literal public increment above.
-            increment = self.state(perturbed)
-            displacement_rows: list[torch.Tensor] = []
-            strain_rows: list[torch.Tensor] = []
+            increment = self._polarization_variable(self.state(perturbed), eta6)
+            displacement_rows = []
+            strain_rows = []
             for component in range(3):
                 grad_u, grad_eta = torch.autograd.grad(
                     increment[:, component].sum(),
@@ -1581,7 +1694,7 @@ class AutodiffDifferentialPolarizationTower(nn.Module):
                 / self.PIEZO_C_PER_M2
             )
             electronic = piezo_voigt_to_cartesian(electronic_voigt)
-        return DifferentialPolarizationPrediction(born, electronic)
+        return ElectromechanicalJetPrediction(born, electronic, None)
 
     def forward(
         self,

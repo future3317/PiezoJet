@@ -37,10 +37,11 @@ RUN_MARKERS = {
     "BLOCKED.md",
     "experiment_plan.json",
     "experiment_status_history.jsonl",
+    "failure.json",
 }
 KEY_NAME_RE = re.compile(
     r"(?:config|summary|metrics|report|manifest|provenance|test|audit|"
-    r"INTERRUPTED|BLOCKED|driver\.(?:stdout|stderr))",
+    r"failure|INTERRUPTED|BLOCKED|driver\.(?:stdout|stderr))",
     re.IGNORECASE,
 )
 SEED_RE = re.compile(r"(?:^|[_-])seed[_-]?(\d+)(?:$|[_-])", re.IGNORECASE)
@@ -83,20 +84,37 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             archival_status="current",
             execution_status="completed_controls_and_same_id_capacity_with_retained_failures",
             result_disposition=(
-                "current_head_negative_global_irrep_linearized_and_literal_positive_"
-                "same_id_capacity_literal_jet_mixed_negative_control"
+                "current_head_negative_global_irrep_first_order_jet_and_literal_"
+                "positive_same_id_capacity_redundant_probe_mixed_negative_control"
             ),
             convention_epoch="v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p",
             comparability_group="exact_clone_val10_and_separate_same_id_train_capacity_cohorts",
             paper_use="appendix_post_freeze_diagnostic",
             interpretation_boundary=(
                 "E0 exact-clone, E1 validation10 factor substitution/oracle, E2 current-head, "
-                "E3 global-irrep, linearized controls, and literal autodiff differential-"
-                "polarization same-ID capacity. Same-ID rows are noninductive; the linearized "
-                "generator is not the literal Delta-P model. Test20 is unread and no row "
+                "E3 global-irrep, first-order electromechanical jet, and literal nonlinear "
+                "differential-polarization same-ID capacity. Same-ID rows are noninductive; "
+                "the first-order jet is not the finite-perturbation Delta-P model. Test20 is "
+                "unread and no row "
                 "authorizes a production or held-out performance claim."
             ),
             split="E1 frozen validation10 only; capacity rows use declared strict-train samples1/8/32; test20 unread",
+        )
+    elif name == "electromechanical_jet_fold_adjudication":
+        policy.update(
+            family="electrostatic_generator_formula_disjoint_adjudication",
+            archival_status="current",
+            execution_status="partial_with_completed_a1_negative_and_a0_user_interruption",
+            result_disposition="development_only_negative_and_incomplete_diagnostics",
+            convention_epoch="v10_full_public_electrostatic_a0_a3",
+            comparability_group="fold0_train100_development100_random_initialization_pilots",
+            paper_use="appendix_post_freeze_development_diagnostic",
+            interpretation_boundary=(
+                "Formula-disjoint full-public electrostatic method development. The completed "
+                "random A1 pilot collapses and the A0 pilot was user-interrupted. Neither is "
+                "the fair structure-pretrained A0--A3 adjudication; frozen val10/test20 are unread."
+            ),
+            split="electrostatic_development_folds fold0; frozen val10/test20 unread",
         )
     elif name == "global_l3_joint_optimizer_adjudication_v1":
         policy.update(
@@ -398,6 +416,16 @@ def _run_status(path: Path, *, cohort_running: bool) -> str:
         return "interrupted"
     if "BLOCKED.md" in names:
         return "blocked"
+    if "failure.json" in names:
+        try:
+            status = json.loads(
+                (path / "failure.json").read_text(encoding="utf-8-sig")
+            ).get("status")
+        except (json.JSONDecodeError, OSError, AttributeError):
+            status = None
+        if status == "interrupted":
+            return "interrupted"
+        return "failed_or_has_failure_record"
     if any("failed" in name.lower() for name in names):
         return "failed_or_has_failure_record"
     if {"dfpt_test.json", "test.json", "evaluation_test.json"} & names:

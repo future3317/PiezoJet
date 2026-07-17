@@ -56,6 +56,23 @@ def test_registered_exposure_grid_is_pending_not_a_result(tmp_path: Path) -> Non
     assert run_entry["seed"] == 42
 
 
+def test_failure_json_preserves_explicit_user_interruption(tmp_path: Path) -> None:
+    run = (
+        tmp_path / "outputs" / "electromechanical_jet_fold_adjudication"
+        / "pilot_n100_fold0_a0_seed42"
+    )
+    run.mkdir(parents=True)
+    (run / "failure.json").write_text(
+        '{"status":"interrupted","reason":"user_requested_training_pause"}\n',
+        encoding="utf-8",
+    )
+
+    entry = build_registry(tmp_path / "outputs")["cohorts"][0]
+
+    assert entry["runs"][0]["execution_status"] == "interrupted"
+    assert entry["artifact_summary"]["partial_or_blocked_run_records"] == 1
+
+
 def test_exited_incomplete_replay_is_not_left_running(tmp_path: Path) -> None:
     outputs = tmp_path / "outputs"
     cohort = outputs / "exposure_matched_direct_u_v2_conditioning"

@@ -1,7 +1,7 @@
 import torch
 
 from piezojet.data import load_gmtnet_records, record_to_graph
-from piezojet.model import DifferentialPolarizationTower
+from piezojet.model import ElectromechanicalJetHead
 from piezojet.tensor_ops import rotate_piezo
 
 
@@ -12,7 +12,7 @@ def _graph(index: int = 10):
 
 
 def _model():
-    return DifferentialPolarizationTower(
+    return ElectromechanicalJetHead(
         embedding_dim=8,
         cutoff=5.0,
         lmax=3,
@@ -87,7 +87,7 @@ def test_born_and_electronic_tensors_are_exact_jacobians_of_one_increment():
     )
 
 
-def test_differential_polarization_coefficients_and_increment_are_o3_equivariant():
+def test_electromechanical_jet_coefficients_and_increment_are_o3_equivariant():
     torch.manual_seed(11)
     graph = _graph(17)
     rotation, _ = torch.linalg.qr(torch.randn(3, 3))
