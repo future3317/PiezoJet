@@ -122,7 +122,7 @@ Registered top-level cohorts: **137**.
 | `pymatgen_parser_crosscheck_v1` | data_convention_and_provenance_audit | completed | support_audit | source_audited_bec_transpose | appendix_provenance | 1 (1/0) |
 | `pymatgen_phonopy_parser_crosscheck_v2` | data_convention_and_provenance_audit | completed | support_audit | source_audited_bec_transpose | appendix_provenance | 1 (1/0) |
 | `response_audit` | data_convention_and_provenance_audit | completed | support_audit | source_audited_bec_transpose | appendix_provenance | 1 (0/1) |
-| `response_operator_action_capacity_v1` | response_operator_action_capacity_probe | completed | noninductive_capacity_diagnostic_available | v7_bec_transpose_true_factor_operator_action | appendix_implementation_diagnostic_only | 4 (3/0) |
+| `response_operator_action_capacity_v1` | rejected_response_operator_auxiliary | completed_32_material_gate_failed | negative_noninductive_capacity_diagnostic | v7_bec_transpose_true_factor_operator_action_historical | historical_appendix_only | 4 (3/0) |
 | `response_operator_action_cpu_smoke_v1` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `schema4_provenance_rebuild_v1` | data_convention_and_provenance_audit | completed | support_audit | source_audited_bec_transpose | appendix_provenance | 0 (0/0) |
 | `smoke_tensorial_operator_gpu` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |

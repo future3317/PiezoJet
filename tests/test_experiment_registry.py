@@ -106,3 +106,17 @@ def test_teacher_forced_capacity_ladder_requires_all_1_8_32_probes(tmp_path: Pat
     assert entry["expected_completed_probes"] == 3
     assert entry["completed_probes"] == 2
     assert entry["execution_status"] == "partial"
+
+
+def test_rejected_operator_auxiliary_capacity_is_historical_even_if_complete(tmp_path: Path) -> None:
+    cohort = tmp_path / "outputs" / "response_operator_action_capacity_v1"
+    for count in (1, 8, 32):
+        run = cohort / f"samples{count}"
+        run.mkdir(parents=True)
+        (run / "overfit_dfpt_train.json").write_text("{}", encoding="utf-8")
+
+    entry = build_registry(tmp_path / "outputs")["cohorts"][0]
+
+    assert entry["archival_status"] == "historical"
+    assert entry["execution_status"] == "completed_32_material_gate_failed"
+    assert entry["result_disposition"] == "negative_noninductive_capacity_diagnostic"

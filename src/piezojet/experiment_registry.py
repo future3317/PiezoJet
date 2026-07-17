@@ -250,16 +250,17 @@ def _cohort_policy(name: str) -> dict[str, Any]:
         )
     elif name.startswith("response_operator_action_capacity"):
         policy.update(
-            family="response_operator_action_capacity_probe",
-            archival_status="current",
-            execution_status="planned_or_running",
-            result_disposition="capacity_diagnostic_pending",
-            convention_epoch="v7_bec_transpose_true_factor_operator_action",
-            comparability_group="noninductive_memorization_only",
-            paper_use="appendix_implementation_diagnostic_only",
+            family="rejected_response_operator_auxiliary",
+            archival_status="historical",
+            execution_status="completed_32_material_gate_failed",
+            result_disposition="negative_noninductive_capacity_diagnostic",
+            convention_epoch="v7_bec_transpose_true_factor_operator_action_historical",
+            comparability_group="historical_operator_auxiliary_only",
+            paper_use="historical_appendix_only",
             interpretation_boundary=(
-                "1/8/32-material same-ID comparison of true-factor response-operator action supervision. "
-                "It can test optimization/capacity only and cannot support a holdout claim."
+                "The 1/8/32-material same-ID response-operator auxiliary comparison failed "
+                "its 32-material gate. The associated training module and executor were removed; "
+                "retained files are immutable negative evidence and cannot authorize a holdout run."
             ),
         )
     elif name.startswith("full_corpus_multitask_detached_lift_v"):
@@ -527,19 +528,6 @@ def build_registry(outputs: Path) -> dict[str, Any]:
                     "cpu_implementation_smoke" if "cpu_smoke" in cohort.name
                     else "noninductive_capacity_diagnostic_available"
                 )
-            elif completed_probes:
-                policy["execution_status"] = "partial"
-                policy["result_disposition"] = "partial_noninductive_diagnostic"
-            elif files:
-                policy["execution_status"] = "partial"
-                policy["result_disposition"] = "failed_or_incomplete_noninductive_diagnostic"
-        if cohort.name.startswith("response_operator_action_capacity"):
-            completed_probes = len(list(cohort.glob("samples*/overfit_dfpt_train.json")))
-            policy["expected_completed_probes"] = 3
-            policy["completed_probes"] = completed_probes
-            if completed_probes == 3:
-                policy["execution_status"] = "completed"
-                policy["result_disposition"] = "noninductive_capacity_diagnostic_available"
             elif completed_probes:
                 policy["execution_status"] = "partial"
                 policy["result_disposition"] = "partial_noninductive_diagnostic"
