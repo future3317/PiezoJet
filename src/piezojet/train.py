@@ -16,7 +16,15 @@ import yaml
 from torch_geometric.loader import DataLoader
 from torch_geometric.utils import scatter
 
-from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
+from .data import (
+    PiezoDataset,
+    graph_cache_key,
+    load_gmtnet_records,
+)
+from .checkpoint_provenance import (
+    build_checkpoint_provenance,
+    validate_checkpoint_provenance,
+)
 from .jarvis_dfpt import JarvisDFPTCache
 from .model import AtomCoordinateResponsePotential, PiezoJet, model_from_config
 from .pretraining_protocol import validate_inductive_checkpoint
@@ -827,6 +835,10 @@ def _epoch(
     collect_conditioning_diagnostics: bool = False,
     collect_u_gradient_diagnostics: bool = False,
 ) -> tuple[float, float, dict[str, float], int]:
+    if branch_sum_weight != 0.0:
+        raise ValueError(
+            "branch_sum is a closure diagnostic only and cannot carry optimization weight"
+        )
     training = optimizer is not None
     model.train(training)
     evaluate_all_components = not training
@@ -1156,7 +1168,6 @@ def _epoch(
                 + displacement_response_weight * displacement_component
                 + effective_consistency_weight * displacement_consistency_component
                 + electronic_weight * electronic_component
-                + branch_sum_weight * branch_sum_component
                 + force_weight * force_component
                 + soft_mode_weight * soft_component
                 + internal_strain_weight * internal_component
@@ -1739,6 +1750,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     cfg = load_project_config(args.config)
+    if float(cfg.get("branch_sum_loss_weight", 0.0)) != 0.0:
+        raise ValueError(
+            "branch_sum_loss_weight must be zero; branch closure is diagnostic-only"
+        )
     if args.seed is not None:
         cfg["seed"] = args.seed
     if args.pretrained_encoder is not None:
@@ -1827,15 +1842,25 @@ def main() -> None:
     print(f"runtime_device={runtime_device}")
     data_commit = _data_commit(cfg["data_root"])
     records = load_gmtnet_records(cfg["data_root"])
-    splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
     if args.material_ids_file is not None and args.splits_file is not None:
         raise ValueError("--material-ids-file and --splits-file are mutually exclusive")
     known_ids = {str(record["JARVIS_ID"]) for record in records}
-    if args.splits_file is not None:
-        if not args.splits_file.is_file():
-            raise FileNotFoundError(f"Explicit split file does not exist: {args.splits_file}")
-        splits = load_explicit_splits(args.splits_file, known_ids)
-        cfg["splits_file"] = str(args.splits_file)
+    split_path = args.splits_file
+    if split_path is None and args.material_ids_file is None:
+        canonical_split = cfg.get("pretrain_splits_file")
+        if canonical_split is None:
+            raise ValueError(
+                "Production training requires --splits-file or the canonical "
+                "multitask_split role; generated global splits are not a maintained fallback"
+            )
+        split_path = Path(str(canonical_split))
+    if split_path is not None:
+        if not split_path.is_file():
+            raise FileNotFoundError(f"Explicit split file does not exist: {split_path}")
+        splits = load_explicit_splits(split_path, known_ids)
+        cfg["splits_file"] = str(split_path)
+        split_source = split_path
+        split_kind = "explicit_frozen"
         cfg["restricted_split_counts"] = {name: len(values) for name, values in splits.items()}
     elif args.material_ids_file is not None:
         if not args.material_ids_file.is_file():
@@ -1852,9 +1877,23 @@ def main() -> None:
         unknown = sorted(set(selected_ids) - known_ids)
         if unknown:
             raise ValueError(f"Material-ID file contains unknown IDs: {unknown[:5]}")
-        splits = restrict_splits_to_material_ids(splits, selected_ids, args.material_ids_split)
+        if args.material_ids_split == "global":
+            canonical_split = Path(str(cfg.get("pretrain_splits_file", "")))
+            if not canonical_split.is_file():
+                raise FileNotFoundError(
+                    "Global material-ID restriction requires the canonical multitask split"
+                )
+            base_splits = load_explicit_splits(canonical_split, known_ids)
+        else:
+            base_splits = {"train": [], "val": [], "test": []}
+        splits = restrict_splits_to_material_ids(
+            base_splits, selected_ids, args.material_ids_split
+        )
         cfg["material_ids_file"] = str(args.material_ids_file)
         cfg["material_ids_split"] = args.material_ids_split
+        cfg["splits_file"] = str(args.material_ids_file)
+        split_source = args.material_ids_file
+        split_kind = f"material_ids_{args.material_ids_split}"
         cfg["bounded_smoke_material_count"] = len(selected_ids)
         cfg["restricted_split_counts"] = {name: len(values) for name, values in splits.items()}
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
@@ -1941,7 +1980,7 @@ def main() -> None:
         }
     else:
         pretraining_provenance = validate_inductive_checkpoint(
-            pretrained, splits["train"], splits["val"] + splits["test"]
+            pretrained, splits["train"], splits["val"] + splits["test"], cfg
         )
     model.encoder.load_state_dict(pretrained["encoder"], strict=True)
     model.macro_encoder.load_state_dict(pretrained["encoder"], strict=True)
@@ -1964,6 +2003,10 @@ def main() -> None:
         "branch_materials": len(branch_set) if branch_set is not None else 0,
         "strict_materials": len(strict_set) if strict_set is not None else 0,
     }
+    checkpoint_provenance = build_checkpoint_provenance(
+        splits, split_source, cfg, split_kind=split_kind
+    )
+    cfg["checkpoint_provenance"] = checkpoint_provenance
     factor_rows: list[dict[str, float | int]] = (
         _read_metric_rows(output / "factor_metrics.csv") if args.resume is not None else []
     )
@@ -2058,6 +2101,7 @@ def main() -> None:
                 "piezo_scale": float(scale),
                 "epoch": factor_epoch,
                 "stage": "direct_factor_pretraining",
+                "checkpoint_provenance": checkpoint_provenance,
             }
             torch.save(factor_checkpoint, output / "factor_last.pt")
             if val_factor < factor_best:
@@ -2098,6 +2142,7 @@ def main() -> None:
         )
         if factor_saved.get("stage") != "direct_factor_pretraining":
             raise ValueError("--factor-checkpoint must come from direct factor pretraining")
+        validate_checkpoint_provenance(factor_saved, checkpoint_provenance)
         model.load_state_dict(factor_saved["model"])
         torch.save(factor_saved, output / "factor_best.pt")
         cfg["initialized_from_factor_checkpoint"] = str(args.factor_checkpoint)
@@ -2185,6 +2230,7 @@ def main() -> None:
                 "piezo_scale": float(scale),
                 "epoch": displacement_epoch,
                 "stage": "teacher_forced_displacement_pretraining",
+                "checkpoint_provenance": checkpoint_provenance,
             }
             torch.save(checkpoint, output / "displacement_last.pt")
             if val_value < displacement_best:
@@ -2227,6 +2273,7 @@ def main() -> None:
             raise ValueError(
                 "--displacement-checkpoint must come from teacher-forced displacement pretraining"
             )
+        validate_checkpoint_provenance(saved, checkpoint_provenance)
         model.load_state_dict(saved["model"])
         displacement_optimizer_state = saved.get("optimizer")
         cfg["initialized_from_displacement_checkpoint"] = str(
@@ -2241,6 +2288,7 @@ def main() -> None:
         if not args.resume.is_file():
             raise FileNotFoundError(f"Resume checkpoint does not exist: {args.resume}")
         saved = torch.load(args.resume, map_location=device, weights_only=False)
+        validate_checkpoint_provenance(saved, checkpoint_provenance)
         model.load_state_dict(saved["model"])
         if "optimizer" not in saved:
             raise ValueError("Resume checkpoint has no optimizer state")
@@ -2444,6 +2492,7 @@ def main() -> None:
                     val_components["tensor_response_skill_vs_zero"]
                 ),
             },
+            "checkpoint_provenance": checkpoint_provenance,
         }
         torch.save(checkpoint, output / "last.pt")
         loss_improved = val_value < loss_best

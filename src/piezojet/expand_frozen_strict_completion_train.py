@@ -28,20 +28,35 @@ def expand_frozen_train_panel(
     if missing:
         raise ValueError(f"Formula lookup missing IDs: {missing[:5]}")
     frozen_formulas = {formula_by_id[jid] for jid in original["val"] + original["test"]}
+    held_out_ids = set(original["val"] + original["test"])
+    accepted_train_candidates = accepted_ids - held_out_ids
+    unsafe = sorted(
+        jid for jid in accepted_train_candidates
+        if formula_by_id[jid] in frozen_formulas
+    )
+    safe_original_train = [
+        jid for jid in original["train"]
+        if jid in accepted_ids and formula_by_id[jid] not in frozen_formulas
+    ]
     candidates = sorted(accepted_ids - set(all_original))
-    unsafe = [jid for jid in candidates if formula_by_id[jid] in frozen_formulas]
-    additions = [jid for jid in candidates if formula_by_id[jid] not in frozen_formulas]
+    additions = [
+        jid for jid in candidates if formula_by_id[jid] not in frozen_formulas
+    ]
     expanded = {
-        "train": sorted(original["train"] + additions),
+        "train": sorted(safe_original_train + additions),
         "val": original["val"],
         "test": original["test"],
     }
-    for left, right in (("train", "val"), ("train", "test"), ("val", "test")):
+    for left, right in (("train", "val"), ("train", "test")):
         shared_formulae = {formula_by_id[jid] for jid in expanded[left]} & {formula_by_id[jid] for jid in expanded[right]}
         if shared_formulae:
             raise ValueError(f"Expanded split has formula leakage between {left}/{right}: {sorted(shared_formulae)[:5]}")
+    held_out_formula_overlap = sorted(
+        {formula_by_id[jid] for jid in expanded["val"]}
+        & {formula_by_id[jid] for jid in expanded["test"]}
+    )
     return {
-        "schema": 2,
+        "schema": 3,
         "frozen": True,
         "policy": (
             "original validation/test material IDs and formulas are immutable; newly strict-complete, "
@@ -51,9 +66,12 @@ def expand_frozen_train_panel(
         "source_completion_manifest": source_completion_manifest,
         "added_train_ids": additions,
         "excluded_frozen_formula_ids": unsafe,
+        "removed_base_train_ids": sorted(set(original["train"]) - set(safe_original_train)),
+        "validation_test_reduced_formula_overlap": held_out_formula_overlap,
         "splits": expanded,
         "summary": {
             "base_train_materials": len(original["train"]),
+            "removed_base_train_materials": len(original["train"]) - len(safe_original_train),
             "added_train_materials": len(additions),
             "excluded_frozen_formula_materials": len(unsafe),
             "train_materials": len(expanded["train"]),

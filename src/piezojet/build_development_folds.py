@@ -1,4 +1,4 @@
-"""Build immutable formula-disjoint development folds inside strict train1603.
+"""Build immutable reduced-formula development folds inside canonical strict train.
 
 The frozen validation10/test20 are never members of these folds. Formula
 groups are greedily balanced by material count, crystal system, and a
@@ -124,12 +124,12 @@ def main() -> None:
     parser.add_argument(
         "--strict-split",
         type=Path,
-        default=Path("data/processed/strict_completion_benchmark_train_v10_full_public.json"),
+        default=Path("data/processed/strict_completion_benchmark_train_v11_reduced_formula_safe.json"),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/processed/strict_train1603_development_folds_v1.json"),
+        default=Path("data/processed/strict_train1595_development_folds_v2.json"),
     )
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
@@ -158,7 +158,7 @@ def main() -> None:
     }
     union = set().union(*map(set, dev_folds))
     if union != set(train_ids) or sum(map(len, dev_folds)) != len(train_ids):
-        raise RuntimeError("Development folds do not form an exact train1603 partition")
+        raise RuntimeError("Development folds do not form an exact strict-train partition")
     folds_payload = []
     for index, dev_ids in enumerate(dev_folds):
         dev_set = set(dev_ids)
@@ -190,7 +190,7 @@ def main() -> None:
         "source_split_sha256": _sha256(args.strict_split),
         "seed": args.seed,
         "fold_count": args.folds,
-        "population": "strict train1603 only",
+        "population": f"strict train{len(train_ids)} only",
         "frozen_validation_test_labels_read": False,
         "balancing": "indivisible reduced-formula groups; material count + crystal-system/response-norm strata",
         "folds": folds_payload,

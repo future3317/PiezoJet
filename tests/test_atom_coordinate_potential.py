@@ -3,32 +3,6 @@ from torch.func import jvp
 
 from piezojet.data import load_gmtnet_records, record_to_graph
 from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
-from piezojet.tensor_ops import cartesian_to_piezo_voigt
-
-
-def test_macroscopic_response_density_mixed_derivative_matches_physical_piezo():
-    torch.manual_seed(37)
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[19], 5.0, 32)
-    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
-    model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
-    field0 = torch.zeros(1, 3)
-    eta0 = torch.zeros(1, 6)
-    field_direction = torch.randn_like(field0)
-    strain_direction = torch.randn_like(eta0)
-    with torch.no_grad():
-        direct = cartesian_to_piezo_voigt(model.predict_components(graph).physical_tensor)
-    _, mixed = jvp(
-        lambda field: jvp(
-            lambda eta: model.macroscopic_response_density(graph, field, eta),
-            (eta0,),
-            (strain_direction,),
-        )[1],
-        (field0,),
-        (field_direction,),
-    )
-    expected = -torch.einsum("bi,bij,bj->b", field_direction, direct, strain_direction)
-    expected = expected / model.response.PIEZO_C_PER_M2
-    assert torch.allclose(mixed, expected, atol=1e-5, rtol=1e-5)
 
 
 def test_independent_phi_lambda_coefficients_share_one_scalar_energy():
@@ -138,19 +112,18 @@ def test_total_only_macro_tower_has_no_gradient_route_to_physical_factors():
     assert all(parameter.grad is None for parameter in model.displacement_response_head.parameters())
 
 
-def test_macroscopic_response_density_does_not_evaluate_total_only_macro_tower(monkeypatch):
+def test_direct_u_coordinate_head_has_no_gradient_route_to_factor_or_macro_towers():
     graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[6], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
-    model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("response density must not use total-only macro outputs")
-
-    monkeypatch.setattr(model, "predict_macro_responses", forbidden)
-    density = model.macroscopic_response_density(
-        graph, torch.randn(1, 3), torch.randn(1, 6)
+    model = PiezoJet(cutoff=5.0, num_blocks=1)
+    model.predict_displacement_response(graph).square().mean().backward()
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in model.displacement_encoder.parameters()
     )
-    assert density.shape == (1,)
+    assert all(parameter.grad is None for parameter in model.encoder.parameters())
+    assert all(parameter.grad is None for parameter in model.response_factors.parameters())
+    assert all(parameter.grad is None for parameter in model.macro_encoder.parameters())
 
 
 def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatch):
@@ -240,20 +213,6 @@ def test_explicit_stable_dfpt_diagnostic_uses_exact_stationary_optical_inverse()
     assert torch.allclose(observed, eigenvalues.reciprocal(), atol=1e-6, rtol=1e-6)
     projector = relative.T @ relative
     assert torch.allclose(matrix @ inverse, projector, atol=1e-6, rtol=1e-6)
-
-
-def test_response_generator_converts_all_si_blocks_to_one_energy_density_unit():
-    response = AtomCoordinateResponsePotential()
-    piezo = torch.ones(1, 3, 3, 3) * response.PIEZO_C_PER_M2
-    elastic = torch.eye(6).unsqueeze(0) * response.EV_PER_A3_TO_GPA
-    dielectric = torch.eye(3).unsqueeze(0) * response.DIELECTRIC_RELATIVE
-    field = torch.tensor([[1.0, 0.0, 0.0]])
-    eta = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
-    energy_density = response.macroscopic_response_density(
-        piezo, elastic, dielectric, field, eta
-    )
-    # -E e eta + 1/2 eta C eta - 1/2 E epsilon E = -1 here.
-    assert torch.allclose(energy_density, torch.tensor([-1.0]))
 
 
 def test_elastic_response_counts_shared_strain_curvature_once():

@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["PiezoJet", "ResponsePotential"]
+__all__ = ["PiezoJet"]
 
 
 def __getattr__(name: str) -> Any:
     if name in __all__:
-        from .model import PiezoJet, ResponsePotential
+        from .model import PiezoJet
 
-        return {"PiezoJet": PiezoJet, "ResponsePotential": ResponsePotential}[name]
+        return {"PiezoJet": PiezoJet}[name]
     raise AttributeError(name)

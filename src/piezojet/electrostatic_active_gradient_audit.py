@@ -1,4 +1,4 @@
-"""Read-only response-active task-gradient audit for an A0--A3 checkpoint."""
+"""Read-only response-active task-gradient audit for a Stage-A checkpoint."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument(
         "--folds", type=Path,
-        default=Path("data/processed/electrostatic_development_folds.json"),
+        default=Path("data/processed/electrostatic_development_folds_v2.json"),
     )
     parser.add_argument("--fold", type=int, required=True)
     parser.add_argument("--architecture", choices=ARCHITECTURES, required=True)

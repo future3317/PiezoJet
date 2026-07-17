@@ -106,9 +106,9 @@ def _bond_oracle_normal_system(target: torch.Tensor, edge_index: torch.Tensor) -
     for left, (i_tensor, j_tensor) in enumerate(pairs):
         i, j = int(i_tensor), int(j_tensor)
         rhs[left] = torch.einsum("aij,ij->a", basis, blocks[i, i] + blocks[j, j] - blocks[i, j] - blocks[j, i])
-        for right, (k_tensor, l_tensor) in enumerate(pairs):
-            k, l = int(k_tensor), int(l_tensor)
-            shared_diagonals = int(i == k or i == l) + int(j == k or j == l)
+        for right, (k_tensor, ell_tensor) in enumerate(pairs):
+            k, ell = int(k_tensor), int(ell_tensor)
+            shared_diagonals = int(i == k or i == ell) + int(j == k or j == ell)
             cross_blocks = 2 if left == right else 0
             gram[left, :, right, :] = (shared_diagonals + cross_blocks) * block_inner
     return pairs, gram.reshape(6 * pair_count, 6 * pair_count), rhs.reshape(-1)

@@ -38,7 +38,7 @@ def build_full_corpus_multitask_split(
     if not set(strict["train"]).issubset(train):
         raise RuntimeError("A frozen strict training ID was unexpectedly removed")
     return {
-        "schema": 1,
+        "schema": 2,
         "frozen": True,
         "policy": (
             "Train on all GMTNet records formula-disjoint from frozen strict val/test; "
@@ -46,6 +46,10 @@ def build_full_corpus_multitask_split(
         ),
         "source_strict_split": str(strict_split_file),
         "held_out_formula_count": len(held_out_formulas),
+        "validation_test_reduced_formula_overlap": sorted(
+            {formula(record_by_id[value]) for value in strict["val"]}
+            & {formula(record_by_id[value]) for value in strict["test"]}
+        ),
         "splits": {"train": train, "val": strict["val"], "test": strict["test"]},
         "summary": {
             "all_gmtnet_records": len(records),

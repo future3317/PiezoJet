@@ -86,12 +86,12 @@ def main() -> None:
     parser.add_argument(
         "--formula-safe-split",
         type=Path,
-        default=Path("data/processed/full_corpus_multitask_train1603_v1.json"),
+        default=Path("data/processed/full_corpus_multitask_train1595_v2.json"),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/processed/electrostatic_development_folds.json"),
+        default=Path("data/processed/electrostatic_development_folds_v2.json"),
     )
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)

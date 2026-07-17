@@ -14,8 +14,8 @@ diagnosis, not a state-of-the-art accuracy claim.
 The physical ionic prediction is
 
 \[
-e^{\mathrm{ion}}_U=\frac{c_e}{\Omega}Z^{*\mathsf T}U_{\eta,\delta},
-\qquad U_{\eta,\delta}=\mathcal D_\delta(\Phi)\Lambda.
+\widehat e^{\mathrm{ion}}_U
+=\frac{c_e}{\Omega}\widehat Z^{*\mathsf T}\widehat U_{\eta,\delta}.
 \]
 
 `U_eta` denotes the production regularized internal-displacement response
@@ -29,6 +29,9 @@ ionic macro loss has no inverse, SVD, detached chart, or straight-through
 gradient route. Only on the true stable, well-conditioned stratum is the exact
 stationary diagnostic `U_eta_stat = Phi_o^-1 Lambda_o` interpreted as
 `du/deta`; an unstable regularized target is not an equilibrium derivative.
+For a strict DFPT label, rather than an identity of the predicted heads, the
+teacher target is
+\(U_{\eta,\delta}^{\star}=\mathcal D_\delta(\Phi^{\star})\Lambda^{\star}\).
 
 The model also predicts `Z*`, `Phi`, and `Lambda` as physical factors. Their
 separate diagnostic response is
@@ -90,12 +93,12 @@ This separation is required because total-only data cannot identify the
 electronic/ionic allocation. A macro-total gradient cannot enter the physical
 encoder, `Z*`, `Phi`, `Lambda`, `U_eta`, or electronic decoder.
 
-`PiezoJet.macroscopic_response_density()` is deliberately narrower than a
-microscopic energy model: it packages the direct-`U_eta` physical piezo tensor
-with factor-derived elastic/dielectric diagnostic blocks into a unit-consistent
-constitutive density. Its mixed derivatives enforce the reported Maxwell
-identity, but it neither evaluates the total-only macro tower nor asserts
-`U_eta = D_delta(Phi) Lambda`.
+There is deliberately no production API that packages direct-`U_eta` piezo
+with factor-derived elastic/dielectric blocks as one energy density. Such a
+post-hoc quadratic form would make its own mixed derivatives agree by
+construction, but would not establish that the independently predicted
+`U_eta` is the stationary response of the factor energy. Energy consistency is
+instead an explicit, reported first-order residual on strict records.
 
 Same-OUTCAR electronic and true-BEC ionic component labels supervise their
 own branches.  Their already-audited identity `total = electronic + ionic` is
@@ -136,10 +139,13 @@ The production factor architecture likewise has one accepted identifier,
   contains 1,638 strict `Lambda` completions from the unchanged gates. The v10
   audit fixes the zero-dimensional invariant-space case; it does not relax a
   threshold.
-- `data/processed/full_corpus_multitask_train1603_v1.json` contains 4,961
-  formula-disjoint macro training records and preserves the frozen val10/test20
-  IDs. Its strict factor train contains 1,603 records; five additional strict
-  records sharing a frozen-panel formula are explicitly excluded.
+- `data/processed/full_corpus_multitask_train1595_v2.json` contains 4,944
+  reduced-formula-safe macro training records and preserves the frozen
+  val10/test20 IDs. Its strict factor train contains 1,595 records; thirteen
+  accepted strict records sharing a held-out reduced formula are excluded.
+  Val and test themselves share `HNaO`, so this is train-versus-held-out
+  separation, not a fully three-way formula-OOD split. The former 4,961/1,603
+  split grouped unreduced unit-cell formulas and is historical only.
 - The formula-safe full-public electrostatic pool contains 4,939 materials
   with same-archive BEC, `OUTCAR total - ionic` electronic piezo, electronic
   dielectric, and force-constant labels. All 4,995 parsed payloads pass explicit
@@ -203,7 +209,7 @@ objective. Test outputs never select a checkpoint or loss weight.
 This historical replay contains two deliberately separate questions. The physical curve
 tests whether the former 610 branch and 149 strict training labels learn
 `U_{eta,delta}`, true-BEC `Z*^T U_{eta,delta}`, and predicted-BEC ionic
-response. The macro curve tests whether 4,961 total-only labels train the
+response. The legacy macro curve tests whether 4,961 total-only labels train the
 independent total predictor. Because the towers are gradient-isolated, the
 macro curve is a negative control/software-isolation check and cannot show that
 total-only labels improve ionic factors.
@@ -267,10 +273,11 @@ the algebraically redundant probe objective to the maintained candidate.
 
 Method selection no longer needs the frozen val10 panel.  The current
 electrostatic adjudication uses the 4,939-material five-fold map
-`data/processed/electrostatic_development_folds.json`; the older strict1603
-folds remain valid for tasks that require complete `Lambda`. Every development
+`data/processed/electrostatic_development_folds_v2.json`; the corrected
+strict1595 folds are used for tasks that require complete `Lambda`. Every development
 fold contains some samples32 capacity IDs, so a fitted same-ID checkpoint is
-forbidden as a fold initializer. The fair A0--A3 comparison uses one
+forbidden as a fold initializer. The maintained Stage-A comparison covers
+A0, A1, and A1.5 and uses one
 fold-train-only structure checkpoint for every encoder copy, random response
 heads, identical stochastic updates, and a fixed response-active gradient
 audit batch. A random-initialized N=100 A1 pilot selected update 25 but
@@ -287,11 +294,16 @@ pilot was explicitly interrupted at the user's request and has no result.
 No replacement training is currently running. A0 now uses an exact sequential
 backward over its parameter-disjoint electronic and BEC towers, reducing peak
 activation residency without changing any parameter gradient; a CPU regression
-test compares it directly with backward on the summed objective. The next fair
+test compares it with backward on the summed objective within floating-point
+tolerance. Microbatching preserves the same material-mean objective but is not
+claimed to be bitwise AdamW-identical to a larger forward. The next fair
 N=100 Stage-A comparison is recorded as a non-executing plan at
-`outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`.
-It shares one fold-train-only structural checkpoint across A0--A3, uses fresh
-run directories, and requires explicit authorization before any command is run.
+`outputs/electromechanical_jet_fold_adjudication_v2/stage_a_n100_fold0_seed42_plan.json`.
+It shares one fold-train-only structural checkpoint across A0/A1/A1.5, uses fresh
+run directories, binds every selected checkpoint to the fold/data hashes, and
+requires explicit authorization before any command is run. The similarly named
+plan under `electromechanical_jet_fold_adjudication/` is a superseded A0--A3
+historical plan and is not executable by the maintained runner.
 
 The explicit global-`l=3` displacement head resolves the former same-ID
 representation bottleneck.  On the preregistered samples32 capacity panel, a
@@ -303,7 +315,7 @@ head's mean/worst minimum residual `0.09498/0.91137` to
 `0.99989`.  An unrestricted translation-free lookup has worst residual
 `8.64e-9`.  These are train-only capacity results, not generalization evidence.
 
-A post-freeze train1603/val10 adjudication then localized the joint
+A post-freeze legacy train1603/val10 adjudication then localized the joint
 degradation.  Direct-`U` versus true-BEC ionic gradients are aligned
 (`+0.549` cosine), whereas the redundant branch-sum gradient has norm `0.3002`
 versus direct-`U` `0.0817` and cosine `-0.556`.  Removing that redundant
@@ -314,14 +326,17 @@ run's loss/direct-`U`/ionic/TRS of `1.54465 / 0.37147 / 0.29212 / 0.05800` to
 loss `0.25054 +/- 0.00485`, ionic loss `0.13820 +/- 0.01368`, and electronic
 loss `0.29781 +/- 0.00049` (mean +/- sample SD).  Thus the zero-amplitude U
 collapse is reproducibly removed, while the electronic branch remains flat.
+The old split used unreduced unit-cell formulas and contains reduced-formula
+leakage, so these values are retained as mechanism diagnostics rather than
+reduced-formula-OOD evidence.
 
 The matched direct-total validation control reaches TRS
 `0.37382 +/- 0.08634`; the paired physical-model macro tower minus direct
 difference is negative for every seed and averages `-0.08217 +/- 0.03399`.
 The present result therefore supports the global-`l=3` physical mechanism but
 does **not** support total-tensor superiority over a matched direct regressor.
-All of these comparisons use formula-disjoint val10 only; frozen test20 remains
-unread.  See
+All of these comparisons use the legacy val10 panel with reduced-formula
+leakage from train; frozen test20 remains unread. See
 `outputs/global_l3_no_redundant_sum_multiseed_v1/report/validation_report.md`.
 
 The maintained CUDA path batches nonlocal global-`l=3` attention and the
@@ -404,7 +419,7 @@ Run a bounded full-corpus smoke with:
 ```powershell
 & 'D:\Anaconda\envs\EGNN\python.exe' -m piezojet.train `
   --config config.yaml `
-  --splits-file data/processed/full_corpus_multitask_train1603_v1.json `
+  --splits-file data/processed/full_corpus_multitask_train1595_v2.json `
   --epochs 1 --factor-pretrain-epochs 1 `
   --early-stopping-patience 0 `
   --output-dir outputs/direct_u_multistream_smoke_v1
@@ -415,7 +430,7 @@ Evaluate the frozen physical panel with:
 ```powershell
 & 'D:\Anaconda\envs\EGNN\python.exe' -m piezojet.evaluate_dfpt `
   --checkpoint outputs/direct_u_multistream_smoke_v1/loss_best.pt `
-  --splits-file data/processed/full_corpus_multitask_train1603_v1.json `
+  --splits-file data/processed/full_corpus_multitask_train1595_v2.json `
   --split test `
   --output outputs/direct_u_multistream_smoke_v1/dfpt_test.json
 ```

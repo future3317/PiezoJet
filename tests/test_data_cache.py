@@ -1,5 +1,11 @@
 import piezojet.data as data_module
-from piezojet.data import PiezoDataset, load_gmtnet_records, record_to_graph
+from piezojet.data import PiezoDataset, formula, load_gmtnet_records, record_to_graph
+
+
+def test_formula_is_reduced_and_independent_of_unit_cell_multiplicity():
+    primitive = {"atoms": {"elements": ["Na", "O", "H"]}}
+    doubled = {"atoms": {"elements": ["Na", "O", "H"] * 2}}
+    assert formula(primitive) == formula(doubled) == "HNaO"
 
 
 def test_piezo_dataset_graph_cache_preserves_graph():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from uuid import uuid4
 import random
 from hashlib import sha256
@@ -28,8 +29,8 @@ from .symmetry_projection import (
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 
-GRAPH_CACHE_SCHEMA = 4
-SPLIT_SCHEMA = 2
+GRAPH_CACHE_SCHEMA = 5
+SPLIT_SCHEMA = 3
 SYMMETRY_TARGET_CACHE_SCHEMA = 2
 RESPONSE_NORM_BOUNDS = (0.0, 0.05, 0.5, 1.0)
 MAX_POINT_GROUP_OPERATIONS = 48
@@ -48,8 +49,13 @@ def deterministic_subset(values: list[str], limit: int, seed: int) -> list[str]:
 
 
 def formula(record: dict[str, Any]) -> str:
+    """Canonical reduced composition, independent of unit-cell multiplicity."""
     counts = Counter(record["atoms"]["elements"])
-    return "".join(f"{element}{counts[element] if counts[element] != 1 else ''}" for element in sorted(counts))
+    divisor = math.gcd(*counts.values())
+    return "".join(
+        f"{element}{counts[element] // divisor if counts[element] // divisor != 1 else ''}"
+        for element in sorted(counts)
+    )
 
 
 def response_norm_bin(target: torch.Tensor) -> int:
@@ -154,11 +160,22 @@ def _periodic_edges(frac: torch.Tensor, cell: torch.Tensor, cutoff: float, max_n
     """
     if frac.ndim != 2 or frac.shape[-1] != 3 or cell.shape != (3, 3):
         raise ValueError("Expected fractional coordinates [N,3] and lattice [3,3]")
-    shortest = torch.linalg.vector_norm(cell, dim=-1).min().item()
-    if shortest <= 0:
-        raise ValueError("Lattice vectors must be nonzero")
-    span = int(cutoff / shortest) + 1
-    shifts = torch.tensor(list(product(range(-span, span + 1), repeat=3)), dtype=frac.dtype, device=frac.device)
+    if not torch.isfinite(cell).all() or abs(float(torch.linalg.det(cell))) <= 1e-12:
+        raise ValueError("Lattice must be finite and nonsingular")
+    # For r=(n+delta)L with each delta component in (-1,1),
+    # |n_i| <= cutoff*||L^{-1}_{:,i}||+1.  This reciprocal-basis bound is
+    # complete for arbitrarily skew cells; the shortest direct lattice-vector
+    # norm is not, because large integer combinations can cancel.
+    inverse = torch.linalg.inv(cell)
+    spans = [
+        max(1, int(math.ceil(cutoff * float(torch.linalg.vector_norm(inverse[:, axis])) + 1.0)))
+        for axis in range(3)
+    ]
+    shifts = torch.tensor(
+        list(product(*(range(-span, span + 1) for span in spans))),
+        dtype=frac.dtype,
+        device=frac.device,
+    )
     shift_cartesian = shifts @ cell
     shift_count, atoms = shifts.shape[0], frac.shape[0]
     if max_neighbors <= 0:
@@ -391,7 +408,7 @@ def precompute_pbc_graphs(records: list[dict[str, Any]], processed_dir: str | Pa
 
 
 class PiezoDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None, elastic_targets_path: str | Path | None = None, dfpt_total_consistency_relative_tolerance: float = 0.05, dfpt_total_consistency_absolute_tolerance: float = 0.05):
+    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None, elastic_targets_path: str | Path | None = None, dfpt_total_consistency_relative_tolerance: float = 0.05, dfpt_total_consistency_absolute_tolerance: float = 0.05, dfpt_profile: str = "full"):
         super().__init__()
         wanted = set(ids)
         self.records = [record for record in records if str(record["JARVIS_ID"]) in wanted]
@@ -402,6 +419,13 @@ class PiezoDataset(Dataset):
         self._disk_cache = PersistentGraphCache(processed_dir, self.records, cutoff, max_neighbors, cache_key=cache_key) if processed_dir is not None else None
         self._target_cache = SymmetryTargetCache(processed_dir) if processed_dir is not None and project_targets else None
         self._dfpt_cache = JarvisDFPTCache(dfpt_dir) if dfpt_dir is not None else None
+        if dfpt_profile not in {"full", "electrostatic"}:
+            raise ValueError("dfpt_profile must be 'full' or 'electrostatic'")
+        # Electrostatic-generator experiments require only BEC and electronic
+        # response labels.  Retaining each material's force constants and
+        # dynamical eigenvectors in the in-memory graph cache can consume many
+        # GiB without contributing to their objective.
+        self._dfpt_profile = dfpt_profile
         self._strain_completion_dir = (
             Path(strain_completion_dir) if strain_completion_dir is not None else None
         )
@@ -459,7 +483,7 @@ class PiezoDataset(Dataset):
             has_dfpt = dfpt is not None
             completion_path = (
                 self._strain_completion_dir / f"{record['JARVIS_ID']}.pt"
-                if self._strain_completion_dir is not None else None
+                if self._dfpt_profile == "full" and self._strain_completion_dir is not None else None
             )
             completion = (
                 torch.load(completion_path, map_location="cpu", weights_only=False)
@@ -491,6 +515,59 @@ class PiezoDataset(Dataset):
                 torch.linalg.vector_norm(raw_born - graph.y_born) / born_norm
             ).reshape(1)
             graph.born_mask = torch.full((graph.num_nodes,), has_dfpt, dtype=torch.bool)
+            if self._dfpt_profile == "electrostatic":
+                if not has_dfpt:
+                    raise ValueError(
+                        "The electrostatic profile requires a DFPT payload for "
+                        f"{record['JARVIS_ID']}"
+                    )
+                ionic_source = dfpt["ionic_piezo_source"].to(dtype=target.dtype)
+                ionic_cartesian = piezo_voigt_to_cartesian(
+                    source_voigt_to_canonical(ionic_source)
+                )
+                graph.y_ionic_piezo = project_piezo_to_point_group(
+                    ionic_cartesian, rotations
+                ).unsqueeze(0)
+                total_source = dfpt["total_piezo_source"].to(dtype=target.dtype)
+                total_cartesian = piezo_voigt_to_cartesian(
+                    source_voigt_to_canonical(total_source)
+                )
+                graph.y_dfpt_total_piezo = project_piezo_to_point_group(
+                    total_cartesian, rotations
+                ).unsqueeze(0)
+                graph.y_electronic_piezo = (
+                    graph.y_dfpt_total_piezo - graph.y_ionic_piezo
+                )
+                electronic_dielectric = torch.as_tensor(
+                    dfpt.get("epsilon", {}).get("epsilon", []),
+                    dtype=target.dtype,
+                )
+                has_electronic_dielectric = (
+                    electronic_dielectric.shape == (3, 3)
+                    and bool(torch.isfinite(electronic_dielectric).all())
+                )
+                if has_electronic_dielectric:
+                    electronic_dielectric = 0.5 * (
+                        electronic_dielectric + electronic_dielectric.transpose(-1, -2)
+                    )
+                    electronic_dielectric = torch.einsum(
+                        "rij,jk,rlk->il",
+                        rotations,
+                        electronic_dielectric,
+                        rotations,
+                    ) / rotations.shape[0]
+                else:
+                    electronic_dielectric = torch.zeros(3, 3, dtype=target.dtype)
+                graph.y_dfpt_electronic_dielectric = electronic_dielectric.unsqueeze(0)
+                graph.dfpt_electronic_dielectric_mask = torch.tensor(
+                    has_electronic_dielectric, dtype=torch.bool
+                )
+                graph.point_group_ops, graph.point_group_mask = pad_point_group_operations(rotations)
+                graph.is_polar_point_group = torch.tensor(
+                    is_polar_point_group(rotations), dtype=torch.bool
+                )
+                self._graph_cache[index] = graph
+                return graph
             if has_dfpt:
                 modes = int(dfpt["dynamical_eigenvalues"].numel())
                 graph.dfpt_dynamical_eigenvalues = dfpt["dynamical_eigenvalues"].to(dtype=target.dtype)

@@ -3,9 +3,10 @@
 The maintained package has one production parameterization: independent
 atom-resolved `U_eta`; independent quadratic-response `Phi/Lambda`
 coefficients of one scalar factor energy; an isotropic background; and the
-continuous regularized optical operator. Its macroscopic response density is a
-coefficient-level constitutive wrapper, not a claim that direct `U_eta`, the
-factor diagnostics, and the isolated macro tower share a microscopic generator.
+continuous regularized optical operator. Direct `U_eta`, factor diagnostics,
+and the isolated macro tower are not packaged as one model energy: a post-hoc
+quadratic density would not prove a common microscopic generator. The strict
+first-order U/V residual is the relevant falsifiable compatibility diagnostic.
 
 The following executable branches were removed after negative or
 non-identifiable diagnostics:

@@ -12,11 +12,12 @@ from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from torch_geometric.loader import DataLoader
 
-from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
+from .checkpoint_provenance import build_checkpoint_provenance, validate_checkpoint_provenance
+from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .model import model_from_config
 from .metrics import response_tensor_skill, stabilized_relative_residual, tensor_metrics
-from .tensor_ops import rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
-from .train import device_from_config, full_loss
+from .tensor_ops import rotate_piezo
+from .train import device_from_config, full_loss, load_explicit_splits
 
 
 def _random_rotation(dtype: torch.dtype, device: torch.device) -> torch.Tensor:
@@ -73,6 +74,7 @@ def _point_group_rotations(record) -> list[torch.Tensor]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--splits-file", type=Path)
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--max-equivalence-samples", type=int, default=32)
     parser.add_argument("--output", type=Path)
@@ -83,7 +85,21 @@ def main() -> None:
     cfg = checkpoint["config"]
     device = device_from_config(cfg["device"])
     records = load_gmtnet_records(cfg["data_root"])
-    splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
+    split_path = args.splits_file or Path(str(cfg.get("splits_file", "")))
+    if not split_path.is_file():
+        raise FileNotFoundError(
+            "Evaluation requires the checkpoint's explicit persisted split file"
+        )
+    splits = load_explicit_splits(
+        split_path, {str(record["JARVIS_ID"]) for record in records}
+    )
+    expected_provenance = build_checkpoint_provenance(
+        splits,
+        split_path,
+        cfg,
+        split_kind=str(checkpoint.get("checkpoint_provenance", {}).get("split_kind", "")),
+    )
+    validate_checkpoint_provenance(checkpoint, expected_provenance)
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
     dataset = PiezoDataset(records, splits[args.split], cfg["cutoff"], cfg["max_neighbors"], processed_dir=cfg["processed_dir"], cache_key=cache_key)
     loader_options = {"num_workers": cfg["num_workers"], "pin_memory": device.type == "cuda"}
@@ -111,7 +127,8 @@ def main() -> None:
     sample_error = torch.linalg.vector_norm(diff.reshape(diff.shape[0], -1), dim=-1)
     target_norm = torch.linalg.vector_norm(target.reshape(target.shape[0], -1), dim=-1).clamp_min(1e-12)
     equivariance_floor = float(checkpoint["piezo_scale"]) * 0.05 * (18.0 ** 0.5)
-    metrics: dict[str, float | int | None] = {
+    metrics: dict[str, float | int | str | None] = {
+        "prediction_branch": "isolated_macro_total_tower",
         "cartesian_component_mae": float(diff.abs().mean()),
         "sample_frobenius_mae": float(sample_error.mean()),
         "normalized_frobenius_error": float((sample_error / target_norm.clamp_min(equivariance_floor)).mean()),

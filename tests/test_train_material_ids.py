@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from piezojet.train import restrict_splits_to_material_ids, soft_optical_eigenvalue_loss
+from piezojet.train import _epoch, restrict_splits_to_material_ids, soft_optical_eigenvalue_loss
 
 
 def test_global_material_id_restriction_preserves_disjoint_split():
@@ -41,3 +41,16 @@ def test_soft_optical_loss_is_zero_for_exact_variable_size_hessian():
         blocks, blocks, torch.tensor([0, atoms]), torch.tensor([True])
     )
     assert loss == pytest.approx(0.0)
+
+
+def test_branch_sum_can_never_be_reenabled_as_an_optimization_loss():
+    with pytest.raises(ValueError, match="closure diagnostic only"):
+        _epoch(
+            None,
+            None,
+            None,
+            torch.tensor(1.0),
+            torch.ones(5),
+            torch.device("cpu"),
+            branch_sum_weight=0.1,
+        )

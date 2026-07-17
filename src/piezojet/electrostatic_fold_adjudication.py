@@ -1,4 +1,4 @@
-"""Formula-disjoint A0--A3 electrostatic-jet development adjudication."""
+"""Formula-disjoint first-order electrostatic-jet development adjudication."""
 
 from __future__ import annotations
 
@@ -19,10 +19,12 @@ from .data import (
     graph_cache_key,
     load_gmtnet_records,
 )
+from .checkpoint_provenance import build_checkpoint_provenance
 from .build_electrostatic_development_folds import electrostatic_fold_train_ids
 from .electronic_capacity import (
     born_capacity_metrics,
     born_material_balanced_loss,
+    dielectric_capacity_metrics,
     electronic_capacity_metrics,
     irrep_balanced_capacity_loss,
 )
@@ -30,10 +32,11 @@ from .electrostatic_protocol import ARCHITECTURES
 from .model import (
     ElectromechanicalJetHead,
     IndependentElectrostaticHeads,
-    NonlinearDifferentialPolarizationTower,
+    SoftSharedElectromechanicalJetHead,
 )
 from .project_config import load_project_config
-from .train import seed_everything
+from .pretraining_protocol import validate_inductive_checkpoint
+from .train import _data_commit, seed_everything
 
 
 def _model_kwargs(config: dict[str, object]) -> dict[str, object]:
@@ -59,20 +62,12 @@ def make_model(architecture: str, config: dict[str, object]) -> nn.Module:
         return IndependentElectrostaticHeads(**kwargs)
     if architecture == "a1_electromechanical_jet":
         return ElectromechanicalJetHead(**kwargs)
-    if architecture == "a2_nonlinear_cartesian":
-        return NonlinearDifferentialPolarizationTower(
-            polarization_variable="cartesian", **kwargs
-        )
-    if architecture == "a3_nonlinear_reduced":
-        return NonlinearDifferentialPolarizationTower(
-            polarization_variable="reduced", **kwargs
-        )
+    if architecture == "a15_soft_shared_electromechanical_jet":
+        return SoftSharedElectromechanicalJetHead(**kwargs)
     raise ValueError(f"Unknown architecture: {architecture}")
 
 
 def _coefficients(model: nn.Module, batch, architecture: str, create_graph: bool):
-    if architecture in {"a2_nonlinear_cartesian", "a3_nonlinear_reduced"}:
-        return model.coefficients(batch, create_graph=create_graph)
     return model.coefficients(batch)
 
 
@@ -88,15 +83,23 @@ def _losses(model: nn.Module, batch, architecture: str, create_graph: bool):
 
 
 def backward_training_objective(
-    model: nn.Module, batch, architecture: str
+    model: nn.Module, batch, architecture: str, *, gradient_scale: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Backpropagate one exact joint objective with bounded A0 graph memory."""
+    """Backpropagate one joint objective, optionally as a mean microbatch.
+
+    ``gradient_scale`` is the material fraction of one logical update.  It
+    permits memory-bounded microbatch accumulation of the same mathematical
+    mean objective with one AdamW update per logical batch. Different floating-
+    point reduction orders are tolerance-equivalent, not bitwise identical.
+    """
+    if gradient_scale <= 0.0:
+        raise ValueError("gradient_scale must be positive")
     if architecture != "a0_independent_irreps":
         electronic, born = _losses(model, batch, architecture, create_graph=True)
         loss = electronic + born
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite electrostatic fold loss")
-        loss.backward()
+        (loss * gradient_scale).backward()
         return electronic, born
 
     # A0's two towers share no parameters. Backpropagating each loss before
@@ -109,14 +112,14 @@ def backward_training_objective(
     )
     if not torch.isfinite(electronic):
         raise FloatingPointError("Non-finite A0 electronic loss")
-    electronic.backward()
+    (electronic * gradient_scale).backward()
     born_prediction = model.born_charges(batch)
     born = born_material_balanced_loss(
         born_prediction, batch.y_born, batch.batch
     )
     if not torch.isfinite(born):
         raise FloatingPointError("Non-finite A0 Born-charge loss")
-    born.backward()
+    (born * gradient_scale).backward()
     return electronic, born
 
 
@@ -238,25 +241,38 @@ def load_structure_pretraining(
     architecture: str,
     checkpoint: Path,
     device: torch.device,
+    train_ids: list[str],
+    development_ids: list[str],
+    config: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Load one fold-train-only PeriodicCrystalEncoder into each candidate."""
+    """Strictly load a fold-train-only encoder into one Stage-A candidate.
+
+    A state-dict shape match is not sufficient: pretraining on a development
+    structure would make this formula-disjoint comparison transductive even
+    without reading its response labels.  Validate the persisted material-ID
+    provenance before copying any weights.
+    """
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     if payload.get("architecture") != "e3nn_periodic_v1":
         raise ValueError("Structure checkpoint is not a PeriodicCrystalEncoder pretrain")
+    pretraining_provenance = validate_inductive_checkpoint(
+        payload, train_ids, development_ids, config
+    )
     state = payload["encoder"]
     if architecture == "a0_independent_irreps":
         model.born_generator.encoder.load_state_dict(state, strict=True)
         model.piezo_generator.encoder.load_state_dict(state, strict=True)
         encoder_copies = 2
-    elif architecture == "a1_electromechanical_jet":
+    elif architecture in {
+        "a1_electromechanical_jet", "a15_soft_shared_electromechanical_jet"
+    }:
         model.encoder.load_state_dict(state, strict=True)
         encoder_copies = 1
     else:
-        model.state.encoder.load_state_dict(state, strict=True)
-        encoder_copies = 1
+        raise ValueError(f"Unsupported maintained Stage-A architecture: {architecture}")
     return {
         "checkpoint": str(checkpoint.resolve()),
-        "pretraining_provenance": payload.get("pretraining_provenance"),
+        "pretraining_provenance": pretraining_provenance,
         "pretraining_epoch": payload.get("epoch"),
         "pretraining_loss": payload.get("loss"),
         "encoder_copies_initialized": encoder_copies,
@@ -274,12 +290,14 @@ def _dataset(config: dict[str, object], records, ids: list[str], cache_key: str)
         project_targets=True,
         dfpt_dir=config["jarvis_dfpt_dir"],
         strain_completion_dir=None,
+        dfpt_profile="electrostatic",
     )
 
 
 def _evaluate(model, loader, architecture: str):
     predictions, targets = [], []
     born_predictions, born_targets, batch_indices = [], [], []
+    dielectric_predictions, dielectric_targets, dielectric_masks = [], [], []
     offset = 0
     device = next(model.parameters()).device
     model.eval()
@@ -292,6 +310,9 @@ def _evaluate(model, loader, architecture: str):
             born_predictions.append(prediction.born_charges.detach())
             born_targets.append(batch.y_born)
             batch_indices.append(batch.batch + offset)
+            dielectric_predictions.append(prediction.electronic_dielectric.detach())
+            dielectric_targets.append(batch.y_dfpt_electronic_dielectric)
+            dielectric_masks.append(batch.dfpt_electronic_dielectric_mask)
             offset += int(batch.num_graphs)
     return {
         "electronic": electronic_capacity_metrics(
@@ -301,6 +322,10 @@ def _evaluate(model, loader, architecture: str):
             torch.cat(born_predictions), torch.cat(born_targets),
             torch.cat(batch_indices),
         ),
+        "dielectric_audit": dielectric_capacity_metrics(
+            torch.cat(dielectric_predictions), torch.cat(dielectric_targets),
+            torch.cat(dielectric_masks),
+        ),
     }
 
 
@@ -309,13 +334,25 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument(
         "--folds", type=Path,
-        default=Path("data/processed/electrostatic_development_folds.json"),
+        default=Path("data/processed/electrostatic_development_folds_v2.json"),
     )
     parser.add_argument("--fold", type=int, required=True)
     parser.add_argument("--architecture", choices=ARCHITECTURES, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--updates", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--microbatch-size", type=int, default=0,
+        help="Physical graphs per forward/backward; 0 uses the logical batch size",
+    )
+    parser.add_argument(
+        "--eval-batch-size", type=int, default=0,
+        help="Physical graphs per development forward; 0 uses --microbatch-size",
+    )
+    parser.add_argument(
+        "--diagnostic-batch-size", type=int, default=0,
+        help="Graphs in the fixed gradient diagnostic; 0 uses --microbatch-size",
+    )
     parser.add_argument("--eval-interval", type=int, default=25)
     parser.add_argument("--train-limit", type=int, default=0)
     parser.add_argument("--development-limit", type=int, default=0)
@@ -326,8 +363,18 @@ def main() -> None:
     args = parser.parse_args()
     if args.updates < 1 or args.batch_size < 1 or args.eval_interval < 1:
         raise ValueError("updates, batch size, and eval interval must be positive")
+    if args.microbatch_size < 0 or args.eval_batch_size < 0 or args.diagnostic_batch_size < 0:
+        raise ValueError("microbatch and evaluation batch sizes cannot be negative")
+    microbatch_size = args.microbatch_size or args.batch_size
+    evaluation_batch_size = args.eval_batch_size or microbatch_size
+    diagnostic_batch_size = args.diagnostic_batch_size or microbatch_size
+    if microbatch_size > args.batch_size or args.batch_size % microbatch_size:
+        raise ValueError("batch size must be divisible by microbatch size")
 
     config = load_project_config(args.config)
+    config["data_commit"] = _data_commit(config["data_root"])
+    config["seed"] = args.seed
+    config["fold_identity"] = f"electrostatic-development-fold-{args.fold}"
     folds = json.loads(args.folds.read_text(encoding="utf-8-sig"))
     fold = next((value for value in folds["folds"] if value["fold"] == args.fold), None)
     if fold is None:
@@ -340,6 +387,12 @@ def main() -> None:
     dev_ids = deterministic_subset(
         list(fold["development"]), args.development_limit, args.seed + 2000
     )
+    checkpoint_provenance = build_checkpoint_provenance(
+        {"train": train_ids, "val": dev_ids, "test": []},
+        args.folds,
+        config,
+        split_kind=f"electrostatic_development_fold_{args.fold}",
+    )
     seed_everything(args.seed)
     records = load_gmtnet_records(config["data_root"])
     cache_key = graph_cache_key(
@@ -347,19 +400,22 @@ def main() -> None:
     )
     train_set = _dataset(config, records, train_ids, cache_key)
     dev_set = _dataset(config, records, dev_ids, cache_key)
+    if args.batch_size > len(train_set):
+        raise ValueError("Logical batch size cannot exceed the training panel")
     device = torch.device(args.device)
     generator = torch.Generator().manual_seed(args.seed)
     train_loader = DataLoader(
-        train_set, batch_size=args.batch_size, shuffle=True,
-        num_workers=0, generator=generator,
+        train_set, batch_size=microbatch_size, shuffle=True,
+        num_workers=0, generator=generator, drop_last=True,
     )
     dev_loader = DataLoader(
-        dev_set, batch_size=args.batch_size, shuffle=False, num_workers=0,
+        dev_set, batch_size=evaluation_batch_size, shuffle=False, num_workers=0,
     )
     model = make_model(args.architecture, config).to(device)
     pretraining = (
         load_structure_pretraining(
-            model, args.architecture, args.pretrained_encoder, device
+            model, args.architecture, args.pretrained_encoder, device,
+            train_ids, dev_ids, config,
         )
         if args.pretrained_encoder is not None
         else None
@@ -369,7 +425,7 @@ def main() -> None:
     )
     iterator = iter(train_loader)
     diagnostic_indices, diagnostic_materials = response_active_diagnostic_indices(
-        train_set, min(args.batch_size, len(train_set))
+        train_set, min(diagnostic_batch_size, len(train_set))
     )
     diagnostic_batch = next(iter(DataLoader(
         Subset(train_set, diagnostic_indices), batch_size=len(diagnostic_indices),
@@ -394,18 +450,36 @@ def main() -> None:
             iterator = iter(train_loader)
             batch = next(iterator)
         batch = batch.to(device)
-        model.train()
         optimizer.zero_grad(set_to_none=True)
-        electronic, born = backward_training_objective(
-            model, batch, args.architecture
-        )
-        loss = electronic.detach() + born.detach()
+        logical_electronic = 0.0
+        logical_born = 0.0
+        # Every physical batch has the same number of graphs (drop_last=True),
+        # and the divisibility check gives the same mathematical material-mean
+        # objective. Floating-point reductions need not be bitwise identical
+        # to one larger forward pass.
+        for microbatch in range(args.batch_size // microbatch_size):
+            if microbatch:
+                try:
+                    batch = next(iterator)
+                except StopIteration:
+                    iterator = iter(train_loader)
+                    batch = next(iterator)
+            batch = batch.to(device)
+            model.train()
+            fraction = int(batch.num_graphs) / args.batch_size
+            electronic, born = backward_training_objective(
+                model, batch, args.architecture, gradient_scale=fraction,
+            )
+            logical_electronic += float(electronic.detach()) * fraction
+            logical_born += float(born.detach()) * fraction
+            del batch
+        loss = logical_electronic + logical_born
         optimizer.step()
         row = {
             "update": update,
-            "train_loss": float(loss.detach()),
-            "train_electronic_loss": float(electronic.detach()),
-            "train_born_loss": float(born.detach()),
+            "train_loss": loss,
+            "train_electronic_loss": logical_electronic,
+            "train_born_loss": logical_born,
         }
         if update % args.eval_interval == 0 or update == args.updates:
             metrics = _evaluate(model, dev_loader, args.architecture)
@@ -440,13 +514,15 @@ def main() -> None:
         "fold": args.fold,
         "selected_update": best_update,
         "seed": args.seed,
+        "checkpoint_provenance": checkpoint_provenance,
     }, args.output_dir / "selected.pt")
     summary = {
         "schema": 1,
-        "protocol": "formula-disjoint electrostatic A0-A3 development adjudication",
+            "protocol": "formula-disjoint first-order electrostatic-jet development adjudication",
         "architecture": args.architecture,
         "fold": args.fold,
         "seed": args.seed,
+        "checkpoint_provenance": checkpoint_provenance,
         "train_materials": len(train_set),
         "development_materials": len(dev_set),
         "train_limit": args.train_limit,
@@ -460,7 +536,11 @@ def main() -> None:
         ),
         "structure_pretraining": pretraining,
         "optimizer_updates": args.updates,
-        "batch_size": args.batch_size,
+        "logical_batch_size": args.batch_size,
+        "microbatch_size": microbatch_size,
+        "microbatches_per_update": args.batch_size // microbatch_size,
+        "evaluation_batch_size": evaluation_batch_size,
+        "diagnostic_batch_size": int(diagnostic_batch.num_graphs),
         "num_workers": 0,
         "selection": "minimum development electronic-relative plus BEC-relative score",
         "selected_update": best_update,
@@ -471,7 +551,7 @@ def main() -> None:
             "updates_per_second": args.updates / seconds,
             "cuda_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
             "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else None,
-            "jacobian_execution": "three fixed reverse VJPs; e3nn scripted detach has no vmap batching rule" if args.architecture.startswith(("a2", "a3")) else "direct coefficient forward",
+            "jacobian_execution": "direct first-order coefficient forward",
             "a0_backward_execution": (
                 "sequential exact disjoint-task backward; one tower graph resident"
                 if args.architecture == "a0_independent_irreps" else None

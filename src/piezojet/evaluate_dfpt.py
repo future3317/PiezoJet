@@ -19,6 +19,7 @@ from typing import Iterable
 import torch
 
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
+from .checkpoint_provenance import build_checkpoint_provenance, validate_checkpoint_provenance
 from .metrics import material_bootstrap_confidence_interval, response_tensor_skill
 from .model import AtomCoordinateResponsePotential, model_from_config
 from .tensor_ops import (
@@ -815,6 +816,7 @@ def main() -> None:
     split_path = args.splits_file or Path(str(cfg.get("splits_file", "")))
     if split_path.is_file():
         splits = load_explicit_splits(split_path, {str(record["JARVIS_ID"]) for record in records})
+        split_source = split_path
     else:
         global_splits = create_or_load_splits(records, cfg["processed_dir"], int(cfg["seed"]))
         ids_path = args.material_ids_file or Path(str(cfg.get("material_ids_file", "")))
@@ -824,6 +826,14 @@ def main() -> None:
         splits = restrict_splits_to_material_ids(
             global_splits, selected_ids, args.material_ids_split
         )
+        split_source = ids_path
+    expected_provenance = build_checkpoint_provenance(
+        splits,
+        split_source,
+        cfg,
+        split_kind=str(checkpoint.get("checkpoint_provenance", {}).get("split_kind", "")),
+    )
+    validate_checkpoint_provenance(checkpoint, expected_provenance)
     split_ids = splits[args.split]
     if not split_ids:
         raise ValueError(f"The audited DFPT {args.split} split is empty")

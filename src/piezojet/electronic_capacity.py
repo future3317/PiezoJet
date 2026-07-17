@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from hashlib import sha256
 import json
 import time
 from pathlib import Path
@@ -40,6 +41,35 @@ def _read_ids(path: Path) -> list[str]:
     if not isinstance(payload, list) or not payload:
         raise ValueError("Capacity material-ID file must contain a non-empty list")
     return [str(value) for value in payload]
+
+
+def capacity_checkpoint_provenance(
+    ids: list[str], args: argparse.Namespace, config: dict
+) -> dict[str, object]:
+    """Identity of one fixed-epoch same-ID optimization trajectory."""
+    normalized = sorted(ids)
+    return {
+        "schema": 1,
+        "material_ids": normalized,
+        "material_id_sha256": sha256("\n".join(normalized).encode()).hexdigest(),
+        "architecture": args.architecture,
+        "seed": int(args.seed),
+        "learning_rate": float(args.learning_rate),
+        "bec_weight": float(args.bec_weight),
+        "jet_weight": float(args.jet_weight),
+        "jet_probes": int(args.jet_probes),
+        "train_batch_size": int(args.train_batch_size),
+        "jarvis_dfpt_dir": str(config["jarvis_dfpt_dir"]),
+    }
+
+
+def validate_capacity_checkpoint_provenance(
+    payload: dict, expected: dict[str, object]
+) -> None:
+    if payload.get("capacity_checkpoint_provenance") != expected:
+        raise ValueError(
+            "Resume checkpoint does not match the same-ID cohort or optimization protocol"
+        )
 
 
 class CurrentElectronicCapacityModel(nn.Module):
@@ -341,6 +371,50 @@ def born_capacity_metrics(
     }
 
 
+def dielectric_capacity_metrics(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    floor: float = 1.0,
+) -> dict[str, object]:
+    """Availability-masked relative-permittivity audit in physical units.
+
+    This is deliberately an audit primitive, not an implicit factor loss:
+    electronic dielectric response belongs to the electrostatic response jet
+    and can be enabled only in a separately registered multi-response run.
+    """
+    predicted = prediction.detach().to(torch.float64)
+    expected = target.detach().to(torch.float64)
+    available = mask.detach().reshape(-1).to(dtype=torch.bool)
+    if predicted.shape != expected.shape or predicted.ndim != 3:
+        raise ValueError("Dielectric prediction and target must both be [graphs,3,3]")
+    if available.shape[0] != predicted.shape[0]:
+        raise ValueError("Dielectric availability mask does not match graph count")
+    if not bool(available.any()):
+        return {"materials": int(predicted.shape[0]), "available_materials": 0, "per_material": []}
+    prediction_available = predicted[available]
+    target_available = expected[available]
+    target_norm = torch.linalg.vector_norm(target_available, dim=(-2, -1))
+    prediction_norm = torch.linalg.vector_norm(prediction_available, dim=(-2, -1))
+    residual_norm = torch.linalg.vector_norm(
+        prediction_available - target_available, dim=(-2, -1)
+    )
+    relative = residual_norm / target_norm.clamp_min(floor)
+    return {
+        "materials": int(predicted.shape[0]),
+        "available_materials": int(available.sum()),
+        "mean_stabilized_relative_frobenius_error": float(relative.mean()),
+        "per_material": [
+            {
+                "target_norm": float(target_norm[index]),
+                "prediction_norm": float(prediction_norm[index]),
+                "stabilized_relative_frobenius_error": float(relative[index]),
+            }
+            for index in range(target_norm.shape[0])
+        ],
+    }
+
+
 def response_jet_probe_loss(
     prediction: ElectromechanicalJetPrediction,
     target: ElectromechanicalJetPrediction,
@@ -457,6 +531,7 @@ def main() -> None:
     seed_everything(args.seed)
     device = torch.device(args.device)
     ids = _read_ids(args.material_ids_file)
+    capacity_provenance = capacity_checkpoint_provenance(ids, args, config)
     records = load_gmtnet_records(config["data_root"])
     cache_key = graph_cache_key(
         records, float(config["cutoff"]), int(config["max_neighbors"])
@@ -512,6 +587,7 @@ def main() -> None:
         saved = torch.load(args.resume, map_location=device, weights_only=False)
         if saved.get("architecture") != args.architecture:
             raise ValueError("Resume checkpoint architecture does not match CLI")
+        validate_capacity_checkpoint_provenance(saved, capacity_provenance)
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
         start_epoch = int(saved["epoch"]) + 1
@@ -619,6 +695,7 @@ def main() -> None:
                         torch.cuda.get_rng_state_all() if device.type == "cuda" else None
                     ),
                     "config": config,
+                    "capacity_checkpoint_provenance": capacity_provenance,
                 },
                 args.output_dir / "latest.pt",
             )

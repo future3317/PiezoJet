@@ -52,7 +52,10 @@ def test_response_tensor_skill_is_calibrated_against_zero_and_rotation_invariant
 def test_material_bootstrap_resamples_whole_materials_deterministically():
     target = [torch.full((3, 3, 3), value) for value in (0.1, 1.0, 2.0)]
     prediction = [value.clone() for value in target]
-    statistic = lambda values, labels: response_tensor_skill(torch.stack(values), torch.stack(labels))["tensor_response_skill_vs_zero"]
+    def statistic(values, labels):
+        return response_tensor_skill(torch.stack(values), torch.stack(labels))[
+            "tensor_response_skill_vs_zero"
+        ]
     first = material_bootstrap_confidence_interval(prediction, target, statistic, resamples=32, seed=3)
     second = material_bootstrap_confidence_interval(prediction, target, statistic, resamples=32, seed=3)
     assert first == second

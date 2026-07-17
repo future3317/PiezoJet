@@ -7,7 +7,6 @@ from piezojet.jarvis_dfpt import DFPT_CACHE_SCHEMA, JarvisDFPTCache
 import piezojet.jarvis_dfpt as jarvis_dfpt_module
 from piezojet.evaluate_dfpt import ionic_piezo_from_factors
 from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
-from piezojet.tensor_ops import piezo_voigt_to_cartesian
 from piezojet.train import (
     born_loss,
     dielectric_loss,
@@ -16,7 +15,6 @@ from piezojet.train import (
     internal_strain_loss,
     ionic_piezo_loss,
     macroscopic_piezo_loss,
-    displacement_consistency_weight_for_epoch,
     response_active_internal_strain_loss,
 )
 
@@ -104,6 +102,33 @@ def test_dfpt_cache_attaches_node_bec_and_ragged_mode_metadata(tmp_path):
     assert torch.allclose(batch.y_electronic_piezo, batch.y_dfpt_total_piezo - batch.y_ionic_piezo)
 
 
+def test_electrostatic_profile_keeps_identical_required_labels_without_ragged_arrays(tmp_path):
+    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    cache = JarvisDFPTCache(tmp_path / "dfpt")
+    cache.save(_payload(record))
+    material_id = str(record["JARVIS_ID"])
+    common = {
+        "processed_dir": tmp_path / "graphs",
+        "dfpt_dir": tmp_path / "dfpt",
+    }
+    full = PiezoDataset([record], [material_id], 5.0, 32, **common)[0]
+    electrostatic = PiezoDataset(
+        [record], [material_id], 5.0, 32,
+        dfpt_profile="electrostatic", **common,
+    )[0]
+    assert torch.allclose(electrostatic.y_born, full.y_born)
+    assert torch.allclose(
+        electrostatic.y_electronic_piezo, full.y_electronic_piezo
+    )
+    assert torch.allclose(
+        electrostatic.y_dfpt_electronic_dielectric,
+        full.y_dfpt_electronic_dielectric,
+    )
+    assert not hasattr(electrostatic, "dfpt_force_constants_flat")
+    assert not hasattr(electrostatic, "dfpt_dynamical_eigenvectors_flat")
+    assert not hasattr(electrostatic, "dfpt_internal_strain_flat")
+
+
 def test_projected_outcar_branch_labels_close_in_one_target_space(tmp_path):
     record = load_gmtnet_records("data/raw/gmtnet")[5]
     payload = _payload(record)
@@ -132,7 +157,8 @@ def test_auxiliary_tensor_losses_are_invariant_under_common_rotation():
     dielectric_target = torch.randn(2, 3, 3, dtype=torch.float64)
     dielectric_target = dielectric_target @ dielectric_target.transpose(-1, -2)
     dielectric_prediction = dielectric_target + 0.2 * torch.randn_like(dielectric_target)
-    rotate_rank2 = lambda value: torch.einsum("ia,...ab,jb->...ij", rotation, value, rotation)
+    def rotate_rank2(value):
+        return torch.einsum("ia,...ab,jb->...ij", rotation, value, rotation)
     original_dielectric = dielectric_loss(dielectric_prediction, dielectric_target, mask)
     rotated_dielectric = dielectric_loss(
         rotate_rank2(dielectric_prediction), rotate_rank2(dielectric_target), mask
@@ -148,9 +174,10 @@ def test_auxiliary_tensor_losses_are_invariant_under_common_rotation():
     piezo_target = torch.randn(2, 3, 3, 3, dtype=torch.float64)
     piezo_target = 0.5 * (piezo_target + piezo_target.transpose(-1, -2))
     piezo_prediction = piezo_target + 0.2 * torch.randn_like(piezo_target)
-    rotate_rank3 = lambda value: torch.einsum(
-        "ia,jb,kc,...abc->...ijk", rotation, rotation, rotation, value
-    )
+    def rotate_rank3(value):
+        return torch.einsum(
+            "ia,jb,kc,...abc->...ijk", rotation, rotation, rotation, value
+        )
     original_piezo = macroscopic_piezo_loss(piezo_prediction, piezo_target, mask)
     rotated_piezo = macroscopic_piezo_loss(
         rotate_rank3(piezo_prediction), rotate_rank3(piezo_target), mask

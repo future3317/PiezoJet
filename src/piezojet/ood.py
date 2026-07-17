@@ -4,20 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 import spglib
 from pymatgen.core import Element
 
-from .data import create_or_load_splits, load_gmtnet_records
-
-
-def reduced_formula(record) -> str:
-    counts = Counter(record["atoms"]["elements"])
-    divisor = math.gcd(*counts.values())
-    return "".join(f"{element}{counts[element] // divisor if counts[element] // divisor != 1 else ''}" for element in sorted(counts))
+from .data import formula as reduced_formula, load_gmtnet_records
 
 
 def chemical_system(record) -> str:

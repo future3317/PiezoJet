@@ -22,7 +22,7 @@ from .data import (
 from .pretrain import _corrupt_structure
 from .pretraining_protocol import provenance
 from .project_config import load_project_config
-from .train import device_from_config, load_explicit_splits, seed_everything
+from .train import _data_commit, device_from_config, load_explicit_splits, seed_everything
 
 
 class E3nnStructurePretrainingHead(nn.Module):
@@ -73,6 +73,7 @@ def main() -> None:
     parser.add_argument("--accumulate-to-one-update", action="store_true")
     args = parser.parse_args()
     cfg = load_project_config(args.config)
+    cfg["data_commit"] = _data_commit(cfg["data_root"])
     if args.seed is not None:
         cfg["seed"] = args.seed
     if args.batch_size is not None:
@@ -91,7 +92,7 @@ def main() -> None:
             raise ValueError("--fold/--train-limit require --electrostatic-folds")
         splits = load_explicit_splits(args.splits_file, known_ids)
         ids = sorted(splits["train"])
-        pretraining_provenance = provenance(ids, args.splits_file, "train")
+        pretraining_provenance = provenance(ids, args.splits_file, "train", cfg)
     else:
         if args.fold is None:
             raise ValueError("--fold is required with --electrostatic-folds")
@@ -104,7 +105,7 @@ def main() -> None:
             int(cfg["seed"]),
         )
         pretraining_provenance = provenance(
-            ids, args.electrostatic_folds, "train"
+            ids, args.electrostatic_folds, "train", cfg
         )
         pretraining_provenance.update({
             "development_fold": args.fold,

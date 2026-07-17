@@ -106,15 +106,31 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             archival_status="current",
             execution_status="partial_with_completed_a1_negative_and_a0_user_interruption",
             result_disposition="development_only_negative_and_incomplete_diagnostics",
-            convention_epoch="v10_full_public_electrostatic_a0_a3",
+            convention_epoch="v10_full_public_electrostatic_a0_a1_a15",
             comparability_group="fold0_train100_development100_random_initialization_pilots",
             paper_use="appendix_post_freeze_development_diagnostic",
             interpretation_boundary=(
                 "Formula-disjoint full-public electrostatic method development. The completed "
                 "random A1 pilot collapses and the A0 pilot was user-interrupted. Neither is "
-                "the fair structure-pretrained A0--A3 adjudication; frozen val10/test20 are unread."
+                "the fair structure-pretrained A0/A1/A1.5 adjudication; frozen val10/test20 are unread."
             ),
             split="electrostatic_development_folds fold0; frozen val10/test20 unread",
+        )
+    elif name == "electromechanical_jet_fold_adjudication_v2":
+        policy.update(
+            family="electrostatic_generator_formula_disjoint_adjudication",
+            archival_status="current",
+            execution_status="planned_not_executed",
+            result_disposition="no_performance_result",
+            convention_epoch="v11_reduced_formula_safe_electrostatic_a0_a1_a15",
+            comparability_group="fold0_train100_development100_shared_pretraining_plan_v2",
+            paper_use="protocol_only",
+            interpretation_boundary=(
+                "Non-executing reduced-formula-safe A0/A1/A1.5 plan. It uses fresh output "
+                "directories and strict fold/data checkpoint provenance; frozen val10/test20 "
+                "are unread and no performance result exists."
+            ),
+            split="electrostatic_development_folds_v2 fold0; frozen val10/test20 unread",
         )
     elif name == "global_l3_joint_optimizer_adjudication_v1":
         policy.update(
@@ -123,11 +139,12 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             execution_status="completed_seed42",
             result_disposition="positive_validation_only_mechanism_diagnostic",
             convention_epoch="v10_global_l3_independent_u_first_order",
-            comparability_group="train1603_formula_disjoint_val10_seed42",
+            comparability_group="legacy_train1603_unreduced_formula_val10_seed42",
             paper_use="appendix_post_freeze_diagnostic",
             interpretation_boundary=(
-                "Seed42 train1603/val10 gradient-route adjudication only. It localizes the "
-                "redundant branch-sum conflict but does not support a test or production claim."
+                "Seed42 legacy train1603/val10 gradient-route adjudication only. It localizes the "
+                "redundant branch-sum conflict but contains reduced-formula leakage and does not "
+                "support a reduced-formula-OOD, test, or production claim."
             ),
             split="full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
         )
@@ -138,12 +155,13 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             execution_status="completed",
             result_disposition="positive_physical_validation_negative_total_comparison",
             convention_epoch="v10_global_l3_independent_u_first_order",
-            comparability_group="train1603_formula_disjoint_val10_three_seed",
+            comparability_group="legacy_train1603_unreduced_formula_val10_three_seed",
             paper_use="appendix_post_freeze_validation_diagnostic",
             interpretation_boundary=(
                 "Three seeds replicate stable direct-U/ionic validation losses on val10. "
                 "Its isolated total macro tower underperforms the matched direct control; "
-                "no test evaluation or production promotion is authorized."
+                "the legacy split contains reduced-formula leakage, and no test evaluation "
+                "or production promotion is authorized."
             ),
             split="full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
         )
@@ -154,12 +172,13 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             execution_status="completed",
             result_disposition="matched_direct_outperforms_isolated_macro_tower",
             convention_epoch="v10_complete_shell_cartesian_direct",
-            comparability_group="train1603_formula_disjoint_val10_three_seed",
+            comparability_group="legacy_train1603_unreduced_formula_val10_three_seed",
             paper_use="appendix_post_freeze_validation_control",
             interpretation_boundary=(
                 "Validation10-only matched direct-total control. Direct total TRS exceeds "
                 "the physical model's isolated macro tower in all three seeds; this does "
-                "not compare or invalidate atom-resolved ionic-factor metrics. Test20 unread."
+                "not compare or invalidate atom-resolved ionic-factor metrics. The split has "
+                "reduced-formula leakage; test20 is unread."
             ),
             split="full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
         )
@@ -173,7 +192,7 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             execution_status="completed",
             result_disposition="negative_or_partial_seed42_validation_diagnostic",
             convention_epoch="v10_global_l3_independent_u_first_order",
-            comparability_group="train1603_formula_disjoint_val10_seed42",
+            comparability_group="legacy_train1603_unreduced_formula_val10_seed42",
             paper_use="appendix_post_freeze_diagnostic",
             interpretation_boundary=(
                 "Seed42 validation-only precursor. Shared/isolated towers did not preserve the "

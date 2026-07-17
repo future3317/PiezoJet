@@ -1,8 +1,7 @@
-"""Lightweight constants shared by electrostatic adjudication tooling."""
+"""Maintained first-order electrostatic-jet candidates."""
 
 ARCHITECTURES = (
     "a0_independent_irreps",
     "a1_electromechanical_jet",
-    "a2_nonlinear_cartesian",
-    "a3_nonlinear_reduced",
+    "a15_soft_shared_electromechanical_jet",
 )

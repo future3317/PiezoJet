@@ -22,11 +22,9 @@ from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from .data import _raw_cartesian_target, load_gmtnet_records, response_norm_bin
 from .jarvis_dfpt import JarvisDFPTCache
 from .strain_completion import (
-    VOIGT_PAIRS,
     _observed_system,
     _structure,
     cartesian_space_group_operations,
-    complete_internal_strain,
     internal_tensor_to_vector,
     invariant_basis,
     transform_internal_tensor,

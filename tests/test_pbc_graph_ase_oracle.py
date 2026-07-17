@@ -54,6 +54,18 @@ def test_neighbor_budget_never_splits_a_degenerate_cubic_shell():
     assert len(ours) == 6
 
 
+def test_strongly_skew_cell_enumerates_cancelling_large_lattice_shifts():
+    frac = torch.zeros(1, 3)
+    # 4*a-b=(0,-0.2,0) is inside the cutoff although both basis vectors are
+    # much longer and the required integer shift lies outside [-1,1]^3.
+    cell = torch.tensor(((1.0, 0.0, 0.0), (4.0, 0.2, 0.0), (0.0, 0.0, 5.0)))
+    ours = _our_edge_set(frac, cell, cutoff=0.25, max_neighbors=100)
+    oracle = _ase_edge_set(frac, cell, cutoff=0.25)
+    assert ours == oracle
+    assert (0, 0, 4, -1, 0) in ours
+    assert (0, 0, -4, 1, 0) in ours
+
+
 def test_custom_pbc_edges_are_all_valid_ase_neighbors_for_real_nonorthogonal_cells():
     records = load_gmtnet_records("data/raw/gmtnet")
     # Deliberately mix a small, a many-atom, and a non-orthogonal cell rather

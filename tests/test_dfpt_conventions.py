@@ -3,7 +3,11 @@ import torch
 from piezojet.dfpt_conventions import force_constant_convention_metrics
 from piezojet.evaluate_dfpt import ionic_piezo_from_factors
 from piezojet.model import AtomCoordinateResponsePotential
-from piezojet.tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian
+from piezojet.tensor_ops import (
+    cartesian_to_piezo_voigt,
+    piezo_voigt_to_cartesian,
+    voigt_to_symmetric_matrix,
+)
 
 
 def test_force_constant_audit_identifies_mass_unweighted_parser_relation():
@@ -24,13 +28,15 @@ def test_all_three_engineering_shear_columns_produce_one_cartesian_piezo_coeffic
         piezo_voigt[0, 0, column] = 3.25
         eta = torch.zeros(1, 6)
         eta[0, column] = 1.0
-        energy = response.forward(
-            piezo_voigt_to_cartesian(piezo_voigt),
-            torch.zeros(1, 6, 6),
-            torch.zeros(1, 3, 3),
+        # This is the tensor-convention identity under test, not a model
+        # energy: an arbitrary assembled piezo tensor does not establish a
+        # shared microscopic response potential.
+        energy = -torch.einsum(
+            "bi,bijk,bjk->b",
             field,
-            eta,
-        )
+            piezo_voigt_to_cartesian(piezo_voigt),
+            voigt_to_symmetric_matrix(eta),
+        ) / response.PIEZO_C_PER_M2
         assert torch.allclose(
             energy,
             torch.tensor([-3.25 / response.PIEZO_C_PER_M2]),

@@ -278,7 +278,6 @@ def _metrics(
         observed = response._coupling_voigt(predicted[start:stop]).reshape(3 * atoms, 6)
         target = truth["u"]
         target_norm = torch.linalg.vector_norm(target).clamp_min(1e-12)
-        observed_norm = torch.linalg.vector_norm(observed)
         u_relative.append(torch.linalg.vector_norm(observed - target) / target_norm)
         u_cosine.append(_cosine(observed, target))
         ionic_target = true_ionic[graph_index]

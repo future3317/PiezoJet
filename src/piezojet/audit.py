@@ -9,7 +9,6 @@ import json
 import pickle
 import subprocess
 import sys
-from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +16,14 @@ import spglib
 import torch
 from pymatgen.core import Element
 
-from .data import PIEZO_FIELD, PIEZO_FILE, create_or_load_splits, load_gmtnet_records
+from .data import (
+    PIEZO_FIELD,
+    PIEZO_FILE,
+    SPLIT_SCHEMA,
+    create_or_load_splits,
+    formula,
+    load_gmtnet_records,
+)
 from .project_config import load_project_config
 
 
@@ -51,11 +57,6 @@ def structure_hash(record: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def formula(record: dict[str, Any]) -> str:
-    counts = Counter(record["atoms"]["elements"])
-    return "".join(f"{element}{counts[element] if counts[element] != 1 else ''}" for element in sorted(counts))
-
-
 def chemical_system(record: dict[str, Any]) -> str:
     return "-".join(sorted(set(record["atoms"]["elements"])))
 
@@ -80,8 +81,7 @@ def build_audit(config_path: Path, output: Path) -> None:
     records = load_gmtnet_records(data_root)
     splits = create_or_load_splits(records, config["processed_dir"], int(config["seed"]))
     by_id = {str(record["JARVIS_ID"]): record for record in records}
-    assignments = {material_id: split for split, ids in splits.items() for material_id in ids}
-    split_hash = Path(config["processed_dir"]) / "splits.json"
+    split_hash = Path(config["processed_dir"]) / f"splits_formula_stratified_v{SPLIT_SCHEMA}.json"
     valid_tensors = [torch.tensor(record[PIEZO_FIELD], dtype=torch.float64) for record in records]
     populated = [tensor for tensor in valid_tensors if tensor.numel()]
     centers = sum(_centrosymmetric(record) for record in records)

@@ -10,6 +10,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from .baselines import direct_cartesian_baseline_from_config, e3nn_direct_baseline_from_config
+from .checkpoint_provenance import build_checkpoint_provenance, validate_checkpoint_provenance
 from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .metrics import material_bootstrap_confidence_interval, response_tensor_skill, tensor_metrics
 from .train import device_from_config, load_explicit_splits
@@ -39,6 +40,13 @@ def main() -> None:
     device = device_from_config(args.device)
     records = load_gmtnet_records(cfg["data_root"])
     splits = load_explicit_splits(args.splits_file, {str(record["JARVIS_ID"]) for record in records})
+    expected_provenance = build_checkpoint_provenance(
+        splits,
+        args.splits_file,
+        cfg,
+        split_kind=str(checkpoint.get("checkpoint_provenance", {}).get("split_kind", "")),
+    )
+    validate_checkpoint_provenance(checkpoint, expected_provenance)
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
     dataset = PiezoDataset(
         records, splits[args.split], float(cfg["cutoff"]), int(cfg["max_neighbors"]),

@@ -20,7 +20,7 @@ from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .model import model_from_config
 from .pretraining_protocol import provenance
 from .project_config import load_project_config
-from .train import device_from_config, load_explicit_splits, seed_everything
+from .train import _data_commit, device_from_config, load_explicit_splits, seed_everything
 
 
 class StructurePretrainingHead(nn.Module):
@@ -64,6 +64,7 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None, help="Bounded smoke-run only; the production pipeline uses all structures.")
     args = parser.parse_args()
     cfg = load_project_config(args.config)
+    cfg["data_commit"] = _data_commit(cfg["data_root"])
     epochs = int(cfg["pretrain_epochs"] if args.epochs is None else args.epochs)
     output = Path(cfg["pretraining_output_dir"] if args.output_dir is None else args.output_dir)
     if epochs < 1:
@@ -82,12 +83,12 @@ def main() -> None:
         )
     splits = load_explicit_splits(split_file, {str(record["JARVIS_ID"]) for record in records})
     all_ids = sorted(splits["train"])
-    pretraining_provenance = provenance(all_ids, split_file, "train")
+    pretraining_provenance = provenance(all_ids, split_file, "train", cfg)
     if args.max_samples is not None:
         if args.max_samples < 1:
             raise ValueError("--max-samples must be positive")
         all_ids = all_ids[: args.max_samples]
-        pretraining_provenance = provenance(all_ids, split_file, "train")
+        pretraining_provenance = provenance(all_ids, split_file, "train", cfg)
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
     dataset = PiezoDataset(records, all_ids, float(cfg["cutoff"]), int(cfg["max_neighbors"]), processed_dir=cfg["processed_dir"], cache_key=cache_key, project_targets=False)
     loader_options = {"num_workers": int(cfg["num_workers"]), "pin_memory": device.type == "cuda"}

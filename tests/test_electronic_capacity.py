@@ -5,9 +5,11 @@ from types import SimpleNamespace
 from piezojet.electronic_capacity import (
     born_capacity_metrics,
     born_material_balanced_loss,
+    capacity_checkpoint_provenance,
     electronic_capacity_metrics,
     irrep_balanced_capacity_loss,
     response_jet_probe_loss,
+    validate_capacity_checkpoint_provenance,
 )
 from piezojet.model import ElectromechanicalJetPrediction
 from piezojet.tensor_ops import piezo_from_irreps
@@ -87,3 +89,22 @@ def test_material_weighted_microbatch_gradient_equals_full_cohort_mean():
     assert torch.allclose(
         micro_coordinates.grad, full_coordinates.grad, atol=2e-7, rtol=2e-7
     )
+
+
+def test_capacity_resume_rejects_a_different_same_size_material_cohort():
+    args = SimpleNamespace(
+        architecture="nonlinear_cartesian",
+        seed=42,
+        learning_rate=1e-3,
+        bec_weight=1.0,
+        jet_weight=0.0,
+        jet_probes=3,
+        train_batch_size=4,
+    )
+    config = {"jarvis_dfpt_dir": "dfpt"}
+    saved = capacity_checkpoint_provenance(["a", "b"], args, config)
+    current = capacity_checkpoint_provenance(["a", "c"], args, config)
+    with pytest.raises(ValueError, match="same-ID cohort"):
+        validate_capacity_checkpoint_provenance(
+            {"capacity_checkpoint_provenance": saved}, current
+        )

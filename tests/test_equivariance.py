@@ -1,7 +1,7 @@
 import torch
 from torch_geometric.data import Data
 
-from piezojet.model import PiezoJet, ResponsePotential
+from piezojet.model import MacroscopicPiezoelectricCoupling, PiezoJet
 from piezojet.tensor_ops import rotate_piezo, rotate_strain, symmetric_matrix_to_voigt
 
 
@@ -35,7 +35,7 @@ def test_untrained_model_is_rotation_equivariant_and_potential_invariant():
     assert born_residual < 1e-4
     field, eta6 = torch.randn(1, 3), torch.randn(1, 6)
     strain = rotate_strain(__import__("piezojet.tensor_ops", fromlist=["voigt_to_symmetric_matrix"]).voigt_to_symmetric_matrix(eta6), rotation)
-    potential = ResponsePotential()
+    potential = MacroscopicPiezoelectricCoupling()
     assert torch.allclose(potential(prediction, field, eta6), potential(transformed_prediction, field @ rotation.T, symmetric_matrix_to_voigt(strain)), atol=1e-5)
 
 

@@ -17,6 +17,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from .baselines import direct_cartesian_baseline_from_config, e3nn_direct_baseline_from_config
+from .checkpoint_provenance import build_checkpoint_provenance
 from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .metrics import response_tensor_skill
 from .pretraining_protocol import validate_inductive_checkpoint
@@ -107,6 +108,12 @@ def main() -> None:
     cfg["runtime_device"] = runtime_device
     records = load_gmtnet_records(cfg["data_root"])
     splits = load_explicit_splits(args.splits_file, {str(record["JARVIS_ID"]) for record in records})
+    cfg["splits_file"] = str(args.splits_file)
+    cfg["data_commit"] = _data_commit(cfg["data_root"])
+    checkpoint_provenance = build_checkpoint_provenance(
+        splits, args.splits_file, cfg, split_kind="explicit_frozen"
+    )
+    cfg["checkpoint_provenance"] = checkpoint_provenance
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
     dataset_kwargs = dict(
         records=records, cutoff=float(cfg["cutoff"]), max_neighbors=int(cfg["max_neighbors"]),
@@ -126,7 +133,9 @@ def main() -> None:
     if not pretrained_path.is_file():
         raise FileNotFoundError(f"Missing inductive pretraining checkpoint: {pretrained_path}")
     pretrained = torch.load(pretrained_path, map_location=device, weights_only=False)
-    validate_inductive_checkpoint(pretrained, splits["train"], splits["val"] + splits["test"])
+    validate_inductive_checkpoint(
+        pretrained, splits["train"], splits["val"] + splits["test"], cfg
+    )
     if pretrained.get("architecture") != architectures[args.family]:
         raise ValueError(f"Pretraining checkpoint is not compatible with the {args.family} direct baseline")
     model.encoder.load_state_dict(pretrained["encoder"])
@@ -156,6 +165,7 @@ def main() -> None:
             "model_family": f"matched_direct_{args.family}_piezo", "validation": {"loss": val_loss, "tensor_response_skill_vs_zero": val_skill},
             "splits_file": str(args.splits_file), "pretraining_provenance": pretrained["pretraining_provenance"],
             "piezo_scale": float(scale),
+            "checkpoint_provenance": checkpoint_provenance,
         }
         torch.save(checkpoint, args.output_dir / "last.pt")
         if val_loss < best:
