@@ -8,7 +8,7 @@
     "historical_conventions_must_not_be_pooled": true,
     "artifact_index": "outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl"
   },
-  "cohort_count": 121,
+  "cohort_count": 134,
   "cohorts": [
     {
       "experiment_id": "audit",
@@ -3576,6 +3576,547 @@
           "checkpoint_files": [
             "best_encoder.pt",
             "last_encoder.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_first_order_training_smoke_v1",
+      "artifact_root": "outputs/global_l3_first_order_training_smoke_v1",
+      "family": "global_l3_implementation_smoke",
+      "archival_status": "current",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "implementation_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "run_local_only",
+      "paper_use": "appendix_implementation_history",
+      "interpretation_boundary": "Global-l3 implementation smoke; not a held-out performance result.",
+      "artifact_summary": {
+        "file_count": 12,
+        "bytes": 36619548,
+        "last_modified_utc": "2026-07-16T18:52:38.949810Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_first_order_training_smoke_v1/config.resolved.yaml",
+        "global_l3_first_order_training_smoke_v1/displacement_metrics.csv",
+        "global_l3_first_order_training_smoke_v1/factor_metrics.csv",
+        "global_l3_first_order_training_smoke_v1/metrics.csv",
+        "global_l3_first_order_training_smoke_v1/summary.json"
+      ],
+      "runs": [
+        {
+          "path": ".",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_first_order_training_smoke_v2_teacher_factor",
+      "artifact_root": "outputs/global_l3_first_order_training_smoke_v2_teacher_factor",
+      "family": "global_l3_implementation_smoke",
+      "archival_status": "current",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "implementation_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "run_local_only",
+      "paper_use": "appendix_implementation_history",
+      "interpretation_boundary": "Global-l3 implementation smoke; not a held-out performance result.",
+      "artifact_summary": {
+        "file_count": 12,
+        "bytes": 36619853,
+        "last_modified_utc": "2026-07-16T18:54:03.218693Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_first_order_training_smoke_v2_teacher_factor/config.resolved.yaml",
+        "global_l3_first_order_training_smoke_v2_teacher_factor/displacement_metrics.csv",
+        "global_l3_first_order_training_smoke_v2_teacher_factor/factor_metrics.csv",
+        "global_l3_first_order_training_smoke_v2_teacher_factor/metrics.csv",
+        "global_l3_first_order_training_smoke_v2_teacher_factor/summary.json"
+      ],
+      "runs": [
+        {
+          "path": ".",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_isolated_u_train1603_val10_v2",
+      "artifact_root": "outputs/global_l3_isolated_u_train1603_val10_v2",
+      "family": "global_l3_validation_forensic",
+      "archival_status": "current",
+      "execution_status": "completed",
+      "result_disposition": "negative_or_partial_seed42_validation_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "train1603_formula_disjoint_val10_seed42",
+      "paper_use": "appendix_post_freeze_diagnostic",
+      "interpretation_boundary": "Seed42 validation-only precursor. Shared/isolated towers did not preserve the teacher-U optimum; no test or production claim.",
+      "artifact_summary": {
+        "file_count": 12,
+        "bytes": 46172113,
+        "last_modified_utc": "2026-07-16T21:15:16.280653Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_isolated_u_train1603_val10_v2/factorized_seed42/config.resolved.yaml",
+        "global_l3_isolated_u_train1603_val10_v2/factorized_seed42/displacement_metrics.csv",
+        "global_l3_isolated_u_train1603_val10_v2/factorized_seed42/factor_metrics.csv",
+        "global_l3_isolated_u_train1603_val10_v2/factorized_seed42/metrics.csv",
+        "global_l3_isolated_u_train1603_val10_v2/factorized_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "factorized_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_isolated_u_training_smoke_v1",
+      "artifact_root": "outputs/global_l3_isolated_u_training_smoke_v1",
+      "family": "global_l3_implementation_smoke",
+      "archival_status": "current",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "implementation_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "run_local_only",
+      "paper_use": "appendix_implementation_history",
+      "interpretation_boundary": "Global-l3 implementation smoke; not a held-out performance result.",
+      "artifact_summary": {
+        "file_count": 12,
+        "bytes": 45350735,
+        "last_modified_utc": "2026-07-16T19:58:55.648190Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_isolated_u_training_smoke_v1/config.resolved.yaml",
+        "global_l3_isolated_u_training_smoke_v1/displacement_metrics.csv",
+        "global_l3_isolated_u_training_smoke_v1/factor_metrics.csv",
+        "global_l3_isolated_u_training_smoke_v1/metrics.csv",
+        "global_l3_isolated_u_training_smoke_v1/summary.json"
+      ],
+      "runs": [
+        {
+          "path": ".",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_joint_optimizer_adjudication_v1",
+      "artifact_root": "outputs/global_l3_joint_optimizer_adjudication_v1",
+      "family": "global_l3_joint_gradient_adjudication",
+      "archival_status": "current",
+      "execution_status": "completed_seed42",
+      "result_disposition": "positive_validation_only_mechanism_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "train1603_formula_disjoint_val10_seed42",
+      "paper_use": "appendix_post_freeze_diagnostic",
+      "interpretation_boundary": "Seed42 train1603/val10 gradient-route adjudication only. It localizes the redundant branch-sum conflict but does not support a test or production claim.",
+      "split": "full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
+      "artifact_summary": {
+        "file_count": 32,
+        "bytes": 124744963,
+        "last_modified_utc": "2026-07-16T22:43:20.687941Z",
+        "run_records": 6,
+        "completed_run_records": 6,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_joint_optimizer_adjudication_v1/fresh_low_lr_branch_on_seed42/config.resolved.yaml",
+        "global_l3_joint_optimizer_adjudication_v1/fresh_low_lr_branch_on_seed42/metrics.csv",
+        "global_l3_joint_optimizer_adjudication_v1/fresh_low_lr_branch_on_seed42/summary.json",
+        "global_l3_joint_optimizer_adjudication_v1/gradient_decomposition_attached_seed42/config.resolved.yaml",
+        "global_l3_joint_optimizer_adjudication_v1/gradient_decomposition_attached_seed42/metrics.csv",
+        "global_l3_joint_optimizer_adjudication_v1/gradient_decomposition_attached_seed42/summary.json",
+        "global_l3_joint_optimizer_adjudication_v1/no_redundant_sum_seed42/config.resolved.yaml",
+        "global_l3_joint_optimizer_adjudication_v1/no_redundant_sum_seed42/metrics.csv",
+        "global_l3_joint_optimizer_adjudication_v1/no_redundant_sum_seed42/summary.json",
+        "global_l3_joint_optimizer_adjudication_v1/preserved_low_lr_branch_on_seed42/config.resolved.yaml",
+        "global_l3_joint_optimizer_adjudication_v1/preserved_low_lr_branch_on_seed42/metrics.csv",
+        "global_l3_joint_optimizer_adjudication_v1/preserved_low_lr_branch_on_seed42/summary.json",
+        "global_l3_joint_optimizer_adjudication_v1/preserved_low_lr_sum_detached_seed42/config.resolved.yaml",
+        "global_l3_joint_optimizer_adjudication_v1/preserved_low_lr_sum_detached_seed42/metrics.csv",
+        "global_l3_joint_optimizer_adjudication_v1/preserved_low_lr_sum_detached_seed42/summary.json",
+        "global_l3_joint_optimizer_adjudication_v1/summary.json"
+      ],
+      "runs": [
+        {
+          "path": ".",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "fresh_low_lr_branch_on_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        },
+        {
+          "path": "gradient_decomposition_attached_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        },
+        {
+          "path": "no_redundant_sum_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        },
+        {
+          "path": "preserved_low_lr_branch_on_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        },
+        {
+          "path": "preserved_low_lr_sum_detached_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_matched_direct_validation_v1",
+      "artifact_root": "outputs/global_l3_matched_direct_validation_v1",
+      "family": "global_l3_matched_direct_validation_control",
+      "archival_status": "current",
+      "execution_status": "completed",
+      "result_disposition": "matched_direct_outperforms_isolated_macro_tower",
+      "convention_epoch": "v10_complete_shell_cartesian_direct",
+      "comparability_group": "train1603_formula_disjoint_val10_three_seed",
+      "paper_use": "appendix_post_freeze_validation_control",
+      "interpretation_boundary": "Validation10-only matched direct-total control. Direct total TRS exceeds the physical model's isolated macro tower in all three seeds; this does not compare or invalidate atom-resolved ionic-factor metrics. Test20 unread.",
+      "split": "full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
+      "artifact_summary": {
+        "file_count": 16,
+        "bytes": 3609803,
+        "last_modified_utc": "2026-07-17T01:25:16.526737Z",
+        "run_records": 3,
+        "completed_run_records": 3,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_matched_direct_validation_v1/direct_seed1729/config.resolved.json",
+        "global_l3_matched_direct_validation_v1/direct_seed1729/metrics.csv",
+        "global_l3_matched_direct_validation_v1/direct_seed1729/summary.json",
+        "global_l3_matched_direct_validation_v1/direct_seed42/config.resolved.json",
+        "global_l3_matched_direct_validation_v1/direct_seed42/metrics.csv",
+        "global_l3_matched_direct_validation_v1/direct_seed42/summary.json",
+        "global_l3_matched_direct_validation_v1/direct_seed7/config.resolved.json",
+        "global_l3_matched_direct_validation_v1/direct_seed7/metrics.csv",
+        "global_l3_matched_direct_validation_v1/direct_seed7/summary.json",
+        "global_l3_matched_direct_validation_v1/training_source_manifest.json"
+      ],
+      "runs": [
+        {
+          "path": "direct_seed1729",
+          "execution_status": "completed_with_summary",
+          "seed": 1729,
+          "passes": null,
+          "markers": [
+            "config.resolved.json",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt"
+          ]
+        },
+        {
+          "path": "direct_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.json",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt"
+          ]
+        },
+        {
+          "path": "direct_seed7",
+          "execution_status": "completed_with_summary",
+          "seed": 7,
+          "passes": null,
+          "markers": [
+            "config.resolved.json",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "last.pt",
+            "loss_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_no_redundant_sum_multiseed_v1",
+      "artifact_root": "outputs/global_l3_no_redundant_sum_multiseed_v1",
+      "family": "global_l3_validation_replication",
+      "archival_status": "current",
+      "execution_status": "completed",
+      "result_disposition": "positive_physical_validation_negative_total_comparison",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "train1603_formula_disjoint_val10_three_seed",
+      "paper_use": "appendix_post_freeze_validation_diagnostic",
+      "interpretation_boundary": "Three seeds replicate stable direct-U/ionic validation losses on val10. Its isolated total macro tower underperforms the matched direct control; no test evaluation or production promotion is authorized.",
+      "split": "full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
+      "artifact_summary": {
+        "file_count": 29,
+        "bytes": 92395725,
+        "last_modified_utc": "2026-07-17T01:29:03.177688Z",
+        "run_records": 2,
+        "completed_run_records": 2,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed1729/config.resolved.yaml",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed1729/displacement_metrics.csv",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed1729/factor_metrics.csv",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed1729/metrics.csv",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed1729/summary.json",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed7/config.resolved.yaml",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed7/displacement_metrics.csv",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed7/factor_metrics.csv",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed7/metrics.csv",
+        "global_l3_no_redundant_sum_multiseed_v1/factorized_seed7/summary.json",
+        "global_l3_no_redundant_sum_multiseed_v1/report/validation_report.md",
+        "global_l3_no_redundant_sum_multiseed_v1/report/validation_summary.json",
+        "global_l3_no_redundant_sum_multiseed_v1/training_source_manifest.json"
+      ],
+      "runs": [
+        {
+          "path": "factorized_seed1729",
+          "execution_status": "completed_with_summary",
+          "seed": 1729,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        },
+        {
+          "path": "factorized_seed7",
+          "execution_status": "completed_with_summary",
+          "seed": 7,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "global_l3_train1603_val10_v1",
+      "artifact_root": "outputs/global_l3_train1603_val10_v1",
+      "family": "global_l3_validation_forensic",
+      "archival_status": "current",
+      "execution_status": "completed",
+      "result_disposition": "negative_or_partial_seed42_validation_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u_first_order",
+      "comparability_group": "train1603_formula_disjoint_val10_seed42",
+      "paper_use": "appendix_post_freeze_diagnostic",
+      "interpretation_boundary": "Seed42 validation-only precursor. Shared/isolated towers did not preserve the teacher-U optimum; no test or production claim.",
+      "artifact_summary": {
+        "file_count": 12,
+        "bytes": 36090003,
+        "last_modified_utc": "2026-07-16T19:55:19.092325Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "global_l3_train1603_val10_v1/factorized_seed42/config.resolved.yaml",
+        "global_l3_train1603_val10_v1/factorized_seed42/displacement_metrics.csv",
+        "global_l3_train1603_val10_v1/factorized_seed42/factor_metrics.csv",
+        "global_l3_train1603_val10_v1/factorized_seed42/metrics.csv",
+        "global_l3_train1603_val10_v1/factorized_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "factorized_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "config.resolved.yaml",
+            "factor_metrics.csv",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "displacement_best.pt",
+            "displacement_last.pt",
+            "factor_best.pt",
+            "factor_last.pt",
+            "last.pt",
+            "loss_best.pt",
+            "trs_best.pt"
           ]
         }
       ]
@@ -7680,6 +8221,382 @@
             "last.pt",
             "loss_best.pt",
             "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "u_capacity_adjudication_smoke_v1",
+      "artifact_root": "outputs/u_capacity_adjudication_smoke_v1",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 4,
+        "bytes": 1227498,
+        "last_modified_utc": "2026-07-16T18:16:06.065547Z",
+        "run_records": 1,
+        "completed_run_records": 1,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "u_capacity_adjudication_smoke_v1/config.json",
+        "u_capacity_adjudication_smoke_v1/metrics.csv",
+        "u_capacity_adjudication_smoke_v1/summary.json"
+      ],
+      "runs": [
+        {
+          "path": ".",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "u_capacity_adjudication_v1",
+      "artifact_root": "outputs/u_capacity_adjudication_v1",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 20,
+        "bytes": 4172373,
+        "last_modified_utc": "2026-07-16T18:20:38.775089Z",
+        "run_records": 5,
+        "completed_run_records": 5,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "u_capacity_adjudication_v1/global_first_order_e100_seed42/config.json",
+        "u_capacity_adjudication_v1/global_first_order_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v1/global_first_order_e100_seed42/summary.json",
+        "u_capacity_adjudication_v1/global_none_e100_seed42/config.json",
+        "u_capacity_adjudication_v1/global_none_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v1/global_none_e100_seed42/summary.json",
+        "u_capacity_adjudication_v1/global_squared_normal_e100_seed42/config.json",
+        "u_capacity_adjudication_v1/global_squared_normal_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v1/global_squared_normal_e100_seed42/summary.json",
+        "u_capacity_adjudication_v1/local_none_e100_seed42/config.json",
+        "u_capacity_adjudication_v1/local_none_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v1/local_none_e100_seed42/summary.json",
+        "u_capacity_adjudication_v1/local_squared_normal_e100_seed42/config.json",
+        "u_capacity_adjudication_v1/local_squared_normal_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v1/local_squared_normal_e100_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "global_first_order_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "global_none_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "global_squared_normal_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "local_none_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "local_squared_normal_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "u_capacity_adjudication_v2_balanced_objective",
+      "artifact_root": "outputs/u_capacity_adjudication_v2_balanced_objective",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 20,
+        "bytes": 4176408,
+        "last_modified_utc": "2026-07-16T18:26:20.762216Z",
+        "run_records": 5,
+        "completed_run_records": 5,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "u_capacity_adjudication_v2_balanced_objective/global_first_order_e100_seed42/config.json",
+        "u_capacity_adjudication_v2_balanced_objective/global_first_order_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v2_balanced_objective/global_first_order_e100_seed42/summary.json",
+        "u_capacity_adjudication_v2_balanced_objective/global_none_e100_seed42/config.json",
+        "u_capacity_adjudication_v2_balanced_objective/global_none_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v2_balanced_objective/global_none_e100_seed42/summary.json",
+        "u_capacity_adjudication_v2_balanced_objective/global_squared_normal_e100_seed42/config.json",
+        "u_capacity_adjudication_v2_balanced_objective/global_squared_normal_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v2_balanced_objective/global_squared_normal_e100_seed42/summary.json",
+        "u_capacity_adjudication_v2_balanced_objective/local_none_e100_seed42/config.json",
+        "u_capacity_adjudication_v2_balanced_objective/local_none_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v2_balanced_objective/local_none_e100_seed42/summary.json",
+        "u_capacity_adjudication_v2_balanced_objective/local_squared_normal_e100_seed42/config.json",
+        "u_capacity_adjudication_v2_balanced_objective/local_squared_normal_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v2_balanced_objective/local_squared_normal_e100_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "global_first_order_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "global_none_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "global_squared_normal_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "local_none_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "local_squared_normal_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "u_capacity_adjudication_v3_long_fit",
+      "artifact_root": "outputs/u_capacity_adjudication_v3_long_fit",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 9,
+        "bytes": 1574528,
+        "last_modified_utc": "2026-07-16T18:37:04.152208Z",
+        "run_records": 2,
+        "completed_run_records": 2,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "u_capacity_adjudication_v3_long_fit/global_none_e500_seed42/config.json",
+        "u_capacity_adjudication_v3_long_fit/global_none_e500_seed42/metrics.csv",
+        "u_capacity_adjudication_v3_long_fit/global_none_e500_seed42/summary.json",
+        "u_capacity_adjudication_v3_long_fit/local_none_e500_seed42/config.json",
+        "u_capacity_adjudication_v3_long_fit/local_none_e500_seed42/metrics.csv",
+        "u_capacity_adjudication_v3_long_fit/local_none_e500_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "global_none_e500_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "local_none_e500_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "u_capacity_adjudication_v4_global_l3",
+      "artifact_root": "outputs/u_capacity_adjudication_v4_global_l3",
+      "family": "global_l3_same_id_capacity_gate",
+      "archival_status": "current",
+      "execution_status": "completed",
+      "result_disposition": "positive_noninductive_capacity_diagnostic",
+      "convention_epoch": "v10_global_l3_independent_u",
+      "comparability_group": "same_id_samples32_only",
+      "paper_use": "appendix_capacity_diagnostic_only",
+      "interpretation_boundary": "Same-ID train-only capacity evidence. It establishes representation capacity but cannot support formula-disjoint predictive validity.",
+      "artifact_summary": {
+        "file_count": 13,
+        "bytes": 3435405,
+        "last_modified_utc": "2026-07-16T23:09:49.729856Z",
+        "run_records": 3,
+        "completed_run_records": 3,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "u_capacity_adjudication_v4_global_l3/global_l3_first_order_e200_seed42/config.json",
+        "u_capacity_adjudication_v4_global_l3/global_l3_first_order_e200_seed42/metrics.csv",
+        "u_capacity_adjudication_v4_global_l3/global_l3_first_order_e200_seed42/summary.json",
+        "u_capacity_adjudication_v4_global_l3/global_l3_none_e100_seed42/config.json",
+        "u_capacity_adjudication_v4_global_l3/global_l3_none_e100_seed42/metrics.csv",
+        "u_capacity_adjudication_v4_global_l3/global_l3_none_e100_seed42/summary.json",
+        "u_capacity_adjudication_v4_global_l3/global_l3_none_e200_seed42/config.json",
+        "u_capacity_adjudication_v4_global_l3/global_l3_none_e200_seed42/metrics.csv",
+        "u_capacity_adjudication_v4_global_l3/global_l3_none_e200_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "global_l3_first_order_e200_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "global_l3_none_e100_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "global_l3_none_e200_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "best.pt"
           ]
         }
       ]

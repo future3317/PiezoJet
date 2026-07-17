@@ -19,8 +19,11 @@ e^{\mathrm{ion}}_U=\frac{c_e}{\Omega}Z^{*\mathsf T}U_{\eta,\delta},
 \]
 
 `U_eta` denotes the production regularized internal-displacement response
-coordinate `U_{eta,delta}`. It is produced by an independent atom-level
-equivariant head and is translation-free. It is not formed from predicted
+coordinate `U_{eta,delta}`. It is produced by an independent, translation-free
+global equivariant tower.  In addition to local scalar/vector/quadrupole
+features and reciprocal context, its readout contains an explicit symmetric
+trace-free octupole (`l=3`) channel and all-to-all crystal conditioning. It is
+not formed from predicted
 `Phi` or `Lambda`, so the
 ionic macro loss has no inverse, SVD, detached chart, or straight-through
 gradient route. Only on the true stable, well-conditioned stratum is the exact
@@ -61,11 +64,19 @@ Strict-complete records provide
 U_\eta^\star=\mathcal D_\delta(\Phi)\Lambda
 \]
 
-and the inverse-free coupling constraint
+and the first-order real block constraint
 
 \[
-(\Phi^2+\delta^2I)U_\eta=\Phi\Lambda.
+\Phi U_\eta-\delta V_\eta=\Lambda,
+\qquad
+\Phi V_\eta+\delta U_\eta=0.
 \]
+
+The auxiliary `V_eta` exists only during training.  This block system is
+equivalent to `(Phi + i delta I)(U + i V) = Lambda` and avoids the historical
+normal equation's squared condition number and hard-mode weighting.  Teacher-
+`U` AdamW moments are preserved when entering joint training; the isolated
+displacement tower uses its own `5e-4` joint learning rate.
 
 The total-only GMTNet target and the physical branch decomposition use
 independent towers:
@@ -78,6 +89,17 @@ independent towers:
 This separation is required because total-only data cannot identify the
 electronic/ionic allocation. A macro-total gradient cannot enter the physical
 encoder, `Z*`, `Phi`, `Lambda`, `U_eta`, or electronic decoder.
+
+Same-OUTCAR electronic and true-BEC ionic component labels supervise their
+own branches.  Their already-audited identity `total = electronic + ionic` is
+logged as `branch_sum` closure but has zero optimization weight: it contains no
+new label information and was measured to send a 3.7-times-larger, opposing
+gradient into `U_eta` while the electronic head was inaccurate.
+
+Periodic graph truncation retains the complete equal-distance shell at the
+neighbor-budget boundary.  It never selects an arbitrary subset of a
+degenerate shell, which would break atom-permutation/space-group symmetry in
+high-symmetry crystals.
 
 All tensor auxiliary losses form a complete Cartesian Frobenius norm before a
 pseudo-Huber reduction. Macro tensors are reduced per material, BECs per atom,
@@ -142,6 +164,8 @@ benchmark.
 One pass is a complete traversal, not a fixed number of optimizer updates.
 
 - factor stage: one DFPT-branch pass plus one strict-only pass;
+- teacher-displacement stage: one branch true-BEC ionic pass plus one strict
+  direct-`U_eta` pass;
 - joint stage: one macro pass, one branch pass, and one strict-only pass;
 - matched direct control: the identical macro passes, split, structural
   checkpoint, seed, and validation-loss checkpoint selection.
@@ -167,6 +191,44 @@ macro curve is a negative control/software-isolation check and cannot show that
 total-only labels improve ionic factors.
 
 ## Current evidence
+
+The explicit global-`l=3` displacement head resolves the former same-ID
+representation bottleneck.  On the preregistered samples32 capacity panel, a
+200-epoch no-consistency fit reaches `U` relative error `0.15827`, cosine
+`0.95703`, active true-BEC ionic cosine `0.99829`, and amplitude ratio
+`1.01418`.  A corrected readout-basis oracle reduces the superseded global
+head's mean/worst minimum residual `0.09498/0.91137` to
+`0.00366/0.05945` with the explicit STF octupole; its mean maximum cosine is
+`0.99989`.  An unrestricted translation-free lookup has worst residual
+`8.64e-9`.  These are train-only capacity results, not generalization evidence.
+
+A post-freeze train1603/val10 adjudication then localized the joint
+degradation.  Direct-`U` versus true-BEC ionic gradients are aligned
+(`+0.549` cosine), whereas the redundant branch-sum gradient has norm `0.3002`
+versus direct-`U` `0.0817` and cosine `-0.556`.  Removing that redundant
+objective improves the validation-selected epoch from the prior isolated-U
+run's loss/direct-`U`/ionic/TRS of `1.54465 / 0.37147 / 0.29212 / 0.05800` to
+`0.97701 / 0.24816 / 0.13628 / 0.38696` for seed 42.  The completed seeds
+42/7/1729 give validation-selected total TRS `0.29165 +/- 0.08272`, direct-`U`
+loss `0.25054 +/- 0.00485`, ionic loss `0.13820 +/- 0.01368`, and electronic
+loss `0.29781 +/- 0.00049` (mean +/- sample SD).  Thus the zero-amplitude U
+collapse is reproducibly removed, while the electronic branch remains flat.
+
+The matched direct-total validation control reaches TRS
+`0.37382 +/- 0.08634`; the paired physical-model macro tower minus direct
+difference is negative for every seed and averages `-0.08217 +/- 0.03399`.
+The present result therefore supports the global-`l=3` physical mechanism but
+does **not** support total-tensor superiority over a matched direct regressor.
+All of these comparisons use formula-disjoint val10 only; frozen test20 remains
+unread.  See
+`outputs/global_l3_no_redundant_sum_multiseed_v1/report/validation_report.md`.
+
+The maintained CUDA path batches nonlocal global-`l=3` attention and the
+`Z*^T U` contraction, and omits inactive macro/optical diagnostics during
+branch or strict training.  Forward/gradient oracle tests and the 153-test
+suite pass; `num_workers` remains zero.  Concurrent microbenchmarks are
+recorded in `docs/reviews/2026-07/GPU_VECTORIZATION_AUDIT_2026-07-17.md` and
+are not promoted as clean end-to-end throughput claims.
 
 The first matched direct-operator capacity ladder is retained in
 `outputs/operator_learning_capacity_v2/summary.json`. It improves most 1- and

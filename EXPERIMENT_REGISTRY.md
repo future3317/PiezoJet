@@ -4,7 +4,7 @@ This is the human-readable index of every top-level cohort under `outputs/`. The
 
 Negative, failed, interrupted, partial, running, and historical runs are intentionally retained. A directory's existence never implies a valid performance result.
 
-Registered top-level cohorts: **121**.
+Registered top-level cohorts: **134**.
 
 | Cohort | Family | Execution | Result | Convention | Paper use | Runs (complete/partial) |
 |---|---|---|---|---|---|---:|
@@ -64,6 +64,14 @@ Registered top-level cohorts: **121**.
 | `feedback5_execution_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 5 (3/0) |
 | `full_corpus_multitask_detached_lift_v1` | historical_detached_macro_lift | failed_superseded | negative_nonidentifiable_parameterization | bec_transpose_with_removed_detached_lift | historical_appendix_only | 2 (1/1) |
 | `full_corpus_multitask_detached_lift_v2` | historical_detached_macro_lift | completed | negative_nonidentifiable_parameterization | bec_transpose_with_removed_detached_lift | historical_appendix_only | 7 (7/0) |
+| `global_l3_first_order_training_smoke_v1` | global_l3_implementation_smoke | completed_or_retained_partial | implementation_diagnostic | v10_global_l3_independent_u_first_order | appendix_implementation_history | 1 (1/0) |
+| `global_l3_first_order_training_smoke_v2_teacher_factor` | global_l3_implementation_smoke | completed_or_retained_partial | implementation_diagnostic | v10_global_l3_independent_u_first_order | appendix_implementation_history | 1 (1/0) |
+| `global_l3_isolated_u_train1603_val10_v2` | global_l3_validation_forensic | completed | negative_or_partial_seed42_validation_diagnostic | v10_global_l3_independent_u_first_order | appendix_post_freeze_diagnostic | 1 (1/0) |
+| `global_l3_isolated_u_training_smoke_v1` | global_l3_implementation_smoke | completed_or_retained_partial | implementation_diagnostic | v10_global_l3_independent_u_first_order | appendix_implementation_history | 1 (1/0) |
+| `global_l3_joint_optimizer_adjudication_v1` | global_l3_joint_gradient_adjudication | completed_seed42 | positive_validation_only_mechanism_diagnostic | v10_global_l3_independent_u_first_order | appendix_post_freeze_diagnostic | 6 (6/0) |
+| `global_l3_matched_direct_validation_v1` | global_l3_matched_direct_validation_control | completed | matched_direct_outperforms_isolated_macro_tower | v10_complete_shell_cartesian_direct | appendix_post_freeze_validation_control | 3 (3/0) |
+| `global_l3_no_redundant_sum_multiseed_v1` | global_l3_validation_replication | completed | positive_physical_validation_negative_total_comparison | v10_global_l3_independent_u_first_order | appendix_post_freeze_validation_diagnostic | 2 (2/0) |
+| `global_l3_train1603_val10_v1` | global_l3_validation_forensic | completed | negative_or_partial_seed42_validation_diagnostic | v10_global_l3_independent_u_first_order | appendix_post_freeze_diagnostic | 1 (1/0) |
 | `gmtnet_outcar_total_consistency_v1` | data_convention_and_provenance_audit | completed | support_audit | source_audited_bec_transpose | appendix_provenance | 1 (1/0) |
 | `hessian_bond_laplacian_oracle_v1` | offline_hessian_model_class_oracle | completed | model_class_diagnostic | v7_bec_transpose_train149 | appendix_model_class_diagnostic | 0 (0/0) |
 | `inference_cache_first` | engineering_validation | completed_or_retained_partial | smoke_or_resource_diagnostic | historical_pre_v7_or_run_local | project_ledger_only | 1 (0/1) |
@@ -129,6 +137,11 @@ Registered top-level cohorts: **121**.
 | `teacher_forced_zero_basin_cpu_smoke_v2` | identifiability_memorization_probe | partial | failed_or_incomplete_noninductive_diagnostic | v7_bec_transpose_teacher_forced_direct_u | appendix_implementation_diagnostic_only | 1 (1/0) |
 | `teacher_forced_zero_basin_cpu_smoke_v3` | identifiability_memorization_probe | completed | cpu_implementation_smoke | v7_bec_transpose_teacher_forced_direct_u | appendix_implementation_diagnostic_only | 2 (2/0) |
 | `teacher_forced_zero_basin_v1` | identifiability_memorization_probe | completed | noninductive_capacity_diagnostic_available | v7_bec_transpose_teacher_forced_direct_u | appendix_implementation_diagnostic_only | 3 (3/0) |
+| `u_capacity_adjudication_smoke_v1` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
+| `u_capacity_adjudication_v1` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 5 (5/0) |
+| `u_capacity_adjudication_v2_balanced_objective` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 5 (5/0) |
+| `u_capacity_adjudication_v3_long_fit` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 2 (2/0) |
+| `u_capacity_adjudication_v4_global_l3` | global_l3_same_id_capacity_gate | completed | positive_noninductive_capacity_diagnostic | v10_global_l3_independent_u | appendix_capacity_diagnostic_only | 3 (3/0) |
 
 ## Non-comparable families
 

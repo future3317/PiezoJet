@@ -130,8 +130,9 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   from a macroscopic target through a pseudoinverse, ridge lift, active/null
   projector, or detached predicted-factor chart.
 - `Phi/Lambda` propagation is an attached physical diagnostic. Strict labels
-  supervise `U_eta*=D_delta(Phi)Lambda` and the inverse-free normal equation
-  `(Phi^2+delta^2 I)U_eta=Phi Lambda`.
+  supervise `U_eta*=D_delta(Phi)Lambda` and the first-order real block system
+  `Phi U-delta V=Lambda`, `Phi V+delta U=0`. The auxiliary `V` is training-only;
+  do not reintroduce the squared normal equation.
 - `Phi` and `Lambda` are independent coefficients of the same explicit scalar
   quadratic response energy `0.5 u^T Phi u - u^T Lambda eta + 0.5 eta^T C eta`.
   Do not reintroduce the extra restriction `Lambda=B^T K S`; integrability
@@ -142,14 +143,20 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - Total-only GMTNet labels use an independent macro encoder/head. They must not
   backpropagate into the physical encoder, electronic branch, `Z*`, `Phi`,
   `Lambda`, or `U_eta`.
+- Same-OUTCAR electronic and true-BEC ionic labels supervise their own
+  components. `branch_sum` remains a logged closure diagnostic with zero loss
+  weight. Its target is algebraically redundant, and the train1603 audit found
+  its U-tower gradient norm 0.30024 versus direct-U 0.08167 with cosine -0.55615.
+  Do not use this closure residual to make U compensate for electronic error.
 - `model_from_config` accepts only `independent_quadratic_response`, isotropic
   background, and the continuous `regularized` operator. Exact propagation is
   an explicit true-DFPT stable diagnostic. There is no `auto` policy.
 - Tensor losses reduce complete Cartesian Frobenius norms before pseudo-Huber.
   Do not reintroduce componentwise SmoothL1 for rotated tensor objectives.
-- One exposure epoch means complete passes: factor branch + factor strict,
-  followed during joint training by macro + branch + strict streams. Strict-
-  only losses must not be repeated on the branch stream.
+- One exposure epoch means complete passes. Factor training traverses branch +
+  strict; teacher-U training traverses branch + strict; joint training traverses
+  macro + branch + strict. Strict-only losses must not be repeated on the
+  branch stream, and all three stages must be counted in exposure metadata.
 - `scripts/run_exposure_matched_replay.ps1` registers 1/5/10/20 passes for
   seeds 42/7/1729 and runs a matched macro-only direct control. Checkpoints are
   selected by validation loss only; test outputs never tune the model.
@@ -162,13 +169,42 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 
 ## Current direct-U candidate
 
+- The maintained U tower is isolated from the factor/macro encoders and uses a
+  global explicit STF-octupole (`l=3`) readout. Periodic graph construction
+  retains the full equal-distance shell at the neighbor-budget boundary.
+- `outputs/u_capacity_adjudication_v4_global_l3/` is the positive same-ID
+  capacity gate. At samples32/200 epochs without consistency, U relative error
+  is 0.15827, U cosine 0.95703, active true-BEC ionic cosine 0.99829, and
+  amplitude ratio 1.01418. This is noninductive capacity evidence only.
+- `outputs/global_l3_joint_optimizer_adjudication_v1/` is the completed seed42
+  train1603/val10 loss-geometry adjudication. Removing the redundant branch-sum
+  objective yields validation-selected epoch 7 with loss 0.97701, direct-U
+  loss 0.24816, ionic loss 0.13628, and total TRS 0.38696. It is a post-freeze
+  single-seed validation diagnostic, not a test result or production claim.
+- `outputs/global_l3_no_redundant_sum_multiseed_v1/` is the completed
+  seeds42/7/1729 validation-only replication. Validation-selected mean/sample
+  SD are: total TRS 0.29165/0.08272, direct-U loss 0.25054/0.00485, ionic loss
+  0.13820/0.01368, and electronic loss 0.29781/0.00049.
+- `outputs/global_l3_matched_direct_validation_v1/` is the completed matched
+  direct-total val10 control. Its TRS is 0.37382 +/- 0.08634; paired physical
+  macro minus direct TRS is -0.08217 +/- 0.03399 and negative for all seeds.
+  This rejects a total-tensor advantage while retaining the separate positive
+  direct-U/ionic mechanism result. Frozen test20 remains unread and no
+  production promotion is authorized.
+- Teacher-U AdamW state is preserved at the joint boundary. The isolated U/V
+  tower uses joint LR 5e-4; remaining parameters use the registered 1e-3 LR.
+- Production CUDA kernels batch global nonlocal attention and `Z*^T U` with
+  masked GEMM/einsum-scatter. Inactive macro/optical paths are omitted from
+  branch/strict training and constant-zero losses keep AdamW from decaying
+  towers on the wrong stream. `num_workers` remains zero.
+
 - `outputs/operator_learning_capacity_v2/summary.json` is a retained negative
   same-ID capacity result: the operator bundle helps 1/8 materials but fails
   at 32, including a Phi direction reversal. It does not authorize validation.
-- The follow-up independent-Lambda/material-spectral-floor replay must keep the
-  v5 operator weights fixed. Do not inspect frozen validation/test until its
-  32-material gate is judged; failed/partial launch directories remain in the
-  experiment registry rather than being reused.
+- Historical independent-Lambda/material-spectral-floor replays retain their
+  fixed v5 weights and negative/partial outputs. They are superseded as the
+  current architecture gate by the global-l3 capacity adjudication and must not
+  be reused or presented as the maintained candidate.
 
 - `config.yaml` uses the 4,961-item formula-disjoint macro train pool, the
   convention-corrected 4,995-payload v9 cache, strict v10 completions, and the full-
