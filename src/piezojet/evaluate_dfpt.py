@@ -21,7 +21,13 @@ import torch
 from .data import PiezoDataset, create_or_load_splits, graph_cache_key, load_gmtnet_records
 from .metrics import material_bootstrap_confidence_interval, response_tensor_skill
 from .model import AtomCoordinateResponsePotential, model_from_config
-from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian
+from .tensor_ops import (
+    PIEZO_IRREP_SLICES,
+    cartesian_to_piezo_voigt,
+    electronic_irrep_decomposition,
+    piezo_to_irreps,
+    piezo_voigt_to_cartesian,
+)
 from .projectors import translation_projector
 from .train import device_from_config, load_explicit_splits, restrict_splits_to_material_ids
 
@@ -361,6 +367,21 @@ def ionic_piezo_from_factors(
     return piezo_voigt_to_cartesian(piezo_voigt)
 
 
+def ionic_piezo_from_displacement_matrix(
+    response: AtomCoordinateResponsePotential,
+    born: torch.Tensor,
+    displacement: torch.Tensor,
+    volume: torch.Tensor | float,
+) -> torch.Tensor:
+    """Contract ``Z*`` with a ``[3N,6]`` displacement-response matrix."""
+    charge = born.reshape(-1, 3)
+    if displacement.shape != (charge.shape[0], 6):
+        raise ValueError("Born charge and displacement matrix dimensions differ")
+    volume_tensor = torch.as_tensor(volume, dtype=born.dtype, device=born.device)
+    piezo_voigt = response.PIEZO_C_PER_M2 * charge.transpose(0, 1) @ displacement / volume_tensor
+    return piezo_voigt_to_cartesian(piezo_voigt)
+
+
 def selected_internal_strain(
     prediction: torch.Tensor,
     target_flat: torch.Tensor,
@@ -401,6 +422,73 @@ def pair_metrics(prediction: torch.Tensor, target: torch.Tensor, floor: float) -
             torch.dot(prediction, target)
             / (prediction_norm * target_norm).clamp_min(torch.finfo(torch.float64).eps)
         ),
+    }
+
+
+def electronic_irrep_metrics(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    floor: float = FACTOR_FLOORS["electronic_piezo"],
+) -> dict[str, dict[str, float | int]]:
+    """Resolve electronic-piezo error into 2x l=1, l=2, and l=3 blocks."""
+    predicted = electronic_irrep_decomposition(prediction)
+    expected = electronic_irrep_decomposition(target)
+    return {
+        name: pair_metrics(predicted[name], expected[name], floor)
+        for name in PIEZO_IRREP_SLICES
+    }
+
+
+def electronic_basis_oracle(
+    basis_tensors: torch.Tensor,
+    target: torch.Tensor,
+    floor: float = FACTOR_FLOORS["electronic_piezo"],
+) -> dict[str, object]:
+    """Least-squares projection onto the current electronic output span.
+
+    ``basis_tensors`` contains the unrestricted atom/channel/family Cartesian
+    bases plus the reciprocal rank-three operator.  Solving in the 18D
+    orthonormal irrep coordinates avoids double-counting Cartesian shear
+    entries and makes the reported rank and residual convention-independent.
+    """
+    if basis_tensors.ndim != 4 or basis_tensors.shape[-3:] != (3, 3, 3):
+        raise ValueError("Electronic basis tensors must have shape [K,3,3,3]")
+    design = piezo_to_irreps(basis_tensors).to(torch.float64).transpose(0, 1)
+    expected = piezo_to_irreps(target).to(torch.float64).reshape(-1)
+    left, singular, _ = torch.linalg.svd(design, full_matrices=False)
+    if singular.numel():
+        tolerance = max(design.shape) * torch.finfo(design.dtype).eps * singular.max()
+        rank = int((singular > tolerance).sum())
+    else:
+        rank = 0
+    fitted = left[:, :rank] @ (left[:, :rank].transpose(0, 1) @ expected)
+    residual = fitted - expected
+    target_norm = torch.linalg.vector_norm(expected)
+    fitted_norm = torch.linalg.vector_norm(fitted)
+    residual_norm = torch.linalg.vector_norm(residual)
+    denominator = target_norm.clamp_min(float(floor) * expected.numel() ** 0.5)
+    per_irrep: dict[str, dict[str, float]] = {}
+    for name, block in PIEZO_IRREP_SLICES.items():
+        block_target = expected[block]
+        block_fitted = fitted[block]
+        block_norm = torch.linalg.vector_norm(block_target)
+        block_floor = float(floor) * block_target.numel() ** 0.5
+        per_irrep[name] = {
+            "target_norm": float(block_norm),
+            "relative_residual": float(
+                torch.linalg.vector_norm(block_fitted - block_target)
+                / block_norm.clamp_min(block_floor)
+            ),
+        }
+    maximum_cosine = fitted_norm / target_norm.clamp_min(1e-30)
+    return {
+        "basis_count": int(basis_tensors.shape[0]),
+        "rank_in_18d_irrep_space": rank,
+        "target_norm": float(target_norm),
+        "minimum_residual_norm": float(residual_norm),
+        "minimum_stabilized_relative_residual": float(residual_norm / denominator),
+        "theoretical_maximum_cosine": float(maximum_cosine.clamp(0.0, 1.0)),
+        "per_irrep": per_irrep,
     }
 
 
@@ -776,7 +864,19 @@ def main() -> None:
     rows: list[dict[str, float | int | str]] = []
     total_predictions, total_targets = [], []
     electronic_predictions, ionic_predictions, factorized_ionic_predictions = [], [], []
-    dfpt_total_targets, ionic_targets = [], []
+    electronic_targets, dfpt_total_targets, ionic_targets = [], [], []
+    electronic_irrep_predictions: dict[str, list[torch.Tensor]] = {
+        name: [] for name in PIEZO_IRREP_SLICES
+    }
+    electronic_irrep_targets: dict[str, list[torch.Tensor]] = {
+        name: [] for name in PIEZO_IRREP_SLICES
+    }
+    electronic_basis_oracles: list[dict[str, object]] = []
+    total_substitution_values: dict[str, list[torch.Tensor]] = {
+        "true_electronic_predicted_ionic": [],
+        "predicted_electronic_true_ionic": [],
+        "predicted_electronic_predicted_ionic": [],
+    }
     oracle_names = (
         "direct_pred_z_pred_u_regularized",
         "factorized_pred_z_pred_phi_pred_lambda_regularized",
@@ -811,6 +911,11 @@ def main() -> None:
             "pred_z_pred_phi_true_lambda_regularized",
         )
     }
+    strict_direct_u_substitution_values: dict[str, list[torch.Tensor]] = {
+        "true_z_predicted_u": [],
+        "predicted_z_true_u": [],
+        "predicted_z_predicted_u": [],
+    }
     strict_displacement_targets: list[torch.Tensor] = []
     strict_low_rank_oracles: list[dict[str, object]] = []
     strict_alignment_rows: list[dict[str, float | int]] = []
@@ -842,6 +947,23 @@ def main() -> None:
             ionic_target = graph.y_ionic_piezo.squeeze(0)
             dfpt_total_target = graph.y_dfpt_total_piezo.squeeze(0)
             electronic_target = graph.y_electronic_piezo.squeeze(0)
+            electronic_prediction = components.electronic_piezo.squeeze(0)
+            irrep_prediction = electronic_irrep_decomposition(electronic_prediction)
+            irrep_target = electronic_irrep_decomposition(electronic_target)
+            irrep_metrics = electronic_irrep_metrics(
+                electronic_prediction, electronic_target
+            )
+            basis_oracle = electronic_basis_oracle(
+                model.electronic_output_basis(graph)[0], electronic_target
+            )
+            electronic_basis_oracles.append(basis_oracle)
+            for name in PIEZO_IRREP_SLICES:
+                electronic_irrep_predictions[name].append(
+                    irrep_prediction[name].detach().cpu()
+                )
+                electronic_irrep_targets[name].append(
+                    irrep_target[name].detach().cpu()
+                )
             values = {
                 "born_charge": (components.born_charges, graph.y_born),
                 "force_constant": (force_prediction, force_target),
@@ -850,7 +972,7 @@ def main() -> None:
                 "factorized_ionic_piezo": (
                     components.factorized_ionic_piezo.squeeze(0), ionic_target
                 ),
-                "electronic_piezo": (components.electronic_piezo.squeeze(0), electronic_target),
+                "electronic_piezo": (electronic_prediction, electronic_target),
                 "total_piezo": (components.tensor.squeeze(0), total_target),
                 "dfpt_total_piezo": (components.tensor.squeeze(0), dfpt_total_target),
                 "dfpt_branch_sum_piezo": (
@@ -878,6 +1000,18 @@ def main() -> None:
                 ),
                 "ionic_parameterization": model.ionic_parameterization,
             }
+            for irrep_name, metrics in irrep_metrics.items():
+                for key, value in metrics.items():
+                    row[f"electronic_{irrep_name}_{key}"] = value
+            row["electronic_basis_rank_18d"] = int(
+                basis_oracle["rank_in_18d_irrep_space"]
+            )
+            row["electronic_basis_minimum_relative_residual"] = float(
+                basis_oracle["minimum_stabilized_relative_residual"]
+            )
+            row["electronic_basis_theoretical_maximum_cosine"] = float(
+                basis_oracle["theoretical_maximum_cosine"]
+            )
             true_born = graph.y_born
             predicted_lambda = components.internal_strain
             observed_lambda = replace_printed_internal_strain(
@@ -1011,6 +1145,27 @@ def main() -> None:
                 predicted_displacement = model.response._coupling_voigt(
                     components.displacement_response
                 ).reshape(3 * graph.num_nodes, 6)
+                direct_u_substitutions = {
+                    "true_z_predicted_u": ionic_piezo_from_displacement_matrix(
+                        model.response, true_born, predicted_displacement, volume
+                    ),
+                    "predicted_z_true_u": ionic_piezo_from_displacement_matrix(
+                        model.response,
+                        components.born_charges,
+                        true_displacement,
+                        volume,
+                    ),
+                    "predicted_z_predicted_u": components.ionic_piezo.squeeze(0),
+                }
+                for name, value in direct_u_substitutions.items():
+                    strict_direct_u_substitution_values[name].append(
+                        value.detach().cpu()
+                    )
+                    metrics = pair_metrics(
+                        value, ionic_target, FACTOR_FLOORS["ionic_piezo"]
+                    )
+                    for key, metric_value in metrics.items():
+                        row[f"strict_direct_u_{name}_{key}"] = metric_value
                 displacement_metrics = accumulators["displacement_response"].add(
                     predicted_displacement, true_displacement
                 )
@@ -1058,9 +1213,23 @@ def main() -> None:
                 )
                 completed_oracle_targets.append(ionic_target.detach().cpu())
             rows.append(row)
+            total_substitutions = {
+                "true_electronic_predicted_ionic": (
+                    electronic_target + components.ionic_piezo.squeeze(0)
+                ),
+                "predicted_electronic_true_ionic": (
+                    electronic_prediction + ionic_target
+                ),
+                "predicted_electronic_predicted_ionic": (
+                    electronic_prediction + components.ionic_piezo.squeeze(0)
+                ),
+            }
+            for name, value in total_substitutions.items():
+                total_substitution_values[name].append(value.detach().cpu())
             total_predictions.append(components.tensor.cpu())
             total_targets.append(graph.y.cpu())
             electronic_predictions.append(components.electronic_piezo.cpu())
+            electronic_targets.append(graph.y_electronic_piezo.cpu())
             ionic_predictions.append(components.ionic_piezo.cpu())
             factorized_ionic_predictions.append(components.factorized_ionic_piezo.cpu())
             dfpt_total_targets.append(graph.y_dfpt_total_piezo.cpu())
@@ -1228,8 +1397,58 @@ def main() -> None:
             "ionic_piezo_stabilized_amplitude_ratio",
         )
     )
+    electronic_irrep_summary = {
+        name: macro_material_tensor_metrics(
+            electronic_irrep_predictions[name],
+            electronic_irrep_targets[name],
+            FACTOR_FLOORS["electronic_piezo"],
+        )
+        for name in PIEZO_IRREP_SLICES
+    }
+    basis_oracle_summary: dict[str, object] = {
+        "materials": len(electronic_basis_oracles),
+        "basis_definition": (
+            "unrestricted per-atom/channel/family Cartesian readout bases plus "
+            "the reciprocal rank-three operator; coefficient-network constraints omitted"
+        ),
+        "rank_counts_in_18d_irrep_space": {
+            str(rank): sum(
+                int(row["rank_in_18d_irrep_space"]) == rank
+                for row in electronic_basis_oracles
+            )
+            for rank in range(19)
+        },
+        "mean_minimum_stabilized_relative_residual": sum(
+            float(row["minimum_stabilized_relative_residual"])
+            for row in electronic_basis_oracles
+        ) / max(len(electronic_basis_oracles), 1),
+        "mean_theoretical_maximum_cosine": sum(
+            float(row["theoretical_maximum_cosine"])
+            for row in electronic_basis_oracles
+        ) / max(len(electronic_basis_oracles), 1),
+        "per_irrep_mean_relative_residual": {
+            name: sum(
+                float(row["per_irrep"][name]["relative_residual"])
+                for row in electronic_basis_oracles
+            ) / max(len(electronic_basis_oracles), 1)
+            for name in PIEZO_IRREP_SLICES
+        },
+    }
+    total_substitution_summary = {
+        name: macro_material_tensor_metrics(
+            values, dfpt_total_targets, FACTOR_FLOORS["total_piezo"]
+        )
+        for name, values in total_substitution_values.items()
+    }
+    strict_direct_u_substitution_summary = {
+        name: _ionic_metric_bundle(
+            values, completed_oracle_targets, FACTOR_FLOORS["ionic_piezo"]
+        )
+        for name, values in strict_direct_u_substitution_values.items()
+        if values
+    }
     summary: dict[str, object] = {
-        "schema": 6,
+        "schema": 7,
         "checkpoint": str(args.checkpoint.resolve()),
         "checkpoint_epoch": int(checkpoint["epoch"]),
         "checkpoint_declared_device": checkpoint_device,
@@ -1248,6 +1467,9 @@ def main() -> None:
         "total_response_skill": response_tensor_skill(total_prediction, total_target),
         "total_response_skill_bootstrap_95": total_response_ci,
         "electronic_only_response_skill_vs_gmtnet_total": response_tensor_skill(electronic_prediction, total_target),
+        "electronic_irrep_decomposition": electronic_irrep_summary,
+        "electronic_output_basis_oracle": basis_oracle_summary,
+        "same_outcar_total_substitution_grid": total_substitution_summary,
         "zero_response_skill": response_tensor_skill(torch.zeros_like(total_target), total_target),
         "ionic_response_aggregation": _ionic_metric_bundle(
             ionic_predictions, ionic_targets, FACTOR_FLOORS["ionic_piezo"]
@@ -1328,6 +1550,7 @@ def main() -> None:
                     )
                     for name, values in strict_substitution_values.items()
                 },
+                "direct_u_z_substitution_grid": strict_direct_u_substitution_summary,
                 "displacement_response_target": (
                     accumulators["displacement_response"].summary()
                     if strict_displacement_targets

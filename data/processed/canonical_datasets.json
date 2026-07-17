@@ -9,6 +9,7 @@
     "jarvis_dfpt_quarantine": "E:\\DATA\\PiezoJet\\raw\\jarvis_dfpt_v9_quarantine",
     "strict_internal_strain": "E:\\DATA\\PiezoJet\\processed\\jarvis_strain_completion_v10_zero_dimensional_fix",
     "strict_split": "data/processed/strict_completion_benchmark_train_v10_full_public.json",
+    "development_folds": "data/processed/strict_train1603_development_folds_v1.json",
     "multitask_split": "data/processed/full_corpus_multitask_train1603_v1.json",
     "elastic_auxiliary": "E:\\DATA\\PiezoJet\\processed\\jarvis_elastic_auxiliary_v2_reynolds\\accepted_targets_gpa.pt",
     "materials_project_auxiliary": "E:\\DATA\\PiezoJet\\external\\materials_project_summary_v1\\materials_project_summary.jsonl"

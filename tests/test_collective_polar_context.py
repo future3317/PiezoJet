@@ -1,5 +1,6 @@
 import pytest
 import torch
+from torch_geometric.loader import DataLoader
 
 from piezojet.data import load_gmtnet_records, record_to_graph
 from piezojet.model import PiezoJet
@@ -105,3 +106,41 @@ def test_collective_context_is_invariant_to_fractional_wrapping():
         )
     assert torch.allclose(context, wrapped_context, atol=2e-5, rtol=2e-5)
     assert torch.allclose(operator, wrapped_operator, atol=2e-5, rtol=2e-5)
+
+
+def test_vectorized_collective_context_matches_individual_graphs_and_reuses_cache():
+    """Padding/batched GEMM must not make the response batch-dependent."""
+    torch.manual_seed(29)
+    graphs = [_graph(10), _graph(17)]
+    for graph in graphs:
+        del graph.batch
+    batch = next(iter(DataLoader(graphs, batch_size=2, shuffle=False, num_workers=0)))
+    model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
+    with torch.no_grad():
+        features = model.encode(batch)
+        context, operator = model.global_context(
+            batch, batch.batch, model.local_polar_mode(features), return_operator=True
+        )
+        cached = model.global_context._geometry_cache
+        repeated_context, repeated_operator = model.global_context(
+            batch, batch.batch, model.local_polar_mode(features), return_operator=True
+        )
+        assert model.global_context._geometry_cache is cached
+        individual = []
+        for graph in graphs:
+            graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+            graph_features = model.encode(graph)
+            individual.append(
+                model.global_context(
+                    graph,
+                    graph.batch,
+                    model.local_polar_mode(graph_features),
+                    return_operator=True,
+                )
+            )
+    expected_context = torch.cat([value[0] for value in individual], dim=0)
+    expected_operator = torch.cat([value[1] for value in individual], dim=0)
+    assert torch.allclose(context, repeated_context, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(operator, repeated_operator, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(context, expected_context, atol=2e-5, rtol=2e-5)
+    assert torch.allclose(operator, expected_operator, atol=2e-5, rtol=2e-5)

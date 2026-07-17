@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 from torch import nn
 
 from .model import (
@@ -10,6 +11,8 @@ from .model import (
     PeriodicCrystalEncoder,
     PiezoTensorHead,
 )
+
+
 class DirectCartesianPiezoBaseline(nn.Module):
     """Matched direct-tensor baseline for the atom-coordinate encoder.
 
@@ -30,7 +33,11 @@ class DirectCartesianPiezoBaseline(nn.Module):
 
     def forward(self, batch) -> torch.Tensor:
         features = self.encoder(batch)
-        return self.head(features, batch.batch)
+        tensor = self.head(features, batch.batch)
+        # Match the production macro tower's final numerical invariant
+        # projection exactly.  The head is symmetric by construction, but the
+        # shared projection removes even roundoff-level protocol differences.
+        return 0.5 * (tensor + tensor.transpose(-1, -2))
 
 
 class E3nnDirectPiezoBaseline(nn.Module):

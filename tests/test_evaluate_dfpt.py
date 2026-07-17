@@ -6,6 +6,8 @@ from piezojet.evaluate_dfpt import (
     _read_material_ids,
     _oracle_operator_policy,
     clean_force_constant_target,
+    electronic_basis_oracle,
+    electronic_irrep_metrics,
     ionic_aggregate_metrics,
     ionic_piezo_from_factors,
     low_rank_displacement_oracle,
@@ -20,7 +22,13 @@ from piezojet.evaluate_dfpt import (
     spectrum_regularization_regions,
 )
 from piezojet.model import AtomCoordinateResponsePotential
-from piezojet.tensor_ops import piezo_voigt_to_cartesian
+from piezojet.tensor_ops import (
+    PIEZO_IRREP_SLICES,
+    electronic_irrep_decomposition,
+    piezo_from_irreps,
+    piezo_to_irreps,
+    piezo_voigt_to_cartesian,
+)
 
 
 def test_pair_metrics_reports_zero_baseline_skill_in_physical_units():
@@ -30,6 +38,36 @@ def test_pair_metrics_reports_zero_baseline_skill_in_physical_units():
     assert perfect["component_mae"] == 0.0
     assert perfect["mae_skill_vs_zero"] == 1.0
     assert zero["mae_skill_vs_zero"] == pytest.approx(0.0)
+
+
+def test_electronic_irrep_decomposition_is_complete_and_keeps_two_l1_copies():
+    torch.manual_seed(12)
+    coordinates = torch.randn(18, dtype=torch.float64)
+    tensor = piezo_from_irreps(coordinates)
+    blocks = electronic_irrep_decomposition(tensor)
+    assert tuple(blocks) == tuple(PIEZO_IRREP_SLICES)
+    assert [value.numel() for value in blocks.values()] == [3, 3, 5, 7]
+    assert torch.allclose(torch.cat(list(blocks.values())), coordinates, atol=1e-10)
+    metrics = electronic_irrep_metrics(tensor, tensor)
+    assert all(row["frobenius_error"] == pytest.approx(0.0) for row in metrics.values())
+
+
+def test_electronic_basis_oracle_reports_full_and_missing_l3_spans():
+    basis = piezo_from_irreps(torch.eye(18, dtype=torch.float64))
+    target_coordinates = torch.arange(1, 19, dtype=torch.float64)
+    target = piezo_from_irreps(target_coordinates)
+    full = electronic_basis_oracle(basis, target)
+    assert full["rank_in_18d_irrep_space"] == 18
+    assert full["minimum_stabilized_relative_residual"] < 1e-12
+    assert full["theoretical_maximum_cosine"] == pytest.approx(1.0)
+    missing_l3 = electronic_basis_oracle(basis[:11], target)
+    assert missing_l3["rank_in_18d_irrep_space"] == 11
+    assert missing_l3["per_irrep"]["l3"]["relative_residual"] > 0.99
+    fitted_maximum = missing_l3["theoretical_maximum_cosine"]
+    expected = torch.linalg.vector_norm(target_coordinates[:11]) / torch.linalg.vector_norm(
+        piezo_to_irreps(target)
+    )
+    assert fitted_maximum == pytest.approx(float(expected))
 
 
 def test_material_id_reader_accepts_windows_utf8_bom(tmp_path):

@@ -14,6 +14,29 @@ PIEZO_TYPE = CartesianTensor("ijk=ikj")
 if PIEZO_TYPE.dim != 18:
     raise RuntimeError(f"Expected 18 piezoelectric irreps, got {PIEZO_TYPE.dim}")
 
+# ``CartesianTensor('ijk=ikj')`` fixes the orthonormal decomposition order to
+# 2x1o + 1x2o + 1x3o.  Keep the two vector copies separate: merging them would
+# hide a representation failure in one of the two inequivalent l=1 channels.
+PIEZO_IRREP_SLICES = {
+    "l1_copy0": slice(0, 3),
+    "l1_copy1": slice(3, 6),
+    "l2": slice(6, 11),
+    "l3": slice(11, 18),
+}
+
+# A Born effective charge is a general even-parity rank-two Cartesian tensor:
+# isotropic (l=0), antisymmetric (l=1), and symmetric-traceless (l=2).  The
+# internal orientation is Z[a,i] = Omega dP_i / du_a, matching the DFPT loader
+# and AtomCoordinateResponsePotential contractions.
+BEC_TYPE = CartesianTensor("ij")
+if BEC_TYPE.dim != 9:
+    raise RuntimeError(f"Expected 9 Born-charge irreps, got {BEC_TYPE.dim}")
+BEC_IRREP_SLICES = {
+    "l0": slice(0, 1),
+    "l1": slice(1, 4),
+    "l2": slice(4, 9),
+}
+
 
 def source_voigt_to_canonical(piezo: torch.Tensor) -> torch.Tensor:
     """Convert GMTNet's documented [xx, yy, zz, xy, yz, xz] columns."""
@@ -95,6 +118,29 @@ def piezo_from_irreps(irreps: torch.Tensor) -> torch.Tensor:
     if irreps.shape[-1] != PIEZO_TYPE.dim:
         raise ValueError(f"Expected final irrep dimension {PIEZO_TYPE.dim}, got {irreps.shape[-1]}")
     return PIEZO_TYPE.to_cartesian(irreps)
+
+
+def born_to_irreps(born_charge: torch.Tensor) -> torch.Tensor:
+    if born_charge.shape[-2:] != (3, 3):
+        raise ValueError(f"Expected [...,3,3] Born tensors, got {tuple(born_charge.shape)}")
+    return BEC_TYPE.from_cartesian(born_charge)
+
+
+def born_from_irreps(irreps: torch.Tensor) -> torch.Tensor:
+    if irreps.shape[-1] != BEC_TYPE.dim:
+        raise ValueError(f"Expected final Born irrep dimension {BEC_TYPE.dim}, got {irreps.shape[-1]}")
+    return BEC_TYPE.to_cartesian(irreps)
+
+
+def electronic_irrep_decomposition(piezo: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Return the four orthogonal O(3) blocks of a piezoelectric tensor.
+
+    The input uses PiezoJet's Cartesian convention ``e_ijk=e_ikj``.  Returned
+    values are orthonormal e3nn coordinates, so Euclidean block norms and
+    least-squares residuals are gauge-independent within every irrep copy.
+    """
+    coordinates = piezo_to_irreps(piezo)
+    return {name: coordinates[..., block] for name, block in PIEZO_IRREP_SLICES.items()}
 
 
 def rotate_piezo(piezo: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:

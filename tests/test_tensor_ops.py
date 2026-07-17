@@ -1,7 +1,10 @@
 import torch
 
 from piezojet.tensor_ops import (
+    BEC_TYPE,
     PIEZO_TYPE,
+    born_from_irreps,
+    born_to_irreps,
     cartesian_to_piezo_voigt,
     piezo_from_irreps,
     piezo_to_irreps,
@@ -24,6 +27,15 @@ def test_piezo_cartesian_irrep_round_trip():
     assert PIEZO_TYPE.dim == 18
     assert torch.allclose(restored, cartesian, atol=1e-5)
     assert torch.allclose(cartesian_to_piezo_voigt(restored), source, atol=1e-5)
+
+
+def test_general_born_tensor_irrep_round_trip():
+    torch.manual_seed(3)
+    born = torch.randn(7, 3, 3)
+    assert BEC_TYPE.dim == 9
+    assert torch.allclose(
+        born_from_irreps(born_to_irreps(born)), born, atol=1e-6, rtol=1e-6
+    )
 
 
 def test_engineering_shear_matches_single_symmetric_component_derivative():

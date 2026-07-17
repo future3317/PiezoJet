@@ -14,8 +14,11 @@ from torch.nn import functional as F
 from torch_geometric.utils import scatter, to_dense_batch
 
 from .tensor_ops import (
+    BEC_IRREP_SLICES,
+    BEC_TYPE,
     PIEZO_TYPE,
-    cartesian_to_piezo_voigt,
+    PIEZO_IRREP_SLICES,
+    born_from_irreps,
     piezo_from_irreps,
     piezo_voigt_to_cartesian,
     voigt_to_symmetric_matrix,
@@ -242,7 +245,7 @@ class CartesianPiezoTensorHead(nn.Module):
         )
         self.register_buffer("identity", torch.eye(3), persistent=False)
 
-    def forward(self, features: CartesianNodeFeatures, batch_index: torch.Tensor) -> torch.Tensor:
+    def _node_bases(self, features: CartesianNodeFeatures) -> torch.Tensor:
         vector, quadrupole = features.vector, features.quadrupole
         identity = self.identity.to(dtype=vector.dtype)
         vector_identity = torch.einsum("nci,jk->ncijk", vector, identity)
@@ -253,7 +256,37 @@ class CartesianPiezoTensorHead(nn.Module):
         quadrupole_vector = 0.5 * (
             torch.einsum("ncij,nck->ncijk", quadrupole, vector) + torch.einsum("ncik,ncj->ncijk", quadrupole, vector)
         )
-        bases = torch.stack((vector_identity, identity_vector, vector_quadrupole, quadrupole_vector), dim=2)
+        return torch.stack(
+            (vector_identity, identity_vector, vector_quadrupole, quadrupole_vector),
+            dim=2,
+        )
+
+    def output_basis(
+        self,
+        features: CartesianNodeFeatures,
+        batch_index: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """Unrestricted geometric readout span for each material.
+
+        This is an oracle upper bound: every atom/channel/family coefficient is
+        allowed to vary independently.  It therefore diagnoses whether the
+        actual Cartesian tensor bases can represent a target at all, without
+        conflating that question with the coefficient MLP or optimizer.
+        """
+        bases = self._node_bases(features)
+        graphs = int(batch_index.max()) + 1
+        result: list[torch.Tensor] = []
+        for graph_index in range(graphs):
+            mask = batch_index == graph_index
+            count = int(mask.sum())
+            if count == 0:
+                raise ValueError("Piezo output basis received an empty graph")
+            result.append(bases[mask].reshape(-1, 3, 3, 3) / float(count))
+        return result
+
+    def forward(self, features: CartesianNodeFeatures, batch_index: torch.Tensor) -> torch.Tensor:
+        bases = self._node_bases(features)
+        vector = features.vector
         coefficients = self.coefficients(features.scalar).reshape(features.scalar.shape[0], vector.shape[1], 4)
         node_tensor = (coefficients[..., None, None, None] * bases).sum(dim=(1, 2))
         return scatter(node_tensor, batch_index, dim=0, dim_size=int(batch_index.max()) + 1, reduce="mean")
@@ -867,6 +900,24 @@ class AtomCoordinateFactors(NamedTuple):
     strain_curvature: torch.Tensor
 
 
+class _CrystalGeometryCache(NamedTuple):
+    """Non-learned reciprocal/edge geometry reused for a fixed PyG batch."""
+
+    signature: tuple[object, ...]
+    counts: torch.Tensor
+    lattice: torch.Tensor
+    cosine: torch.Tensor
+    sine: torch.Tensor
+    radial: torch.Tensor
+    directions: torch.Tensor
+    reciprocal_mask: torch.Tensor
+    edge_source: torch.Tensor
+    edge_target: torch.Tensor
+    edge_graph: torch.Tensor
+    local_kernel: torch.Tensor
+    local_kernel_sum: torch.Tensor
+
+
 class CrystalGlobalContext(nn.Module):
     """Invariant context plus a cell-basis-invariant tensorial response operator.
 
@@ -877,6 +928,8 @@ class CrystalGlobalContext(nn.Module):
     origin-invariant polar cross-spectrum ``Re[P_h S_h^*]`` and contracts it
     with ``g_hat ⊗ g_hat`` to yield a polar rank-three response operator.
     """
+
+    _geometry_cache: _CrystalGeometryCache | None
 
     def __init__(
         self,
@@ -911,6 +964,12 @@ class CrystalGlobalContext(nn.Module):
             nn.Linear(input_dim, context_dim), nn.SiLU(), nn.LayerNorm(context_dim),
             nn.Linear(context_dim, context_dim), nn.SiLU(), nn.LayerNorm(context_dim),
         )
+        # This is deliberately a one-batch, non-persistent cache.  It contains
+        # only fixed geometry (no learned embeddings and no autograd graph), so
+        # repeated optimization steps on the same PyG batch avoid rebuilding
+        # reciprocal shells, phases, and edge kernels.  The tensor signatures
+        # below invalidate it after device moves or in-place geometry edits.
+        self._geometry_cache = None
 
     @staticmethod
     def _as_cells(cell: torch.Tensor | None, graphs: int) -> torch.Tensor | None:
@@ -943,6 +1002,115 @@ class CrystalGlobalContext(nn.Module):
         integer_indices, scaled_reciprocal, scaled_norm = integer_indices[keep], scaled_reciprocal[keep], scaled_norm[keep]
         return integer_indices, scaled_reciprocal / scaled_norm[:, None], scaled_norm
 
+    @staticmethod
+    def _tensor_signature(value: torch.Tensor | None) -> tuple[object, ...]:
+        if value is None:
+            return (None,)
+        return (
+            value.data_ptr(),
+            tuple(value.shape),
+            str(value.device),
+            value.dtype,
+            value._version,
+        )
+
+    def _geometry_signature(self, batch, batch_index: torch.Tensor) -> tuple[object, ...]:
+        return (
+            id(batch),
+            self.reciprocal_cutoff,
+            self.spectral_shells,
+            self.polar_fluctuation_shells,
+            self._tensor_signature(batch_index),
+            self._tensor_signature(batch.pos),
+            self._tensor_signature(getattr(batch, "cell", None)),
+            self._tensor_signature(getattr(batch, "frac", None)),
+            self._tensor_signature(batch.edge_index),
+            self._tensor_signature(batch.edge_shift),
+        )
+
+    def _fixed_geometry(self, batch, batch_index: torch.Tensor) -> _CrystalGeometryCache:
+        """Build padded reciprocal geometry once, then reuse it exactly."""
+        signature = self._geometry_signature(batch, batch_index)
+        differentiable_geometry = any(
+            isinstance(value, torch.Tensor) and value.requires_grad
+            for value in (
+                batch.pos,
+                getattr(batch, "cell", None),
+                getattr(batch, "frac", None),
+                batch.edge_shift,
+            )
+        )
+        if (
+            not differentiable_geometry
+            and self._geometry_cache is not None
+            and self._geometry_cache.signature == signature
+        ):
+            return self._geometry_cache
+
+        graphs = int(batch_index.max()) + 1
+        dtype, device = batch.pos.dtype, batch.pos.device
+        counts = torch.bincount(batch_index, minlength=graphs).to(dtype)
+        cell = self._as_cells(getattr(batch, "cell", None), graphs)
+        frac = getattr(batch, "frac", None)
+        lattice = torch.zeros(graphs, 2, dtype=dtype, device=device)
+        shells: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        max_shell = 0
+        if cell is not None:
+            volume = torch.linalg.det(cell).abs().clamp_min(torch.finfo(dtype).eps)
+            lattice = torch.stack((volume.log(), (counts / volume).log()), dim=-1)
+            if frac is not None:
+                for graph_index in range(graphs):
+                    shell = self._physical_shell(cell[graph_index])
+                    shells.append(shell)
+                    max_shell = max(max_shell, int(shell[0].shape[0]))
+
+        max_nodes = int(torch.bincount(batch_index, minlength=graphs).max())
+        cosine = torch.zeros(graphs, max_nodes, max_shell, dtype=dtype, device=device)
+        sine = torch.zeros_like(cosine)
+        radial = torch.zeros(
+            graphs, max_shell, self.spectral_shells, dtype=dtype, device=device
+        )
+        directions = torch.zeros(graphs, max_shell, 3, dtype=dtype, device=device)
+        reciprocal_mask = torch.zeros(graphs, max_shell, dtype=torch.bool, device=device)
+        if shells:
+            for graph_index, (indices, shell_directions, scaled_norm) in enumerate(shells):
+                shell_size = int(indices.shape[0])
+                if shell_size == 0:
+                    continue
+                node_mask = batch_index == graph_index
+                node_count = int(node_mask.sum())
+                phase = 2.0 * torch.pi * (frac[node_mask] @ indices.transpose(0, 1))
+                cosine[graph_index, :node_count, :shell_size] = torch.cos(phase)
+                sine[graph_index, :node_count, :shell_size] = torch.sin(phase)
+                radial[graph_index, :shell_size] = torch.exp(
+                    -((scaled_norm.unsqueeze(-1) - self.spectral_centers.to(dtype)) / 0.75).square()
+                )
+                directions[graph_index, :shell_size] = shell_directions
+                reciprocal_mask[graph_index, :shell_size] = True
+
+        edge_source, edge_target = batch.edge_index
+        edge_graph = batch_index[edge_target]
+        edge_vectors = batch.pos[edge_source] - batch.pos[edge_target] + batch.edge_shift
+        edge_distance = torch.linalg.vector_norm(edge_vectors, dim=-1)
+        local_kernel = torch.exp(
+            -((edge_distance.unsqueeze(-1) - self.fluctuation_centers.to(dtype)) / 0.6).square()
+        )
+        local_kernel_sum = scatter(
+            local_kernel, edge_graph, dim=0, dim_size=graphs, reduce="sum"
+        )
+        geometry = _CrystalGeometryCache(
+            signature, counts, lattice, cosine, sine, radial, directions,
+            reciprocal_mask, edge_source, edge_target, edge_graph,
+            local_kernel, local_kernel_sum,
+        )
+        # Holding a response Jacobian graph on the module would retain the
+        # previous optimizer step and double peak memory on the next call.
+        # Fixed reference batches keep the fast cache; differentiable
+        # perturbed geometry is deliberately ephemeral.
+        if not differentiable_geometry:
+            self._geometry_cache = geometry
+        return geometry
+
     def forward(
         self,
         batch,
@@ -953,72 +1121,475 @@ class CrystalGlobalContext(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         graphs = int(batch_index.max()) + 1
         dtype, device = batch.pos.dtype, batch.pos.device
-        counts = scatter(torch.ones_like(batch_index, dtype=dtype), batch_index, dim=0, dim_size=graphs, reduce="sum")
+        geometry = self._fixed_geometry(batch, batch_index)
+        counts = geometry.counts
         composition = scatter(F.one_hot(batch.z, num_classes=119).to(dtype), batch_index, dim=0, dim_size=graphs, reduce="sum")
         composition = composition / counts.unsqueeze(-1).clamp_min(1.0)
-        cell = self._as_cells(getattr(batch, "cell", None), graphs)
         chemical_spectrum = torch.zeros(graphs, self.spectral_shells * self.spectral_channels, dtype=dtype, device=device)
         polar_spectrum = torch.zeros(graphs, self.spectral_shells, dtype=dtype, device=device)
         fluctuation_spectrum = torch.zeros(graphs, self.polar_fluctuation_shells, dtype=dtype, device=device)
         tensorial_operator = torch.zeros(graphs, 3, 3, 3, dtype=dtype, device=device)
-        lattice = torch.zeros(graphs, 2, dtype=dtype, device=device)
-        frac = getattr(batch, "frac", None)
-        if cell is not None:
-            volume = torch.linalg.det(cell).abs().clamp_min(torch.finfo(dtype).eps)
-            lattice = torch.stack((volume.log(), (counts / volume).log()), dim=-1)
-            if frac is not None:
-                species = self.species_features(batch.z).to(dtype)
-                references = self.phase_reference(batch.z).squeeze(-1).to(dtype)
-                for graph_index in range(graphs):
-                    node_mask = batch_index == graph_index
-                    indices, directions, scaled_norm = self._physical_shell(cell[graph_index])
-                    # Very short conventional cells can have no nonzero
-                    # reciprocal vector below a finite physical cutoff.  The
-                    # corresponding shell contribution is exactly zero, not
-                    # an undefined empty reduction.
-                    if indices.numel() == 0:
-                        continue
-                    radial = torch.exp(-((scaled_norm.unsqueeze(-1) - self.spectral_centers.to(dtype)) / 0.75).square())
-                    phase = 2.0 * torch.pi * (frac[node_mask] @ indices.transpose(0, 1))
-                    cosine, sine = torch.cos(phase), torch.sin(phase)
-                    normalizer = counts[graph_index].square().clamp_min(1.0)
-                    chemical_real = torch.einsum("nh,nc->hc", cosine, species[node_mask])
-                    chemical_imag = torch.einsum("nh,nc->hc", sine, species[node_mask])
-                    chemical_power = (chemical_real.square() + chemical_imag.square()) / normalizer
-                    chemical_spectrum[graph_index] = (radial.transpose(0, 1) @ chemical_power / radial.sum(dim=0).clamp_min(1e-8)[:, None]).reshape(-1)
-                    if polar_vectors is not None:
-                        polar_real = torch.einsum("nh,ni->hi", cosine, polar_vectors[node_mask]) / counts[graph_index].clamp_min(1.0)
-                        polar_imag = torch.einsum("nh,ni->hi", sine, polar_vectors[node_mask]) / counts[graph_index].clamp_min(1.0)
-                        polar_power = polar_real.square().sum(dim=-1) + polar_imag.square().sum(dim=-1)
-                        polar_spectrum[graph_index] = radial.transpose(0, 1) @ polar_power / radial.sum(dim=0).clamp_min(1e-8)
-                        reference_real = torch.einsum("nh,n->h", cosine, references[node_mask]) / counts[graph_index].clamp_min(1.0)
-                        reference_imag = torch.einsum("nh,n->h", sine, references[node_mask]) / counts[graph_index].clamp_min(1.0)
-                        # Re[P_h S_h^*] retains the polar direction while the
-                        # shared phase removes origin dependence.
-                        cross_polar = polar_real * reference_real[:, None] + polar_imag * reference_imag[:, None]
-                        shell_weight = self.operator_kernel(radial).squeeze(-1)
-                        tensorial_operator[graph_index] = torch.einsum(
-                            "h,hi,hj,hk->ijk", shell_weight, cross_polar, directions, directions
-                        ) / float(indices.shape[0])
-                        uniform = polar_vectors[node_mask].mean(dim=0)
-                        uniform_shape = torch.einsum("i,j,k->ijk", uniform, uniform, uniform)
-                        tensorial_operator[graph_index] = tensorial_operator[graph_index] + self.uniform_operator_weight * uniform_shape / uniform.square().sum().clamp_min(1e-8)
-                if polar_vectors is not None:
-                    # The reciprocal operator is complemented by a local
-                    # fluctuation statistic: coherent and cancelling motifs
-                    # are not conflated merely because their net mode is zero.
-                    centered = polar_vectors - scatter(polar_vectors, batch_index, dim=0, dim_size=graphs, reduce="mean")[batch_index]
-                    source, target = batch.edge_index
-                    edge_vectors = batch.pos[source] - batch.pos[target] + batch.edge_shift
-                    edge_distance = torch.linalg.vector_norm(edge_vectors, dim=-1)
-                    local_kernel = torch.exp(-((edge_distance.unsqueeze(-1) - self.fluctuation_centers.to(dtype)) / 0.6).square())
-                    edge_graph = batch_index[target]
-                    correlation = (centered[source] * centered[target]).sum(dim=-1, keepdim=True)
-                    numerator = scatter(correlation * local_kernel, edge_graph, dim=0, dim_size=graphs, reduce="sum")
-                    denominator = scatter(local_kernel, edge_graph, dim=0, dim_size=graphs, reduce="sum")
-                    fluctuation_spectrum = numerator / denominator.clamp_min(1e-8)
-        context = self.network(torch.cat((composition, lattice, chemical_spectrum, polar_spectrum, fluctuation_spectrum), dim=-1))
+        if geometry.radial.shape[1] > 0:
+            species = self.species_features(batch.z).to(dtype)
+            species_dense, _ = to_dense_batch(species, batch_index, batch_size=graphs)
+            cosine_t = geometry.cosine.transpose(1, 2)
+            sine_t = geometry.sine.transpose(1, 2)
+            chemical_real = torch.bmm(cosine_t, species_dense)
+            chemical_imag = torch.bmm(sine_t, species_dense)
+            chemical_power = (chemical_real.square() + chemical_imag.square()) / counts.square().clamp_min(1.0)[:, None, None]
+            radial_sum = geometry.radial.sum(dim=1).clamp_min(1e-8)
+            chemical_spectrum = (
+                torch.einsum("ghs,ghc->gsc", geometry.radial, chemical_power)
+                / radial_sum.unsqueeze(-1)
+            ).reshape(graphs, -1)
+            if polar_vectors is not None:
+                polar_dense, _ = to_dense_batch(polar_vectors, batch_index, batch_size=graphs)
+                inverse_counts = counts.clamp_min(1.0).reciprocal()[:, None, None]
+                polar_real = torch.bmm(cosine_t, polar_dense) * inverse_counts
+                polar_imag = torch.bmm(sine_t, polar_dense) * inverse_counts
+                polar_power = polar_real.square().sum(dim=-1) + polar_imag.square().sum(dim=-1)
+                polar_spectrum = (
+                    torch.einsum("ghs,gh->gs", geometry.radial, polar_power)
+                    / radial_sum
+                )
+                references = self.phase_reference(batch.z).to(dtype)
+                reference_dense, _ = to_dense_batch(references, batch_index, batch_size=graphs)
+                reference_real = torch.bmm(cosine_t, reference_dense).squeeze(-1) * inverse_counts.squeeze(-1)
+                reference_imag = torch.bmm(sine_t, reference_dense).squeeze(-1) * inverse_counts.squeeze(-1)
+                cross_polar = polar_real * reference_real.unsqueeze(-1) + polar_imag * reference_imag.unsqueeze(-1)
+                shell_weight = self.operator_kernel(geometry.radial).squeeze(-1)
+                tensorial_operator = torch.einsum(
+                    "gh,ghi,ghj,ghk->gijk",
+                    shell_weight, cross_polar, geometry.directions, geometry.directions,
+                ) / geometry.reciprocal_mask.sum(dim=1).clamp_min(1)[:, None, None, None]
+                uniform = scatter(polar_vectors, batch_index, dim=0, dim_size=graphs, reduce="mean")
+                uniform_shape = torch.einsum("gi,gj,gk->gijk", uniform, uniform, uniform)
+                tensorial_operator = tensorial_operator + (
+                    self.uniform_operator_weight * uniform_shape
+                    / uniform.square().sum(dim=-1).clamp_min(1e-8)[:, None, None, None]
+                )
+        if polar_vectors is not None and geometry.local_kernel.numel() > 0:
+            centered = polar_vectors - scatter(
+                polar_vectors, batch_index, dim=0, dim_size=graphs, reduce="mean"
+            )[batch_index]
+            correlation = (
+                centered[geometry.edge_source] * centered[geometry.edge_target]
+            ).sum(dim=-1, keepdim=True)
+            numerator = scatter(
+                correlation * geometry.local_kernel, geometry.edge_graph,
+                dim=0, dim_size=graphs, reduce="sum",
+            )
+            fluctuation_spectrum = numerator / geometry.local_kernel_sum.clamp_min(1e-8)
+        context = self.network(torch.cat((composition, geometry.lattice, chemical_spectrum, polar_spectrum, fluctuation_spectrum), dim=-1))
         return (context, tensorial_operator) if return_operator else context
+
+
+class DifferentialPolarizationPrediction(NamedTuple):
+    """The two Jacobians of one reference-state polarization increment."""
+
+    born_charges: torch.Tensor
+    electronic_piezo: torch.Tensor
+
+
+class _PerturbedCrystalBatch(NamedTuple):
+    """Minimal immutable graph view for differential polarization."""
+
+    z: torch.Tensor
+    pos: torch.Tensor
+    frac: torch.Tensor
+    cell: torch.Tensor
+    edge_index: torch.Tensor
+    edge_shift: torch.Tensor
+    batch: torch.Tensor
+    num_nodes: int
+
+
+class EquivariantGlobalAttention(nn.Module):
+    """Invariant attention weights acting on complete equivariant node values."""
+
+    def __init__(self, irreps: o3.Irreps, attention_dim: int = 64):
+        super().__init__()
+        if attention_dim <= 0:
+            raise ValueError("attention_dim must be positive")
+        scalar_irreps = o3.Irreps(f"{attention_dim}x0e")
+        self.query = o3.Linear(irreps, scalar_irreps)
+        self.key = o3.Linear(irreps, scalar_irreps)
+        self.value = o3.Linear(irreps, irreps)
+        self.scale = attention_dim**-0.5
+        self.residual_gate = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, node_features: torch.Tensor, batch_index: torch.Tensor) -> torch.Tensor:
+        graphs = int(batch_index.max()) + 1
+        queries, mask = to_dense_batch(
+            self.query(node_features), batch_index, batch_size=graphs
+        )
+        keys, key_mask = to_dense_batch(
+            self.key(node_features), batch_index, batch_size=graphs
+        )
+        values, value_mask = to_dense_batch(
+            self.value(node_features), batch_index, batch_size=graphs
+        )
+        if not torch.equal(mask, key_mask) or not torch.equal(mask, value_mask):
+            raise RuntimeError("Differential-polarization attention batching mismatch")
+        scores = torch.bmm(queries, keys.transpose(1, 2)) * self.scale
+        scores = scores.masked_fill(~mask[:, None, :], -torch.inf)
+        attention = torch.softmax(scores, dim=-1)
+        attended = torch.bmm(attention, values)[mask]
+        return node_features + torch.tanh(self.residual_gate) * attended
+
+
+class DifferentialPolarizationTower(nn.Module):
+    r"""Unified first-order polarization generator around a reference crystal.
+
+    The model never predicts an absolute Berry-phase polarization.  Instead it
+    represents the local response jet
+
+    ``Delta P = c_e/Omega sum_k Z_k^T u_k + e_el : eta``.
+
+    Consequently the BEC and electronic piezo tensors are, by construction,
+    the displacement and strain Jacobians of one vector-valued map.  A PBC
+    steerable encoder supplies explicit l=1,2,3 channels; invariant global
+    attention and reciprocal polar--chemical context act without selecting a
+    crystal frame.  This is one declared candidate, not a conditional fallback.
+    """
+
+    PIEZO_C_PER_M2 = 16.02176634
+
+    def __init__(
+        self,
+        embedding_dim: int = 32,
+        cutoff: float = 5.0,
+        lmax: int = 3,
+        num_blocks: int = 3,
+        radial_basis: int = 12,
+        radial_hidden: int = 64,
+        global_context_dim: int = 128,
+        spectral_channels: int = 16,
+        spectral_shells: int = 8,
+        polar_fluctuation_shells: int = 8,
+        reciprocal_cutoff: float = 7.0,
+        attention_dim: int = 64,
+    ):
+        super().__init__()
+        if lmax < 3:
+            raise ValueError("DifferentialPolarizationTower requires explicit lmax >= 3")
+        self.encoder = PeriodicCrystalEncoder(
+            embedding_dim=embedding_dim,
+            cutoff=cutoff,
+            lmax=lmax,
+            num_blocks=num_blocks,
+            radial_basis=radial_basis,
+            radial_hidden=radial_hidden,
+        )
+        irreps = self.encoder.hidden_irreps
+        self.global_attention = EquivariantGlobalAttention(irreps, attention_dim)
+        self.local_polar = o3.Linear(irreps, o3.Irreps("1x1o"))
+        self.global_context = CrystalGlobalContext(
+            global_context_dim,
+            spectral_channels,
+            spectral_shells,
+            polar_fluctuation_shells,
+            reciprocal_cutoff,
+        )
+        self.electronic_irreps = o3.Linear(irreps, PIEZO_TYPE)
+        self.born_irreps = o3.Linear(irreps, BEC_TYPE)
+        self.electronic_context_gates = nn.Sequential(
+            nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
+            nn.Linear(global_context_dim, len(PIEZO_IRREP_SLICES)),
+        )
+        self.born_context_gates = nn.Sequential(
+            nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
+            nn.Linear(global_context_dim, len(BEC_IRREP_SLICES)),
+        )
+
+    @staticmethod
+    def _gated_blocks(
+        coordinates: torch.Tensor,
+        gates: torch.Tensor,
+        blocks: Mapping[str, slice],
+    ) -> torch.Tensor:
+        if gates.shape[-1] != len(blocks):
+            raise ValueError("Context gate count does not match irrep blocks")
+        return torch.cat(
+            [
+                coordinates[..., block] * (1.0 + torch.tanh(gates[..., index : index + 1]))
+                for index, block in enumerate(blocks.values())
+            ],
+            dim=-1,
+        )
+
+    def coefficients(self, batch) -> DifferentialPolarizationPrediction:
+        node_features = self.encoder(batch)
+        node_features = self.global_attention(node_features, batch.batch)
+        local_polar = self.local_polar(node_features)
+        context = self.global_context(batch, batch.batch, local_polar)
+        graphs = context.shape[0]
+        graph_features = scatter(
+            node_features, batch.batch, dim=0, dim_size=graphs, reduce="mean"
+        )
+        electronic_coordinates = self._gated_blocks(
+            self.electronic_irreps(graph_features),
+            self.electronic_context_gates(context),
+            PIEZO_IRREP_SLICES,
+        )
+        born_coordinates = self._gated_blocks(
+            self.born_irreps(node_features),
+            self.born_context_gates(context)[batch.batch],
+            BEC_IRREP_SLICES,
+        )
+        born = born_from_irreps(born_coordinates)
+        # Acoustic charge neutrality is an exact response-Jacobian invariant.
+        born = born - scatter(
+            born, batch.batch, dim=0, dim_size=graphs, reduce="mean"
+        )[batch.batch]
+        electronic = piezo_from_irreps(electronic_coordinates)
+        electronic = 0.5 * (electronic + electronic.transpose(-1, -2))
+        return DifferentialPolarizationPrediction(born, electronic)
+
+    @classmethod
+    def polarization_increment_from_coefficients(
+        cls,
+        prediction: DifferentialPolarizationPrediction,
+        displacement: torch.Tensor,
+        strain: torch.Tensor,
+        batch,
+    ) -> torch.Tensor:
+        if displacement.shape != (batch.num_nodes, 3):
+            raise ValueError("Displacement probe must have shape [num_nodes,3]")
+        graphs = prediction.electronic_piezo.shape[0]
+        if strain.shape != (graphs, 3, 3):
+            raise ValueError("Strain probe must have shape [graphs,3,3]")
+        if not torch.allclose(strain, strain.transpose(-1, -2), atol=1e-7, rtol=1e-7):
+            raise ValueError("Differential-polarization strain probe must be symmetric")
+        cells = batch.cell.reshape(graphs, 3, 3)
+        volume = torch.linalg.det(cells).abs().clamp_min(
+            torch.finfo(cells.dtype).eps
+        )
+        ionic = scatter(
+            torch.einsum("nai,na->ni", prediction.born_charges, displacement),
+            batch.batch,
+            dim=0,
+            dim_size=graphs,
+            reduce="sum",
+        )
+        ionic = cls.PIEZO_C_PER_M2 * ionic / volume[:, None]
+        electronic = torch.einsum(
+            "gijk,gjk->gi", prediction.electronic_piezo, strain
+        )
+        return ionic + electronic
+
+    def forward(
+        self,
+        batch,
+        displacement: torch.Tensor,
+        strain: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.polarization_increment_from_coefficients(
+            self.coefficients(batch), displacement, strain, batch
+        )
+
+
+class PolarizationStateNetwork(nn.Module):
+    r"""Equivariant polarization state used only through relative changes.
+
+    No absolute or Berry-branch polarization label is assigned to this output.
+    Explicit ``l<=3`` node features, invariant global attention, and reciprocal
+    scalar context provide the nonlinear geometry dependence whose response
+    Jacobian is supervised.
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int = 32,
+        cutoff: float = 5.0,
+        lmax: int = 3,
+        num_blocks: int = 3,
+        radial_basis: int = 12,
+        radial_hidden: int = 64,
+        global_context_dim: int = 128,
+        spectral_channels: int = 16,
+        spectral_shells: int = 8,
+        polar_fluctuation_shells: int = 8,
+        reciprocal_cutoff: float = 7.0,
+        attention_dim: int = 64,
+    ):
+        super().__init__()
+        if lmax < 3:
+            raise ValueError("PolarizationStateNetwork requires explicit lmax >= 3")
+        self.encoder = PeriodicCrystalEncoder(
+            embedding_dim=embedding_dim,
+            cutoff=cutoff,
+            lmax=lmax,
+            num_blocks=num_blocks,
+            radial_basis=radial_basis,
+            radial_hidden=radial_hidden,
+        )
+        irreps = self.encoder.hidden_irreps
+        self.global_attention = EquivariantGlobalAttention(irreps, attention_dim)
+        self.local_polar = o3.Linear(irreps, o3.Irreps("1x1o"))
+        self.global_context = CrystalGlobalContext(
+            global_context_dim,
+            spectral_channels,
+            spectral_shells,
+            polar_fluctuation_shells,
+            reciprocal_cutoff,
+        )
+        self.polarization_head = o3.Linear(irreps, o3.Irreps("1x1o"))
+        self.context_gate = nn.Sequential(
+            nn.Linear(global_context_dim, global_context_dim),
+            nn.SiLU(),
+            nn.Linear(global_context_dim, 1),
+        )
+
+    def forward(self, batch) -> torch.Tensor:
+        node_features = self.encoder(batch)
+        node_features = self.global_attention(node_features, batch.batch)
+        local_polar = self.local_polar(node_features)
+        context = self.global_context(batch, batch.batch, local_polar)
+        graphs = context.shape[0]
+        graph_features = scatter(
+            node_features, batch.batch, dim=0, dim_size=graphs, reduce="mean"
+        )
+        vector = self.polarization_head(graph_features)
+        return vector * (1.0 + torch.tanh(self.context_gate(context)))
+
+
+class AutodiffDifferentialPolarizationTower(nn.Module):
+    r"""Literal nonlinear differential-polarization response generator.
+
+    ``Delta P_theta(x;u,eta) = P_theta(T_eta(x+u_o)) - P_theta(x)`` is
+    evaluated on perturbed geometry, and both Born charges and electronic
+    piezo coefficients are differentiated from that same map at zero.  This is
+    deliberately separate from the retained shared linear-coefficient control.
+    """
+
+    PIEZO_C_PER_M2 = DifferentialPolarizationTower.PIEZO_C_PER_M2
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.state = PolarizationStateNetwork(**kwargs)
+
+    @staticmethod
+    def _cells(batch, graphs: int) -> torch.Tensor:
+        cells = batch.cell
+        if cells.ndim == 2:
+            cells = cells.unsqueeze(0)
+        if cells.shape != (graphs, 3, 3):
+            raise ValueError(
+                f"Expected cells [{graphs},3,3], got {tuple(cells.shape)}"
+            )
+        return cells
+
+    @classmethod
+    def _perturbed_batch(
+        cls,
+        batch,
+        displacement: torch.Tensor,
+        eta6: torch.Tensor,
+    ) -> _PerturbedCrystalBatch:
+        if displacement.shape != (batch.num_nodes, 3):
+            raise ValueError("Displacement must have shape [num_nodes,3]")
+        graphs = int(batch.batch.max()) + 1
+        if eta6.shape != (graphs, 6):
+            raise ValueError(f"Engineering strain must have shape [{graphs},6]")
+        cells = cls._cells(batch, graphs)
+        centered = displacement - scatter(
+            displacement, batch.batch, dim=0, dim_size=graphs, reduce="mean"
+        )[batch.batch]
+        strain = voigt_to_symmetric_matrix(eta6)
+        identity = torch.eye(3, dtype=batch.pos.dtype, device=batch.pos.device)
+        deformation = identity.unsqueeze(0) + strain
+        displaced = batch.pos + centered
+        pos = torch.einsum("nj,nij->ni", displaced, deformation[batch.batch])
+        cell = torch.einsum("gaj,gij->gai", cells, deformation)
+        edge_graph = batch.batch[batch.edge_index[1]]
+        edge_shift = torch.einsum(
+            "ej,eij->ei", batch.edge_shift, deformation[edge_graph]
+        )
+        # Use the undeformed reference lattice for internal fractional
+        # coordinates; a homogeneous strain then cancels exactly here.
+        inverse_reference = torch.linalg.inv(cells)
+        frac = torch.einsum(
+            "nj,njk->nk", displaced, inverse_reference[batch.batch]
+        )
+        return _PerturbedCrystalBatch(
+            batch.z, pos, frac, cell, batch.edge_index, edge_shift,
+            batch.batch, int(batch.num_nodes),
+        )
+
+    def polarization_increment(
+        self,
+        batch,
+        displacement: torch.Tensor,
+        eta6: torch.Tensor,
+    ) -> torch.Tensor:
+        graphs = int(batch.batch.max()) + 1
+        zeros_u = torch.zeros_like(batch.pos)
+        zeros_eta = torch.zeros(
+            graphs, 6, dtype=batch.pos.dtype, device=batch.pos.device
+        )
+        # Both arguments use the same canonical proxy, making Delta P(0,0)
+        # bitwise zero without giving P_theta(x) an absolute physical branch.
+        reference = self._perturbed_batch(batch, zeros_u, zeros_eta)
+        perturbed = self._perturbed_batch(batch, displacement, eta6)
+        return self.state(perturbed) - self.state(reference)
+
+    def coefficients(
+        self,
+        batch,
+        *,
+        create_graph: bool | None = None,
+    ) -> DifferentialPolarizationPrediction:
+        """Use three reverse-mode calls instead of a dense input Jacobian."""
+        create_graph = self.training if create_graph is None else bool(create_graph)
+        graphs = int(batch.batch.max()) + 1
+        # no_grad can be locally overridden; inference_mode must not wrap this
+        # response-Jacobian path.
+        with torch.enable_grad():
+            displacement = torch.zeros_like(batch.pos, requires_grad=True)
+            eta6 = torch.zeros(
+                graphs, 6, dtype=batch.pos.dtype, device=batch.pos.device,
+                requires_grad=True,
+            )
+            perturbed = self._perturbed_batch(batch, displacement, eta6)
+            # d[P(T(x)) - P(x)]/d(u,eta) = dP(T(x))/d(u,eta): the reference
+            # state is constant with respect to both perturbations.  Eliding
+            # that second network evaluation is an exact derivative identity,
+            # and halves the second-order training graph without changing the
+            # literal public increment above.
+            increment = self.state(perturbed)
+            displacement_rows: list[torch.Tensor] = []
+            strain_rows: list[torch.Tensor] = []
+            for component in range(3):
+                grad_u, grad_eta = torch.autograd.grad(
+                    increment[:, component].sum(),
+                    (displacement, eta6),
+                    create_graph=create_graph,
+                    retain_graph=True,
+                )
+                displacement_rows.append(grad_u)
+                strain_rows.append(grad_eta)
+            displacement_jacobian = torch.stack(displacement_rows, dim=-1)
+            electronic_voigt = torch.stack(strain_rows, dim=1)
+            cells = self._cells(batch, graphs)
+            volume = torch.linalg.det(cells).abs().clamp_min(
+                torch.finfo(cells.dtype).eps
+            )
+            born = (
+                displacement_jacobian
+                * volume[batch.batch, None, None]
+                / self.PIEZO_C_PER_M2
+            )
+            electronic = piezo_voigt_to_cartesian(electronic_voigt)
+        return DifferentialPolarizationPrediction(born, electronic)
+
+    def forward(
+        self,
+        batch,
+        displacement: torch.Tensor,
+        eta6: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.polarization_increment(batch, displacement, eta6)
 
 
 class ResponsePotential(nn.Module):
@@ -1515,6 +2086,21 @@ class PiezoJet(nn.Module):
     def predict_factors(self, batch) -> AtomCoordinateFactors:
         """Predict DFPT factors without evaluating their stiff inverse product."""
         return self._factor_features(batch)[2]
+
+    def electronic_output_basis(self, batch) -> list[torch.Tensor]:
+        """Return the current electronic geometric readout span per graph.
+
+        The Cartesian head bases and the reciprocal polar--chemical rank-three
+        operator are included.  Their coefficients are unrestricted, making
+        this a read-only model-class upper bound rather than a prediction or a
+        trainable fallback.
+        """
+        features, _, _, _, spectral_operator = self._factor_features(batch)
+        local_bases = self.electronic_head.output_basis(features, batch.batch)
+        return [
+            torch.cat((basis, spectral_operator[index : index + 1]), dim=0)
+            for index, basis in enumerate(local_bases)
+        ]
 
     def predict_macro_responses(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict total-only responses on a tower isolated from physical factors."""
