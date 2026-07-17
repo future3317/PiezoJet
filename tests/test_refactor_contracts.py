@@ -1,13 +1,17 @@
 """Regression tests for public contracts introduced by maintenance refactors."""
 
 import inspect
+from pathlib import Path
 
 import torch
 
-from piezojet.model import CartesianLocalEnvironmentEncoder, model_from_config
-from piezojet.projectors import translation_projector
-from piezojet.model import AtomCoordinateResponsePotential
 from piezojet import train
+from piezojet.model import (
+    AtomCoordinateResponsePotential,
+    CartesianLocalEnvironmentEncoder,
+    model_from_config,
+)
+from piezojet.projectors import translation_projector
 from piezojet.train import first_order_spectral_residual_diagnostics
 
 
@@ -79,3 +83,21 @@ def test_main_trainer_exposes_no_historical_memorization_or_weight_bundle_flags(
         "--operator-learning-capacity",
     ):
         assert obsolete_flag not in source
+
+
+def test_main_trainer_excludes_rejected_operator_auxiliary_surface() -> None:
+    """Removed capacity-only operator losses cannot silently return to production."""
+    source = (Path(__file__).parents[1] / "src" / "piezojet" / "train.py").read_text(
+        encoding="utf-8"
+    )
+    forbidden = (
+        "operator_losses",
+        "low_mode_action_loss_weight",
+        "low_mode_leak_loss_weight",
+        "phi_probe_loss_weight",
+        "lambda_probe_loss_weight",
+        "born_probe_loss_weight",
+        "born_oracle_loss_weight",
+        "phi_oracle_normal_loss_weight",
+    )
+    assert not any(token in source for token in forbidden)

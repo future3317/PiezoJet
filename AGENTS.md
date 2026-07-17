@@ -144,9 +144,10 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   quadratic response energy `0.5 u^T Phi u - u^T Lambda eta + 0.5 eta^T C eta`.
   Do not reintroduce the extra restriction `Lambda=B^T K S`; integrability
   does not require sharing the edge stiffness `K`.
-- Low-mode and mixed-probe operator losses use a material-relative spectral
-  floor for genuinely soft/inactive directions. Do not replace it with a
-  machine-epsilon denominator or tune weights using frozen validation/test.
+- The rejected low-mode/mixed-probe operator auxiliary losses and their
+  capacity executor have been removed from the maintained package after the
+  failed 32-material gate. Their immutable outputs and read-only summarizer
+  remain historical evidence only; do not reintroduce them as fallback losses.
 - Total-only GMTNet labels use an independent macro encoder/head. They must not
   backpropagate into the physical encoder, electronic branch, `Z*`, `Phi`,
   `Lambda`, or `U_eta`.

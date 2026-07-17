@@ -40,10 +40,8 @@ optical_regularization: 0.001
 # epsilon_ion is the admissible physical self-bilinear target below.
 dielectric_loss_weight: 0.0
 macro_dielectric_loss_weight: 0.1
-ionic_dielectric_loss_weight: 0.0
 # Strict true factors generate the declared regularized ionic softening
 # Lambda^T D_delta(Phi) Lambda. This candidate is capacity-tested before use.
-ionic_elastic_loss_weight: 0.0
 # Audited relaxed elastic-total targets are GPa-valued, point-group Reynolds
 # projected per material, and present for 3,291 JARVIS/GMTNet intersections.
 # The production replay keeps this at zero until a separately registered
@@ -71,17 +69,6 @@ response_active_strain_loss_weight: 0.1
 # Low optical eigenvalues dominate Phi^-1; supervise them separately from
 # dense component MAE.
 soft_mode_loss_weight: 0.1
-# Gauge-safe direct operator supervision. These are implemented and logged,
-# but remain zero in the registered production replay until the same-ID
-# capacity comparison below is complete. Unlike the historical inverse-action
-# loss, they supervise Phi X directly on true response-active directions.
-low_mode_action_loss_weight: 0.0
-low_mode_leak_loss_weight: 0.0
-phi_probe_loss_weight: 0.0
-lambda_probe_loss_weight: 0.0
-born_probe_loss_weight: 0.0
-born_oracle_loss_weight: 0.0
-phi_oracle_normal_loss_weight: 0.0
 # The maintained ionic path predicts the independent atom-resolved internal
 # displacement response U_eta and contracts it with the predicted BEC. It has
 # no pseudoinverse chart or predicted-factor inverse in its gradient path.
@@ -127,13 +114,6 @@ factor_pretrain_force_weight: 1.0
 factor_pretrain_internal_strain_weight: 5.0
 factor_pretrain_internal_strain_full_weight: 1.0
 factor_pretrain_soft_mode_weight: 1.0
-factor_pretrain_low_mode_action_weight: 0.0
-factor_pretrain_low_mode_leak_weight: 0.0
-factor_pretrain_phi_probe_weight: 0.0
-factor_pretrain_lambda_probe_weight: 0.0
-factor_pretrain_born_probe_weight: 0.0
-factor_pretrain_born_oracle_weight: 0.0
-factor_pretrain_phi_oracle_normal_weight: 0.0
 factor_pretrain_response_active_strain_weight: 1.0
 batch_size: 128
 epochs: 10

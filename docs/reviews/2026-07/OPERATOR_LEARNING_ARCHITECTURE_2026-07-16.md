@@ -157,7 +157,8 @@ weights fixed. The v6 route audit is retained for interpretation but is not
 used to retune this replay, keeping the parameterization/normalization delta
 separate from another action-weight sweep.
 
-The matched ladder failed its 32-material gate. Its fixed-weight injection flag
-and launcher were subsequently removed from the maintained trainer rather than
-kept as an executable fallback. The immutable outputs and summarizer remain for
+The matched ladder failed its 32-material gate. Its fixed-weight injection flag,
+launcher, `operator_losses.py` module, and `capacity_decomposition.py` executor
+were subsequently removed from the maintained trainer rather than kept as an
+executable fallback. The immutable outputs and read-only summarizer remain for
 audit and never authorize a formula-disjoint validation run.

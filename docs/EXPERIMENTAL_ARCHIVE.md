@@ -14,7 +14,8 @@ non-identifiable diagnostics:
 - sketch/hybrid and mode-aware training objectives;
 - protocol A--G training executors.
 - the M2.1/implicit first-32 memorization shortcut;
-- the fixed-v5 operator-loss bundle and single-material action launchers.
+- the fixed-v5 operator-loss bundle, its `operator_losses.py` module and
+  capacity executor, and the single-material action launchers.
 
 Their persisted JSON, CSV, checkpoints, and reports under `outputs/` remain
 historical evidence. They describe the code and data convention recorded in

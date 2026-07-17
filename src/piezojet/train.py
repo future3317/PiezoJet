@@ -29,15 +29,6 @@ from .tensor_ops import (
 )
 from .data import RESPONSE_NORM_BOUNDS
 from .elastic_dielectric_ops import elastic_voigt_to_cartesian
-from .operator_losses import (
-    born_charge_probe_loss,
-    born_oracle_piezo_loss,
-    internal_strain_probe_loss,
-    ionic_elastic_response_loss,
-    low_mode_operator_action_losses,
-    mixed_force_constant_probe_loss,
-    phi_oracle_normal_equation_loss,
-)
 
 
 def seed_everything(seed: int) -> None:
@@ -819,8 +810,6 @@ def _epoch(
     macro_dielectric_weight: float = 0.0,
     macro_elastic_weight: float = 0.0,
     dielectric_weight: float = 0.0,
-    ionic_dielectric_weight: float = 0.0,
-    ionic_elastic_weight: float = 0.0,
     elastic_weight: float = 0.0,
     born_weight: float = 0.0,
     ionic_weight: float = 0.0,
@@ -833,13 +822,6 @@ def _epoch(
     internal_strain_weight: float = 0.0,
     internal_strain_full_weight: float = 0.0,
     soft_mode_weight: float = 0.0,
-    low_mode_action_weight: float = 0.0,
-    low_mode_leak_weight: float = 0.0,
-    phi_probe_weight: float = 0.0,
-    lambda_probe_weight: float = 0.0,
-    born_probe_weight: float = 0.0,
-    born_oracle_weight: float = 0.0,
-    phi_oracle_normal_weight: float = 0.0,
     response_active_strain_weight: float = 0.0,
     max_train_updates: int | None = None,
     collect_conditioning_diagnostics: bool = False,
@@ -856,8 +838,6 @@ def _epoch(
         weight != 0.0
         for weight in (
             dielectric_weight,
-            ionic_dielectric_weight,
-            ionic_elastic_weight,
             elastic_weight,
         )
     )
@@ -868,19 +848,10 @@ def _epoch(
         "dielectric": 0.0,
         "macro_dielectric": 0.0,
         "macro_elastic": 0.0,
-        "ionic_dielectric": 0.0,
-        "ionic_elastic": 0.0,
         "elastic_auxiliary": 0.0,
         "born": 0.0,
         "force_constant": 0.0,
         "soft_optical": 0.0,
-        "low_mode_action": 0.0,
-        "low_mode_leak": 0.0,
-        "phi_probe": 0.0,
-        "lambda_probe": 0.0,
-        "born_probe": 0.0,
-        "born_oracle": 0.0,
-        "phi_oracle_normal": 0.0,
         "internal_strain": 0.0,
         "internal_strain_full": 0.0,
         "response_active_strain": 0.0,
@@ -967,29 +938,6 @@ def _epoch(
                 )
                 if compute_macro_response else zero
             )
-            ionic_dielectric_component = (
-                dielectric_loss(
-                    components.ionic_dielectric,
-                    batch.y_dfpt_ionic_dielectric,
-                    batch.dfpt_ionic_dielectric_mask,
-                )
-                if evaluate_all_components or ionic_dielectric_weight != 0.0
-                else zero
-            )
-            ionic_elastic_component = (
-                ionic_elastic_response_loss(
-                    components.elastic_softening,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.internal_strain_full_mask,
-                    batch.force_constant_mask,
-                    batch.ptr,
-                    batch.cell.reshape(-1, 3, 3),
-                    model.response,
-                )
-                if ionic_elastic_weight != 0.0
-                else zero
-            )
             elastic_component = (
                 elastic_auxiliary_loss(
                     components.elastic, batch.y_elastic_gpa,
@@ -1055,31 +1003,6 @@ def _epoch(
                 )
                 if evaluate_all_components or soft_mode_weight != 0.0 else zero
             )
-            low_action_component, low_leak_component = (
-                low_mode_operator_action_losses(
-                    components.force_constants_flat,
-                    batch.dfpt_force_constants_flat,
-                    batch.ptr,
-                    batch.force_constant_mask,
-                    mode_count=int(getattr(model, "operator_low_mode_count", 6)),
-                )
-                if low_mode_action_weight != 0.0 or low_mode_leak_weight != 0.0
-                else (zero, zero)
-            )
-            phi_probe_component = (
-                mixed_force_constant_probe_loss(
-                    components.force_constants_flat,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.ptr,
-                    batch.force_constant_mask,
-                    batch.internal_strain_full_mask,
-                    model.response,
-                    material_ids=batch.material_id,
-                )
-                if phi_probe_weight != 0.0
-                else zero
-            )
             internal_component = (
                 internal_strain_loss(
                     components.internal_strain, batch.dfpt_internal_strain_flat,
@@ -1098,57 +1021,6 @@ def _epoch(
                     batch.batch,
                 )
                 if evaluate_all_components or internal_strain_full_weight != 0.0
-                else zero
-            )
-            lambda_probe_component = (
-                internal_strain_probe_loss(
-                    components.internal_strain,
-                    batch.dfpt_internal_strain_full,
-                    batch.internal_strain_full_mask,
-                    batch.batch,
-                    material_ids=batch.material_id,
-                )
-                if lambda_probe_weight != 0.0
-                else zero
-            )
-            born_probe_component = (
-                born_charge_probe_loss(
-                    components.born_charges,
-                    batch.y_born,
-                    batch.born_mask,
-                    batch.batch,
-                    material_ids=batch.material_id,
-                )
-                if born_probe_weight != 0.0
-                else zero
-            )
-            oracle_mask = batch.internal_strain_full_mask.reshape(-1) & batch.ionic_piezo_mask.reshape(-1)
-            born_oracle_component = (
-                born_oracle_piezo_loss(
-                    components.born_charges,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.y_ionic_piezo,
-                    oracle_mask,
-                    batch.force_constant_mask,
-                    batch.ptr,
-                    batch.cell.reshape(-1, 3, 3),
-                    model.response,
-                )
-                if born_oracle_weight != 0.0
-                else zero
-            )
-            phi_oracle_normal_component = (
-                phi_oracle_normal_equation_loss(
-                    components.force_constants_flat,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.internal_strain_full_mask,
-                    batch.force_constant_mask,
-                    batch.ptr,
-                    model.response,
-                )
-                if phi_oracle_normal_weight != 0.0
                 else zero
             )
             displacement_component = (
@@ -1278,8 +1150,6 @@ def _epoch(
                 dielectric_weight * dielectric_component
                 + macro_dielectric_weight * macro_dielectric_component
                 + macro_elastic_weight * macro_elastic_component
-                + ionic_dielectric_weight * ionic_dielectric_component
-                + ionic_elastic_weight * ionic_elastic_component
                 + elastic_weight * elastic_component
                 + born_weight * born_component
                 + ionic_weight * ionic_component
@@ -1289,13 +1159,6 @@ def _epoch(
                 + branch_sum_weight * branch_sum_component
                 + force_weight * force_component
                 + soft_mode_weight * soft_component
-                + low_mode_action_weight * low_action_component
-                + low_mode_leak_weight * low_leak_component
-                + phi_probe_weight * phi_probe_component
-                + lambda_probe_weight * lambda_probe_component
-                + born_probe_weight * born_probe_component
-                + born_oracle_weight * born_oracle_component
-                + phi_oracle_normal_weight * phi_oracle_normal_component
                 + internal_strain_weight * internal_component
                 + internal_strain_full_weight * full_internal_component
                 + response_active_strain_weight * active_strain_component
@@ -1359,19 +1222,10 @@ def _epoch(
             "dielectric": dielectric_component,
             "macro_dielectric": macro_dielectric_component,
             "macro_elastic": macro_elastic_component,
-            "ionic_dielectric": ionic_dielectric_component,
-            "ionic_elastic": ionic_elastic_component,
             "elastic_auxiliary": elastic_component,
             "born": born_component,
             "force_constant": force_component,
             "soft_optical": soft_component,
-            "low_mode_action": low_action_component,
-            "low_mode_leak": low_leak_component,
-            "phi_probe": phi_probe_component,
-            "lambda_probe": lambda_probe_component,
-            "born_probe": born_probe_component,
-            "born_oracle": born_oracle_component,
-            "phi_oracle_normal": phi_oracle_normal_component,
             "internal_strain": internal_component,
             "internal_strain_full": full_internal_component,
             "response_active_strain": active_strain_component,
@@ -1555,13 +1409,6 @@ def _factor_epoch(
     internal_strain_weight: float,
     internal_strain_full_weight: float,
     soft_mode_weight: float,
-    low_mode_action_weight: float,
-    low_mode_leak_weight: float,
-    phi_probe_weight: float,
-    lambda_probe_weight: float,
-    born_probe_weight: float,
-    born_oracle_weight: float,
-    phi_oracle_normal_weight: float,
     response_active_strain_weight: float,
     max_train_updates: int | None = None,
 ) -> tuple[float, float, dict[str, float], int]:
@@ -1571,9 +1418,7 @@ def _factor_epoch(
     total, count, elapsed = 0.0, 0, 0.0
     component_totals = {
         "born": 0.0, "force_constant": 0.0, "soft_optical": 0.0,
-        "low_mode_action": 0.0, "low_mode_leak": 0.0, "phi_probe": 0.0,
-        "lambda_probe": 0.0, "born_probe": 0.0, "born_oracle": 0.0,
-        "phi_oracle_normal": 0.0, "internal_strain": 0.0,
+        "internal_strain": 0.0,
         "internal_strain_full": 0.0, "response_active_strain": 0.0,
     }
     updates = 0
@@ -1582,82 +1427,6 @@ def _factor_epoch(
         start = time.perf_counter()
         with torch.set_grad_enabled(training):
             factors = model.predict_factors(batch)
-            low_action, low_leak = (
-                low_mode_operator_action_losses(
-                    factors.force_constants_flat,
-                    batch.dfpt_force_constants_flat,
-                    batch.ptr,
-                    batch.force_constant_mask,
-                    mode_count=6,
-                )
-                if low_mode_action_weight != 0.0 or low_mode_leak_weight != 0.0
-                else (factors.force_constants_flat.sum() * 0.0, factors.force_constants_flat.sum() * 0.0)
-            )
-            phi_probe = (
-                mixed_force_constant_probe_loss(
-                    factors.force_constants_flat,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.ptr,
-                    batch.force_constant_mask,
-                    batch.internal_strain_full_mask,
-                    model.response,
-                    material_ids=batch.material_id,
-                )
-                if phi_probe_weight != 0.0
-                else factors.force_constants_flat.sum() * 0.0
-            )
-            lambda_probe = (
-                internal_strain_probe_loss(
-                    factors.internal_strain,
-                    batch.dfpt_internal_strain_full,
-                    batch.internal_strain_full_mask,
-                    batch.batch,
-                    material_ids=batch.material_id,
-                )
-                if lambda_probe_weight != 0.0
-                else factors.internal_strain.sum() * 0.0
-            )
-            born_probe = (
-                born_charge_probe_loss(
-                    factors.born_charges,
-                    batch.y_born,
-                    batch.born_mask,
-                    batch.batch,
-                    material_ids=batch.material_id,
-                )
-                if born_probe_weight != 0.0
-                else factors.born_charges.sum() * 0.0
-            )
-            oracle_mask = batch.internal_strain_full_mask.reshape(-1) & batch.ionic_piezo_mask.reshape(-1)
-            born_oracle = (
-                born_oracle_piezo_loss(
-                    factors.born_charges,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.y_ionic_piezo,
-                    oracle_mask,
-                    batch.force_constant_mask,
-                    batch.ptr,
-                    batch.cell.reshape(-1, 3, 3),
-                    model.response,
-                )
-                if born_oracle_weight != 0.0
-                else factors.born_charges.sum() * 0.0
-            )
-            phi_oracle_normal = (
-                phi_oracle_normal_equation_loss(
-                    factors.force_constants_flat,
-                    batch.dfpt_force_constants_flat,
-                    batch.dfpt_internal_strain_full,
-                    batch.internal_strain_full_mask,
-                    batch.force_constant_mask,
-                    batch.ptr,
-                    model.response,
-                )
-                if phi_oracle_normal_weight != 0.0
-                else factors.force_constants_flat.sum() * 0.0
-            )
             components = {
                 "born": born_loss(factors.born_charges, batch.y_born, batch.born_mask, batch.batch),
                 "force_constant": force_constant_loss(
@@ -1672,13 +1441,6 @@ def _factor_epoch(
                     batch.ptr,
                     batch.force_constant_mask,
                 ),
-                "low_mode_action": low_action,
-                "low_mode_leak": low_leak,
-                "phi_probe": phi_probe,
-                "lambda_probe": lambda_probe,
-                "born_probe": born_probe,
-                "born_oracle": born_oracle,
-                "phi_oracle_normal": phi_oracle_normal,
                 "internal_strain": internal_strain_loss(
                     factors.internal_strain,
                     batch.dfpt_internal_strain_flat,
@@ -1709,13 +1471,6 @@ def _factor_epoch(
                 born_weight * components["born"]
                 + force_weight * components["force_constant"]
                 + soft_mode_weight * components["soft_optical"]
-                + low_mode_action_weight * components["low_mode_action"]
-                + low_mode_leak_weight * components["low_mode_leak"]
-                + phi_probe_weight * components["phi_probe"]
-                + lambda_probe_weight * components["lambda_probe"]
-                + born_probe_weight * components["born_probe"]
-                + born_oracle_weight * components["born_oracle"]
-                + phi_oracle_normal_weight * components["phi_oracle_normal"]
                 + internal_strain_weight * components["internal_strain"]
                 + internal_strain_full_weight * components["internal_strain_full"]
                 + response_active_strain_weight * components["response_active_strain"]
@@ -2225,13 +1980,6 @@ def main() -> None:
         "internal_strain_weight": float(cfg.get("factor_pretrain_internal_strain_weight", 5.0)),
         "internal_strain_full_weight": 0.0,
         "soft_mode_weight": float(cfg.get("factor_pretrain_soft_mode_weight", 1.0)),
-        "low_mode_action_weight": float(cfg.get("factor_pretrain_low_mode_action_weight", 0.0)),
-        "low_mode_leak_weight": float(cfg.get("factor_pretrain_low_mode_leak_weight", 0.0)),
-        "phi_probe_weight": float(cfg.get("factor_pretrain_phi_probe_weight", 0.0)),
-        "lambda_probe_weight": 0.0,
-        "born_probe_weight": float(cfg.get("factor_pretrain_born_probe_weight", 0.0)),
-        "born_oracle_weight": 0.0,
-        "phi_oracle_normal_weight": 0.0,
         "response_active_strain_weight": float(
             cfg.get("factor_pretrain_response_active_strain_weight", 0.0)
         ),
@@ -2244,13 +1992,6 @@ def main() -> None:
             cfg.get("factor_pretrain_internal_strain_full_weight", 0.0)
         ),
         "soft_mode_weight": 0.0,
-        "low_mode_action_weight": 0.0,
-        "low_mode_leak_weight": 0.0,
-        "phi_probe_weight": 0.0,
-        "lambda_probe_weight": float(cfg.get("factor_pretrain_lambda_probe_weight", 0.0)),
-        "born_probe_weight": 0.0,
-        "born_oracle_weight": float(cfg.get("factor_pretrain_born_oracle_weight", 0.0)),
-        "phi_oracle_normal_weight": float(cfg.get("factor_pretrain_phi_oracle_normal_weight", 0.0)),
         "response_active_strain_weight": 0.0,
     }
     factor_weights = {
@@ -2580,8 +2321,6 @@ def main() -> None:
             macro_dielectric_weight=float(cfg.get("macro_dielectric_loss_weight", 0.0)),
             macro_elastic_weight=float(cfg.get("macro_elastic_loss_weight", 0.0)),
             dielectric_weight=float(cfg.get("dielectric_loss_weight", 0.0)),
-            ionic_dielectric_weight=float(cfg.get("ionic_dielectric_loss_weight", 0.0)),
-            ionic_elastic_weight=float(cfg.get("ionic_elastic_loss_weight", 0.0)),
             elastic_weight=float(cfg.get("elastic_loss_weight", 0.0)),
             born_weight=float(cfg.get("born_loss_weight", 0.0)),
             ionic_weight=float(cfg.get("ionic_piezo_loss_weight", 0.0)),
@@ -2600,13 +2339,6 @@ def main() -> None:
                 cfg.get("internal_strain_full_loss_weight", 0.0)
             ),
             soft_mode_weight=float(cfg.get("soft_mode_loss_weight", 0.0)),
-            low_mode_action_weight=float(cfg.get("low_mode_action_loss_weight", 0.0)),
-            low_mode_leak_weight=float(cfg.get("low_mode_leak_loss_weight", 0.0)),
-            phi_probe_weight=float(cfg.get("phi_probe_loss_weight", 0.0)),
-            lambda_probe_weight=float(cfg.get("lambda_probe_loss_weight", 0.0)),
-            born_probe_weight=float(cfg.get("born_probe_loss_weight", 0.0)),
-            born_oracle_weight=float(cfg.get("born_oracle_loss_weight", 0.0)),
-            phi_oracle_normal_weight=float(cfg.get("phi_oracle_normal_loss_weight", 0.0)),
             response_active_strain_weight=float(
                 cfg.get("response_active_strain_loss_weight", 0.0)
             ),
@@ -2621,10 +2353,6 @@ def main() -> None:
             displacement_response_weight=0.0,
             displacement_consistency_weight=0.0,
             internal_strain_full_weight=0.0,
-            lambda_probe_weight=0.0,
-            born_oracle_weight=0.0,
-            phi_oracle_normal_weight=0.0,
-            ionic_elastic_weight=0.0,
             collect_conditioning_diagnostics=False,
             collect_u_gradient_diagnostics=False,
         )
@@ -2634,10 +2362,6 @@ def main() -> None:
             displacement_consistency_weight=response_weights["displacement_consistency_weight"],
             max_consistency_gradient_ratio=response_weights["max_consistency_gradient_ratio"],
             internal_strain_full_weight=response_weights["internal_strain_full_weight"],
-            lambda_probe_weight=response_weights["lambda_probe_weight"],
-            born_oracle_weight=response_weights["born_oracle_weight"],
-            phi_oracle_normal_weight=response_weights["phi_oracle_normal_weight"],
-            ionic_elastic_weight=response_weights["ionic_elastic_weight"],
             collect_conditioning_diagnostics=bool(
                 cfg.get("collect_conditioning_diagnostics", True)
             ),
