@@ -21,7 +21,7 @@ from .projector import get_cartesian_point_group_operations, project_piezo_to_po
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 
-GRAPH_CACHE_SCHEMA = 3
+GRAPH_CACHE_SCHEMA = 4
 SPLIT_SCHEMA = 2
 SYMMETRY_TARGET_CACHE_SCHEMA = 2
 RESPONSE_NORM_BOUNDS = (0.0, 0.05, 0.5, 1.0)
@@ -119,6 +119,14 @@ def create_or_load_splits(records: list[dict[str, Any]], processed_dir: str | Pa
 
 
 def _periodic_edges(frac: torch.Tensor, cell: torch.Tensor, cutoff: float, max_neighbors: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Construct periodic edges without splitting a degenerate distance shell.
+
+    ``max_neighbors`` is a target budget, not a hard symmetry-breaking cap.
+    When the final retained neighbor belongs to an equal-distance shell, every
+    member of that shell is retained.  This keeps cubic and other
+    high-symmetry edge multisets closed under atom permutations and point-group
+    operations while still bounding generic, nondegenerate environments.
+    """
     if frac.ndim != 2 or frac.shape[-1] != 3 or cell.shape != (3, 3):
         raise ValueError("Expected fractional coordinates [N,3] and lattice [3,3]")
     shortest = torch.linalg.vector_norm(cell, dim=-1).min().item()
@@ -128,8 +136,8 @@ def _periodic_edges(frac: torch.Tensor, cell: torch.Tensor, cutoff: float, max_n
     shifts = torch.tensor(list(product(range(-span, span + 1), repeat=3)), dtype=frac.dtype, device=frac.device)
     shift_cartesian = shifts @ cell
     shift_count, atoms = shifts.shape[0], frac.shape[0]
-    candidates_per_target = atoms * shift_count
-    selected_per_target = min(max_neighbors, candidates_per_target)
+    if max_neighbors <= 0:
+        raise ValueError("max_neighbors must be positive")
     sources: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
     edge_shifts: list[torch.Tensor] = []
@@ -149,15 +157,31 @@ def _periodic_edges(frac: torch.Tensor, cell: torch.Tensor, cutoff: float, max_n
         scores = distances.masked_fill(~valid, float("inf")).reshape(stop - start, -1)
         # Stable sorting reproduces the former Python ``sorted`` tie order
         # (source-major, then periodic-image-major) for high-symmetry shells.
-        flat_indices = torch.argsort(scores, dim=-1, stable=True)[..., :selected_per_target]
-        nearest = scores.gather(-1, flat_indices)
-        keep = torch.isfinite(nearest)
-        local_targets = torch.arange(start, stop, dtype=torch.long, device=frac.device).unsqueeze(-1).expand_as(flat_indices)
-        source_indices = torch.div(flat_indices, shift_count, rounding_mode="floor")
-        shift_indices = flat_indices.remainder(shift_count)
-        sources.append(source_indices[keep])
-        targets.append(local_targets[keep])
-        edge_shifts.append(shift_cartesian[shift_indices[keep]])
+        sorted_indices = torch.argsort(scores, dim=-1, stable=True)
+        for local_index, target_index in enumerate(range(start, stop)):
+            ordered = sorted_indices[local_index]
+            ordered_distances = scores[local_index, ordered]
+            finite = torch.isfinite(ordered_distances)
+            ordered = ordered[finite]
+            ordered_distances = ordered_distances[finite]
+            if ordered.numel() == 0:
+                continue
+            if ordered.numel() > max_neighbors:
+                boundary = ordered_distances[max_neighbors - 1]
+                # Float32 coordinate conversion introduces roundoff at about
+                # 1e-7 relative scale.  The tolerance is used only to retain
+                # an already-degenerate boundary shell, never to exceed the
+                # physical radial cutoff.
+                shell_tolerance = torch.maximum(
+                    boundary.abs() * 1e-6,
+                    boundary.new_tensor(1e-7),
+                )
+                ordered = ordered[ordered_distances <= boundary + shell_tolerance]
+            source_indices = torch.div(ordered, shift_count, rounding_mode="floor")
+            shift_indices = ordered.remainder(shift_count)
+            sources.append(source_indices)
+            targets.append(torch.full_like(source_indices, target_index))
+            edge_shifts.append(shift_cartesian[shift_indices])
     if not sources or not any(source.numel() for source in sources):
         raise ValueError("No periodic neighbors found; increase cutoff")
     return torch.stack((torch.cat(sources), torch.cat(targets))), torch.cat(edge_shifts)

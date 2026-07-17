@@ -49,8 +49,8 @@ foreach ($material in $ids) {
         --allow-noninductive-overfit --batch-size 1 `
         --factor-pretrain-epochs $FactorEpochs `
         --displacement-pretrain-epochs $DisplacementEpochs `
-        --normal-equation-warmup-epochs $JointEpochs `
-        --normal-equation-ramp-epochs 0 `
+        --displacement-consistency-warmup-epochs $JointEpochs `
+        --displacement-consistency-ramp-epochs 0 `
         --factor-pretrain-response-operator-action-weight 0.1 `
         --response-operator-action-loss-weight 0.1 `
         --epochs $JointEpochs --early-stopping-patience 0 `

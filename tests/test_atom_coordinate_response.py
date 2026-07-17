@@ -1,8 +1,9 @@
 import torch
+from types import SimpleNamespace
 
 from piezojet.data import MAX_POINT_GROUP_OPERATIONS, load_gmtnet_records, record_to_graph
-from piezojet.model import PiezoJet
-from piezojet.tensor_ops import rotate_piezo
+from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
+from piezojet.tensor_ops import piezo_voigt_to_cartesian, rotate_piezo
 
 
 def _identity_group(dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
@@ -10,6 +11,54 @@ def _identity_group(dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
     mask = torch.zeros(MAX_POINT_GROUP_OPERATIONS, dtype=torch.bool)
     mask[0] = True
     return operations, mask
+
+
+def _loop_ionic_piezo_reference(response, born, displacement, batch):
+    values = []
+    for graph_index in range(batch.cell.shape[0]):
+        node_indices = torch.nonzero(
+            batch.batch == graph_index, as_tuple=False
+        ).squeeze(-1)
+        atoms = node_indices.numel()
+        charge = born[node_indices].reshape(3 * atoms, 3)
+        coupling = response._coupling_voigt(
+            displacement[node_indices]
+        ).reshape(3 * atoms, 6)
+        volume = torch.linalg.det(batch.cell[graph_index]).abs()
+        values.append(response.PIEZO_C_PER_M2 * charge.T @ coupling / volume)
+    return piezo_voigt_to_cartesian(torch.stack(values))
+
+
+def test_vectorized_direct_u_contraction_matches_loop_output_and_gradients():
+    torch.manual_seed(28)
+    node_batch = torch.tensor([0, 0, 1, 1, 1, 2, 2, 2, 2])
+    cells = torch.diag_embed(torch.rand(3, 3) + 2.0)
+    batch = SimpleNamespace(batch=node_batch, cell=cells)
+    born = torch.randn(node_batch.numel(), 3, 3, requires_grad=True)
+    displacement = torch.randn(
+        node_batch.numel(), 3, 3, 3, requires_grad=True
+    )
+    displacement_symmetric = 0.5 * (
+        displacement + displacement.transpose(-1, -2)
+    )
+    response = AtomCoordinateResponsePotential()
+
+    expected = _loop_ionic_piezo_reference(
+        response, born, displacement_symmetric, batch
+    )
+    observed = response.ionic_piezo_from_displacement_response(
+        born, displacement_symmetric, batch
+    )
+    assert torch.allclose(observed, expected, atol=2e-6, rtol=2e-6)
+
+    reference_gradients = torch.autograd.grad(
+        expected.square().mean(), (born, displacement), retain_graph=True
+    )
+    observed_gradients = torch.autograd.grad(
+        observed.square().mean(), (born, displacement)
+    )
+    for actual, reference in zip(observed_gradients, reference_gradients):
+        assert torch.allclose(actual, reference, atol=3e-6, rtol=3e-5)
 
 
 def test_atom_coordinate_head_preserves_equivariance_asr_and_translation_nullspace():

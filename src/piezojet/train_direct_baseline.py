@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 from pathlib import Path
 
 import torch
@@ -101,6 +100,11 @@ def main() -> None:
         cfg["batch_size"] = args.batch_size
     seed_everything(int(cfg["seed"]))
     device = device_from_config(str(cfg["device"]))
+    runtime_device = (
+        f"cuda ({torch.cuda.get_device_name(device)})"
+        if device.type == "cuda" else device.type
+    )
+    cfg["runtime_device"] = runtime_device
     records = load_gmtnet_records(cfg["data_root"])
     splits = load_explicit_splits(args.splits_file, {str(record["JARVIS_ID"]) for record in records})
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
@@ -128,7 +132,7 @@ def main() -> None:
     model.encoder.load_state_dict(pretrained["encoder"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg["learning_rate"]), weight_decay=float(cfg["weight_decay"]))
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    history, best = [], float("inf")
+    history, best, best_row = [], float("inf"), None
     for epoch in range(1, args.epochs + 1):
         train_loss, train_skill, train_updates = _epoch(
             model, train_loader, optimizer, scale, bins, device,
@@ -156,6 +160,7 @@ def main() -> None:
         torch.save(checkpoint, args.output_dir / "last.pt")
         if val_loss < best:
             best = val_loss
+            best_row = dict(row)
             torch.save(checkpoint, args.output_dir / "loss_best.pt")
         if epoch == 1 or epoch % 10 == 0 or epoch == args.epochs:
             print(f"epoch={epoch} train={train_loss:.6g} val={val_loss:.6g}")
@@ -163,13 +168,25 @@ def main() -> None:
         writer = csv.DictWriter(handle, fieldnames=history[0].keys())
         writer.writeheader()
         writer.writerows(history)
+    if best_row is None:
+        raise RuntimeError("Direct baseline completed without a selected validation checkpoint")
+    (args.output_dir / "config.resolved.json").write_text(
+        json.dumps(cfg, indent=2, default=str) + "\n", encoding="utf-8"
+    )
     (args.output_dir / "summary.json").write_text(json.dumps({
-        "schema": 3, "model_family": f"matched_direct_{args.family}_piezo", "epochs": args.epochs,
+        "schema": 4, "model_family": f"matched_direct_{args.family}_piezo", "epochs": args.epochs,
+        "runtime_device": runtime_device,
         "checkpoint_selection": "minimum validation loss", "frozen_test_used_for_selection": False,
         "splits_file": str(args.splits_file), "data_commit": _data_commit(cfg["data_root"]), "code_commit": _git_commit(),
         "best_validation_loss": best,
+        "selected_epoch": int(best_row["epoch"]),
+        "selected_validation_tensor_response_skill_vs_zero": float(
+            best_row["val_tensor_response_skill_vs_zero"]
+        ),
+        "piezo_scale_c_per_m2": float(scale),
         "batch_size": int(cfg["batch_size"]),
-        "updates_per_epoch": 1 if args.accumulate_to_one_update else math.ceil(len(train_set) / int(cfg["batch_size"])),
+        "updates_per_epoch": int(history[0]["train_optimizer_updates"]),
+        "optimizer_updates_total": int(sum(row["train_optimizer_updates"] for row in history)),
         "exposure_unit": "complete_macro_stream_passes",
         "macro_effective_passes": args.epochs,
         "macro_examples_seen": args.epochs * len(train_set),

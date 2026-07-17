@@ -16,7 +16,7 @@ from piezojet.train import (
     internal_strain_loss,
     ionic_piezo_loss,
     macroscopic_piezo_loss,
-    normal_equation_weight_for_epoch,
+    displacement_consistency_weight_for_epoch,
     response_active_internal_strain_loss,
 )
 
@@ -320,7 +320,11 @@ def test_independent_displacement_response_has_no_pinv_chart_or_ghost_gradient(t
         parameter.grad is not None and parameter.grad.abs().sum() > 0
         for parameter in model.displacement_response_head.parameters()
     )
-    assert any(parameter.grad is not None for parameter in model.encoder.parameters())
+    assert any(
+        parameter.grad is not None
+        for parameter in model.displacement_encoder.parameters()
+    )
+    assert all(parameter.grad is None for parameter in model.encoder.parameters())
     assert all(parameter.grad is None for parameter in model.born_head.parameters())
     assert all(parameter.grad is None for parameter in model.response_factors.parameters())
 

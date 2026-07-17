@@ -43,6 +43,17 @@ def test_custom_pbc_edges_match_ase_for_single_atom_all_image_shells():
     assert len(ours) == 6
 
 
+def test_neighbor_budget_never_splits_a_degenerate_cubic_shell():
+    frac = torch.zeros(1, 3)
+    cell = 3.0 * torch.eye(3)
+    # A hard top-5 truncation would arbitrarily remove one of the six
+    # symmetry-equivalent nearest periodic images.
+    ours = _our_edge_set(frac, cell, cutoff=3.01, max_neighbors=5)
+    oracle = _ase_edge_set(frac, cell, cutoff=3.01)
+    assert ours == oracle
+    assert len(ours) == 6
+
+
 def test_custom_pbc_edges_are_all_valid_ase_neighbors_for_real_nonorthogonal_cells():
     records = load_gmtnet_records("data/raw/gmtnet")
     # Deliberately mix a small, a many-atom, and a non-orthogonal cell rather

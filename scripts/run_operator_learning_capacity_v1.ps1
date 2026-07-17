@@ -44,8 +44,8 @@ foreach ($variant in @('baseline', 'operator')) {
             '--material-ids-split', 'same', '--allow-noninductive-overfit',
             '--batch-size', "$count", '--factor-pretrain-epochs', "$FactorEpochs",
             '--displacement-pretrain-epochs', "$DisplacementEpochs",
-            '--normal-equation-warmup-epochs', "$JointEpochs",
-            '--normal-equation-ramp-epochs', '0', '--epochs', "$JointEpochs",
+            '--displacement-consistency-warmup-epochs', "$JointEpochs",
+            '--displacement-consistency-ramp-epochs', '0', '--epochs', "$JointEpochs",
             '--early-stopping-patience', '0', '--device', $Device,
             '--output-dir', $run
         )

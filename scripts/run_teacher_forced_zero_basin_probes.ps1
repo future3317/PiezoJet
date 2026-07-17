@@ -53,8 +53,8 @@ foreach ($count in @(1, 8, 32)) {
         --allow-noninductive-overfit --batch-size $count `
         --factor-pretrain-epochs $FactorEpochs `
         --displacement-pretrain-epochs $DisplacementEpochs `
-        --normal-equation-warmup-epochs $JointEpochs `
-        --normal-equation-ramp-epochs 0 `
+        --displacement-consistency-warmup-epochs $JointEpochs `
+        --displacement-consistency-ramp-epochs 0 `
         --epochs $JointEpochs --early-stopping-patience 0 `
         --device $Device `
         --output-dir $root

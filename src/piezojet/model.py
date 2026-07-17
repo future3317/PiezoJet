@@ -11,7 +11,7 @@ from e3nn import o3
 from e3nn.nn import Gate
 from torch import nn
 from torch.nn import functional as F
-from torch_geometric.utils import scatter
+from torch_geometric.utils import scatter, to_dense_batch
 
 from .tensor_ops import (
     PIEZO_TYPE,
@@ -403,6 +403,296 @@ class CartesianInternalStrainHead(nn.Module):
         graphs = int(batch_index.max()) + 1
         mean = scatter(internal_strain, batch_index, dim=0, dim_size=graphs, reduce="mean")
         return internal_strain - mean[batch_index]
+
+
+class GlobalDisplacementResponseHead(nn.Module):
+    """Nonlocal equivariant ``U_{eta,delta}`` readout.
+
+    The regularized displacement response is a dense Green-action field even
+    when ``Phi`` is sparse.  This head therefore augments local Cartesian node
+    tensors with permutation-equivariant, all-to-all invariant attention,
+    graph-level reciprocal context, and the graph-level polar strain operator.
+    Channel-factorized cross mixing supplies ``V_c tensor T_c'`` terms without
+    materializing a quadratic number of channel pairs.  The final graph mean
+    subtraction is the exact translation projection.
+    """
+
+    def __init__(
+        self,
+        scalar_dim: int,
+        channels: int,
+        context_dim: int,
+        attention_dim: int = 64,
+        cross_rank: int = 24,
+    ):
+        super().__init__()
+        if attention_dim <= 0 or cross_rank <= 0:
+            raise ValueError("attention_dim and cross_rank must be positive")
+        self.attention_dim = int(attention_dim)
+        self.cross_rank = int(cross_rank)
+        self.query = nn.Linear(scalar_dim, attention_dim, bias=False)
+        self.key = nn.Linear(scalar_dim, attention_dim, bias=False)
+        self.vector_value_mix = nn.Parameter(torch.eye(channels))
+        self.quadrupole_value_mix = nn.Parameter(torch.eye(channels))
+        self.vector_nonlocal_gate = nn.Parameter(torch.tensor(0.1))
+        self.quadrupole_nonlocal_gate = nn.Parameter(torch.tensor(0.1))
+        self.vector_rank_mix = nn.Parameter(
+            torch.randn(cross_rank, channels) / channels**0.5
+        )
+        self.quadrupole_rank_mix = nn.Parameter(
+            torch.randn(cross_rank, channels) / channels**0.5
+        )
+        hidden = max(128, scalar_dim, context_dim)
+        self.coefficients = nn.Sequential(
+            nn.Linear(scalar_dim + context_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 4 * cross_rank + 1),
+        )
+        self.register_buffer("identity", torch.eye(3), persistent=False)
+
+    def _nonlocal_features(
+        self,
+        features: CartesianNodeFeatures,
+        batch_index: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        vector_values = torch.einsum(
+            "cd,ndj->ncj", self.vector_value_mix, features.vector
+        )
+        quadrupole_values = torch.einsum(
+            "cd,ndjk->ncjk", self.quadrupole_value_mix, features.quadrupole
+        )
+        queries, keys = self.query(features.scalar), self.key(features.scalar)
+        graphs = int(batch_index.max()) + 1
+        scale = self.attention_dim**-0.5
+        # PyG batches store every material in one contiguous node segment.
+        # Padding those segments once turns O(B) small Python-launched matrix
+        # products into two batched GEMMs.  The key mask makes padding exactly
+        # invisible to the per-material softmax.
+        dense_queries, mask = to_dense_batch(
+            queries, batch_index, batch_size=graphs
+        )
+        dense_keys, key_mask = to_dense_batch(
+            keys, batch_index, batch_size=graphs
+        )
+        if not torch.equal(mask, key_mask):
+            raise RuntimeError("Global attention query/key batching mismatch")
+        scores = torch.bmm(dense_queries, dense_keys.transpose(1, 2)) * scale
+        scores = scores.masked_fill(~mask[:, None, :], -torch.inf)
+        attention = torch.softmax(scores, dim=-1)
+
+        vector_shape = vector_values.shape[1:]
+        quadrupole_shape = quadrupole_values.shape[1:]
+        values = torch.cat(
+            (
+                vector_values.flatten(1),
+                quadrupole_values.flatten(1),
+            ),
+            dim=-1,
+        )
+        dense_values, value_mask = to_dense_batch(
+            values, batch_index, batch_size=graphs
+        )
+        if not torch.equal(mask, value_mask):
+            raise RuntimeError("Global attention value batching mismatch")
+        attended = torch.bmm(attention, dense_values)[mask]
+        vector_width = vector_values[0].numel()
+        vector_global = attended[:, :vector_width].reshape(
+            -1, *vector_shape
+        )
+        quadrupole_global = attended[:, vector_width:].reshape(
+            -1, *quadrupole_shape
+        )
+        vector = features.vector + torch.tanh(self.vector_nonlocal_gate) * vector_global
+        quadrupole = (
+            features.quadrupole
+            + torch.tanh(self.quadrupole_nonlocal_gate) * quadrupole_global
+        )
+        return vector, quadrupole
+
+    def forward(
+        self,
+        features: CartesianNodeFeatures,
+        batch_index: torch.Tensor,
+        context: torch.Tensor,
+        spectral_operator: torch.Tensor,
+    ) -> torch.Tensor:
+        graphs = int(batch_index.max()) + 1
+        if context.shape[0] != graphs or spectral_operator.shape != (graphs, 3, 3, 3):
+            raise ValueError("Global U head received inconsistent graph context")
+        vector, quadrupole = self._nonlocal_features(features, batch_index)
+        vector = torch.einsum("rc,nci->nri", self.vector_rank_mix, vector)
+        quadrupole = torch.einsum(
+            "rc,ncij->nrij", self.quadrupole_rank_mix, quadrupole
+        )
+        identity = self.identity.to(dtype=vector.dtype)
+        vector_identity = torch.einsum("nra,jk->nrajk", vector, identity)
+        identity_vector = 0.5 * (
+            torch.einsum("aj,nrk->nrajk", identity, vector)
+            + torch.einsum("ak,nrj->nrajk", identity, vector)
+        )
+        vector_quadrupole = torch.einsum(
+            "nra,nrjk->nrajk", vector, quadrupole
+        )
+        quadrupole_vector = 0.5 * (
+            torch.einsum("nraj,nrk->nrajk", quadrupole, vector)
+            + torch.einsum("nrak,nrj->nrajk", quadrupole, vector)
+        )
+        bases = torch.stack(
+            (vector_identity, identity_vector, vector_quadrupole, quadrupole_vector),
+            dim=2,
+        )
+        conditioned = torch.cat((features.scalar, context[batch_index]), dim=-1)
+        parameters = self.coefficients(conditioned)
+        coefficients = parameters[:, :-1].reshape(
+            features.scalar.shape[0], self.cross_rank, 4
+        )
+        response = (
+            coefficients[..., None, None, None] * bases
+        ).sum(dim=(1, 2))
+        response = response + parameters[:, -1, None, None, None] * spectral_operator[
+            batch_index
+        ]
+        mean = scatter(response, batch_index, dim=0, dim_size=graphs, reduce="mean")
+        return response - mean[batch_index]
+
+
+class OctupoleGlobalDisplacementResponseHead(GlobalDisplacementResponseHead):
+    """Global U head with an explicit odd-parity ``l=3`` Cartesian channel.
+
+    Products of learned vector and quadrupole channels contain an ``l=3``
+    component in principle, but that product can vanish at high-symmetry
+    sites.  A directly aggregated symmetric-traceless edge octupole supplies
+    the missing independent channel while retaining O(3), atom-permutation,
+    periodic-edge, and translation covariance.  It is a capacity candidate,
+    not a conditional fallback selected by material or prediction quality.
+    """
+
+    def __init__(
+        self,
+        scalar_dim: int,
+        channels: int,
+        context_dim: int,
+        attention_dim: int = 64,
+        cross_rank: int = 24,
+        radial_basis: int = 12,
+        radial_hidden: int = 64,
+        cutoff: float = 5.0,
+    ):
+        super().__init__(
+            scalar_dim, channels, context_dim,
+            attention_dim=attention_dim, cross_rank=cross_rank,
+        )
+        self.cutoff = float(cutoff)
+        self.register_buffer(
+            "octupole_radial_centers",
+            torch.linspace(0.0, self.cutoff, radial_basis),
+            persistent=False,
+        )
+        self.octupole_weights = nn.Sequential(
+            nn.Linear(2 * scalar_dim + radial_basis, radial_hidden),
+            nn.SiLU(),
+            nn.Linear(radial_hidden, cross_rank),
+        )
+        hidden = max(128, scalar_dim, context_dim)
+        self.coefficients = nn.Sequential(
+            nn.Linear(scalar_dim + context_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 5 * cross_rank + 1),
+        )
+
+    def _octupole_features(
+        self,
+        features: CartesianNodeFeatures,
+        batch,
+    ) -> torch.Tensor:
+        source, target = batch.edge_index
+        vectors = batch.pos[source] - batch.pos[target] + batch.edge_shift
+        distance = torch.linalg.vector_norm(vectors, dim=-1)
+        if torch.any(distance > self.cutoff + 0.25):
+            raise ValueError("Graph contains an edge beyond the configured cutoff")
+        direction = vectors / distance.clamp_min(
+            torch.finfo(vectors.dtype).eps
+        ).unsqueeze(-1)
+        identity = self.identity.to(dtype=vectors.dtype)
+        triple = torch.einsum("ei,ej,ek->eijk", direction, direction, direction)
+        traces = (
+            torch.einsum("ei,jk->eijk", direction, identity)
+            + torch.einsum("ej,ik->eijk", direction, identity)
+            + torch.einsum("ek,ij->eijk", direction, identity)
+        ) / 5.0
+        stf = triple - traces
+        radial = _radial_basis(
+            distance, self.octupole_radial_centers, self.cutoff
+        )
+        edge_context = torch.cat(
+            (features.scalar[source], features.scalar[target], radial), dim=-1
+        )
+        weights = self.octupole_weights(edge_context)
+        octupole = scatter(
+            weights[..., None, None, None] * stf[:, None],
+            target,
+            dim=0,
+            dim_size=features.scalar.shape[0],
+            reduce="sum",
+        )
+        degree = scatter(
+            torch.ones_like(distance), target, dim=0,
+            dim_size=features.scalar.shape[0], reduce="sum",
+        )
+        return octupole / degree.clamp_min(1.0).sqrt()[:, None, None, None, None]
+
+    def forward(
+        self,
+        features: CartesianNodeFeatures,
+        batch,
+        context: torch.Tensor,
+        spectral_operator: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_index = batch.batch
+        graphs = int(batch_index.max()) + 1
+        if context.shape[0] != graphs or spectral_operator.shape != (graphs, 3, 3, 3):
+            raise ValueError("Global U head received inconsistent graph context")
+        vector, quadrupole = self._nonlocal_features(features, batch_index)
+        vector = torch.einsum("rc,nci->nri", self.vector_rank_mix, vector)
+        quadrupole = torch.einsum(
+            "rc,ncij->nrij", self.quadrupole_rank_mix, quadrupole
+        )
+        identity = self.identity.to(dtype=vector.dtype)
+        vector_identity = torch.einsum("nra,jk->nrajk", vector, identity)
+        identity_vector = 0.5 * (
+            torch.einsum("aj,nrk->nrajk", identity, vector)
+            + torch.einsum("ak,nrj->nrajk", identity, vector)
+        )
+        vector_quadrupole = torch.einsum("nra,nrjk->nrajk", vector, quadrupole)
+        quadrupole_vector = 0.5 * (
+            torch.einsum("nraj,nrk->nrajk", quadrupole, vector)
+            + torch.einsum("nrak,nrj->nrajk", quadrupole, vector)
+        )
+        octupole = self._octupole_features(features, batch)
+        bases = torch.stack(
+            (
+                vector_identity, identity_vector, vector_quadrupole,
+                quadrupole_vector, octupole,
+            ),
+            dim=2,
+        )
+        conditioned = torch.cat((features.scalar, context[batch_index]), dim=-1)
+        parameters = self.coefficients(conditioned)
+        coefficients = parameters[:, :-1].reshape(
+            features.scalar.shape[0], self.cross_rank, 5
+        )
+        response = (
+            coefficients[..., None, None, None] * bases
+        ).sum(dim=(1, 2))
+        response = response + parameters[:, -1, None, None, None] * spectral_operator[
+            batch_index
+        ]
+        mean = scatter(response, batch_index, dim=0, dim_size=graphs, reduce="mean")
+        return response - mean[batch_index]
 
 class IndependentQuadraticResponseHead(nn.Module):
     """Independent coefficients of one atom-coordinate quadratic energy.
@@ -984,28 +1274,24 @@ class AtomCoordinateResponsePotential(nn.Module):
         ``du/deta`` for an unstable reference.  This path contains no inverse,
         pseudoinverse, SVD cutoff, or chart-dependent gradient.
         """
-        ptr = _graph_ptr(batch.batch)
+        graphs = int(batch.batch.max()) + 1
         cell = getattr(batch, "cell", None)
         cells = (
             torch.eye(3, dtype=born_charges.dtype, device=born_charges.device)
-            .expand(ptr.numel() - 1, 3, 3)
+            .expand(graphs, 3, 3)
             if cell is None else cell.reshape(-1, 3, 3)
         )
-        values: list[torch.Tensor] = []
-        for graph_index in range(ptr.numel() - 1):
-            start, stop = int(ptr[graph_index]), int(ptr[graph_index + 1])
-            atoms = stop - start
-            charge = born_charges[start:stop].reshape(3 * atoms, 3)
-            displacement = self._coupling_voigt(
-                displacement_response[start:stop]
-            ).reshape(3 * atoms, 6)
-            volume = torch.linalg.det(cells[graph_index]).abs().clamp_min(
-                torch.finfo(cells.dtype).eps
-            )
-            values.append(
-                self.PIEZO_C_PER_M2 * charge.transpose(0, 1) @ displacement / volume
-            )
-        return piezo_voigt_to_cartesian(torch.stack(values))
+        displacement = self._coupling_voigt(displacement_response)
+        per_atom = torch.einsum("nai,nav->niv", born_charges, displacement)
+        contracted = scatter(
+            per_atom, batch.batch, dim=0, dim_size=graphs, reduce="sum"
+        )
+        volume = torch.linalg.det(cells).abs().clamp_min(
+            torch.finfo(cells.dtype).eps
+        )
+        return piezo_voigt_to_cartesian(
+            self.PIEZO_C_PER_M2 * contracted / volume[:, None, None]
+        )
 
     def responses(
         self,
@@ -1118,6 +1404,8 @@ class PiezoJet(nn.Module):
         optical_solve_policy: str = "regularized",
         factor_architecture: str = "independent_quadratic_response",
         background_architecture: str = "isotropic",
+        displacement_attention_dim: int = 64,
+        displacement_cross_rank: int = 24,
         **encoder_kwargs,
     ):
         super().__init__()
@@ -1140,14 +1428,46 @@ class PiezoJet(nn.Module):
         )
         if background_architecture != "isotropic":
             raise ValueError("PiezoJet supports only the maintained isotropic background")
-        self.ionic_parameterization = "direct_displacement"
-        self.displacement_response_head = CartesianInternalStrainHead(
-            self.encoder.scalar_dim, self.encoder.channels
+        self.ionic_parameterization = "isolated_global_octupole_displacement"
+        # U is a global Green-response field rather than a local DFPT factor.
+        # Its representation is therefore isolated from Z/Phi/Lambda updates;
+        # all towers start from the same inductive structural initialization.
+        self.displacement_encoder = CartesianLocalEnvironmentEncoder(
+            **encoder_kwargs
         )
         self.born_head = CartesianBornChargeHead(self.encoder.scalar_dim, self.encoder.channels)
         self.local_polar_mode = CartesianPolarReadout(self.encoder.scalar_dim, self.encoder.channels)
         self.global_context = CrystalGlobalContext(
             global_context_dim, spectral_channels, spectral_shells, polar_fluctuation_shells, reciprocal_cutoff
+        )
+        self.displacement_local_polar = CartesianPolarReadout(
+            self.displacement_encoder.scalar_dim,
+            self.displacement_encoder.channels,
+        )
+        self.displacement_global_context = CrystalGlobalContext(
+            global_context_dim,
+            spectral_channels,
+            spectral_shells,
+            polar_fluctuation_shells,
+            reciprocal_cutoff,
+        )
+        displacement_kwargs = dict(
+            scalar_dim=self.displacement_encoder.scalar_dim,
+            channels=self.displacement_encoder.channels,
+            context_dim=global_context_dim,
+            attention_dim=displacement_attention_dim,
+            cross_rank=displacement_cross_rank,
+            radial_basis=int(encoder_kwargs.get("radial_basis", 12)),
+            radial_hidden=int(encoder_kwargs.get("radial_hidden", 64)),
+            cutoff=float(encoder_kwargs.get("cutoff", 5.0)),
+        )
+        self.displacement_response_head = OctupoleGlobalDisplacementResponseHead(
+            **displacement_kwargs
+        )
+        # V is an auxiliary training coordinate for the first-order real
+        # block form of (Phi + i delta I)^-1.  It is never used at inference.
+        self.displacement_auxiliary_head = OctupoleGlobalDisplacementResponseHead(
+            **displacement_kwargs
         )
         if factor_architecture != "independent_quadratic_response":
             raise ValueError(
@@ -1217,39 +1537,96 @@ class PiezoJet(nn.Module):
         This intentionally bypasses the BEC, Hessian, Lambda, electronic, and
         macro branches.  It is used only in the teacher-forced U curriculum,
         where a nonzero DFPT target must establish a well-conditioned learning
-        signal before the bilinear ``Z*^T U`` loss and the homogeneous normal
-        equation are enabled.
+        signal before the bilinear ``Z*^T U`` loss and first-order block
+        consistency are enabled.
         """
-        return self.displacement_response_head(self.encode(batch), batch.batch)
+        features, context, spectral_operator = self._displacement_features(batch)
+        return self.displacement_response_head(
+            features, batch, context, spectral_operator
+        )
 
-    def predict_components(self, batch, return_optical_operator: bool = False) -> AtomCoordinatePrediction:
+    def _displacement_features(self, batch):
+        """Encode the isolated global response tower once."""
+        features = self.displacement_encoder(batch)
+        local_polar = self.displacement_local_polar(features)
+        context, spectral_operator = self.displacement_global_context(
+            batch, batch.batch, local_polar, return_operator=True
+        )
+        return features, context, spectral_operator
+
+    def predict_displacement_block_response(
+        self, batch
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the physical U field and training-only first-order V field."""
+        features, context, spectral_operator = self._displacement_features(batch)
+        return (
+            self.displacement_response_head(
+                features, batch, context, spectral_operator
+            ),
+            self.displacement_auxiliary_head(
+                features, batch, context, spectral_operator
+            ),
+        )
+
+    def predict_components(
+        self,
+        batch,
+        return_optical_operator: bool = False,
+        *,
+        compute_macro_response: bool = True,
+        compute_factorized_response: bool = True,
+    ) -> AtomCoordinatePrediction:
         """Predict response components.
 
         Full optical Green matrices are excluded from the regular path.  They
         can be requested only for a small, explicitly diagnostic calculation.
+        Multistream training may omit macro or propagated-factor outputs when
+        no active objective consumes them; the maintained physical
+        ``electronic + Z*^T U`` path is unchanged.
         """
+        if return_optical_operator and not compute_factorized_response:
+            raise ValueError(
+                "A diagnostic optical operator requires factorized response propagation"
+            )
         features, local_polar, factors, context, spectral_operator = self._factor_features(batch)
+        graphs = context.shape[0]
         electronic_direct = self.electronic_head(features, batch.batch)
         electronic_piezo = 0.5 * (
             electronic_direct + spectral_operator
             + (electronic_direct + spectral_operator).transpose(-1, -2)
         )
-        macro_total, macro_dielectric, macro_elastic = self.predict_macro_responses(batch)
+        if compute_macro_response:
+            macro_total, macro_dielectric, macro_elastic = self.predict_macro_responses(batch)
+        else:
+            macro_total = electronic_piezo.new_zeros(graphs, 3, 3, 3)
+            macro_dielectric = electronic_piezo.new_zeros(graphs, 3, 3)
+            macro_elastic = electronic_piezo.new_zeros(graphs, 6, 6)
         internal_strain = factors.internal_strain
-        displacement_response = self.displacement_response_head(features, batch.batch)
+        displacement_response = self.predict_displacement_response(batch)
         ionic_piezo = self.response.ionic_piezo_from_displacement_response(
             factors.born_charges, displacement_response, batch
         )
-        elastic_background, dielectric_background = self.background(context)
-        (
-            factorized_tensor, dielectric, elastic, optical_operator_flat,
-            shared_clamped_elastic, ionic_dielectric, elastic_softening,
-        ) = self.response.responses(
-            electronic_piezo, factors.born_charges, internal_strain,
-            factors.force_constants_flat, factors.strain_curvature, batch,
-            elastic_background, dielectric_background,
-            return_optical_operator=return_optical_operator,
-        )
+        if compute_factorized_response:
+            elastic_background, dielectric_background = self.background(context)
+            (
+                factorized_tensor, dielectric, elastic, optical_operator_flat,
+                shared_clamped_elastic, ionic_dielectric, elastic_softening,
+            ) = self.response.responses(
+                electronic_piezo, factors.born_charges, internal_strain,
+                factors.force_constants_flat, factors.strain_curvature, batch,
+                elastic_background, dielectric_background,
+                return_optical_operator=return_optical_operator,
+            )
+        else:
+            factorized_tensor = electronic_piezo
+            optical_operator_flat = factors.force_constants_flat.new_empty(0)
+            elastic_background = electronic_piezo.new_zeros(graphs, 6, 6)
+            dielectric_background = electronic_piezo.new_zeros(graphs, 3, 3)
+            shared_clamped_elastic = electronic_piezo.new_zeros(graphs, 6, 6)
+            ionic_dielectric = electronic_piezo.new_zeros(graphs, 3, 3)
+            elastic_softening = electronic_piezo.new_zeros(graphs, 6, 6)
+            dielectric = dielectric_background
+            elastic = elastic_background
         factorized_ionic_piezo = factorized_tensor - electronic_piezo
         physical_tensor = electronic_piezo + ionic_piezo
         return AtomCoordinatePrediction(
@@ -1314,4 +1691,6 @@ def model_from_config(config: Mapping[str, object]) -> PiezoJet:
         optical_solve_policy=solve_policy,
         factor_architecture=factor_architecture,
         background_architecture=background_architecture,
+        displacement_attention_dim=int(config.get("displacement_attention_dim", 64)),
+        displacement_cross_rank=int(config.get("displacement_cross_rank", 24)),
     )

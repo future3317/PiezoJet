@@ -23,6 +23,7 @@ GENERATED_OUTPUT_NAMES = {
 }
 RUN_MARKERS = {
     "config.resolved.yaml",
+    "config.resolved.json",
     "summary.json",
     "metrics.csv",
     "factor_metrics.csv",
@@ -76,7 +77,96 @@ def _cohort_policy(name: str) -> dict[str, Any]:
         ),
     }
 
-    if name == "exposure_matched_direct_u_v2_conditioning":
+    if name == "global_l3_joint_optimizer_adjudication_v1":
+        policy.update(
+            family="global_l3_joint_gradient_adjudication",
+            archival_status="current",
+            execution_status="completed_seed42",
+            result_disposition="positive_validation_only_mechanism_diagnostic",
+            convention_epoch="v10_global_l3_independent_u_first_order",
+            comparability_group="train1603_formula_disjoint_val10_seed42",
+            paper_use="appendix_post_freeze_diagnostic",
+            interpretation_boundary=(
+                "Seed42 train1603/val10 gradient-route adjudication only. It localizes the "
+                "redundant branch-sum conflict but does not support a test or production claim."
+            ),
+            split="full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
+        )
+    elif name == "global_l3_no_redundant_sum_multiseed_v1":
+        policy.update(
+            family="global_l3_validation_replication",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="positive_physical_validation_negative_total_comparison",
+            convention_epoch="v10_global_l3_independent_u_first_order",
+            comparability_group="train1603_formula_disjoint_val10_three_seed",
+            paper_use="appendix_post_freeze_validation_diagnostic",
+            interpretation_boundary=(
+                "Three seeds replicate stable direct-U/ionic validation losses on val10. "
+                "Its isolated total macro tower underperforms the matched direct control; "
+                "no test evaluation or production promotion is authorized."
+            ),
+            split="full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
+        )
+    elif name == "global_l3_matched_direct_validation_v1":
+        policy.update(
+            family="global_l3_matched_direct_validation_control",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="matched_direct_outperforms_isolated_macro_tower",
+            convention_epoch="v10_complete_shell_cartesian_direct",
+            comparability_group="train1603_formula_disjoint_val10_three_seed",
+            paper_use="appendix_post_freeze_validation_control",
+            interpretation_boundary=(
+                "Validation10-only matched direct-total control. Direct total TRS exceeds "
+                "the physical model's isolated macro tower in all three seeds; this does "
+                "not compare or invalidate atom-resolved ionic-factor metrics. Test20 unread."
+            ),
+            split="full_corpus_multitask_train1603_v1; validation10 only; test20 unread",
+        )
+    elif name in {
+        "global_l3_train1603_val10_v1",
+        "global_l3_isolated_u_train1603_val10_v2",
+    }:
+        policy.update(
+            family="global_l3_validation_forensic",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="negative_or_partial_seed42_validation_diagnostic",
+            convention_epoch="v10_global_l3_independent_u_first_order",
+            comparability_group="train1603_formula_disjoint_val10_seed42",
+            paper_use="appendix_post_freeze_diagnostic",
+            interpretation_boundary=(
+                "Seed42 validation-only precursor. Shared/isolated towers did not preserve the "
+                "teacher-U optimum; no test or production claim."
+            ),
+        )
+    elif name == "u_capacity_adjudication_v4_global_l3":
+        policy.update(
+            family="global_l3_same_id_capacity_gate",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="positive_noninductive_capacity_diagnostic",
+            convention_epoch="v10_global_l3_independent_u",
+            comparability_group="same_id_samples32_only",
+            paper_use="appendix_capacity_diagnostic_only",
+            interpretation_boundary=(
+                "Same-ID train-only capacity evidence. It establishes representation capacity "
+                "but cannot support formula-disjoint predictive validity."
+            ),
+        )
+    elif name.startswith("global_l3_"):
+        policy.update(
+            family="global_l3_implementation_smoke",
+            archival_status="current",
+            execution_status="completed_or_retained_partial",
+            result_disposition="implementation_diagnostic",
+            convention_epoch="v10_global_l3_independent_u_first_order",
+            comparability_group="run_local_only",
+            paper_use="appendix_implementation_history",
+            interpretation_boundary="Global-l3 implementation smoke; not a held-out performance result.",
+        )
+    elif name == "exposure_matched_direct_u_v2_conditioning":
         policy.update(
             family="registered_direct_u_exposure_replay",
             archival_status="current",

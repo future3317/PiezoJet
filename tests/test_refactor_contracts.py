@@ -5,7 +5,7 @@ import torch
 from piezojet.model import CartesianLocalEnvironmentEncoder, model_from_config
 from piezojet.projectors import translation_projector
 from piezojet.model import AtomCoordinateResponsePotential
-from piezojet.train import normal_equation_spectral_residual_diagnostics
+from piezojet.train import first_order_spectral_residual_diagnostics
 
 
 def test_model_from_config_defaults_to_the_energy_integrable_factor_architecture():
@@ -40,7 +40,7 @@ def _two_atom_force_blocks(eigenvalues: torch.Tensor) -> torch.Tensor:
     return matrix.reshape(2, 3, 2, 3).permute(0, 2, 1, 3)
 
 
-def test_normal_equation_diagnostic_bins_residual_by_true_stiffness():
+def test_first_order_diagnostic_bins_residual_by_true_stiffness():
     response = AtomCoordinateResponsePotential(optical_regularization=1e-3)
     true_blocks = _two_atom_force_blocks(
         torch.tensor([5e-4, 2e-3, 5e-3], dtype=torch.float64)
@@ -50,8 +50,9 @@ def test_normal_equation_diagnostic_bins_residual_by_true_stiffness():
     displacement[0, 0, 0, 0] = 2.0 ** -0.5
     displacement[1, 0, 0, 0] = -(2.0 ** -0.5)
     internal = torch.zeros_like(displacement)
-    metrics = normal_equation_spectral_residual_diagnostics(
+    metrics = first_order_spectral_residual_diagnostics(
         displacement,
+        torch.zeros_like(displacement),
         predicted_blocks.reshape(-1),
         internal,
         true_blocks.reshape(-1),

@@ -116,7 +116,7 @@ def test_default_optical_policy_is_continuous_regularized_not_predicted_spectrum
     assert response.optical_solve_policy == "regularized"
     model = PiezoJet(cutoff=5.0, num_blocks=1)
     assert model.response.optical_solve_policy == "regularized"
-    assert model.ionic_parameterization == "direct_displacement"
+    assert model.ionic_parameterization == "isolated_global_octupole_displacement"
     assert not hasattr(model, "observable_lift_policy")
 
 
@@ -132,6 +132,75 @@ def test_total_only_macro_tower_has_no_gradient_route_to_physical_factors():
     assert all(parameter.grad is None for parameter in model.encoder.parameters())
     assert all(parameter.grad is None for parameter in model.response_factors.parameters())
     assert all(parameter.grad is None for parameter in model.displacement_response_head.parameters())
+
+
+def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatch):
+    torch.manual_seed(39)
+    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[7], 5.0, 32)
+    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+    model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
+    with torch.no_grad():
+        reference = model.predict_components(graph)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("inactive response tower was evaluated")
+
+    monkeypatch.setattr(model, "predict_macro_responses", forbidden)
+    monkeypatch.setattr(model.response, "responses", forbidden)
+    with torch.no_grad():
+        pruned = model.predict_components(
+            graph,
+            compute_macro_response=False,
+            compute_factorized_response=False,
+        )
+    for name in (
+        "physical_tensor",
+        "electronic_piezo",
+        "ionic_piezo",
+        "displacement_response",
+        "born_charges",
+        "force_constants_flat",
+        "internal_strain",
+    ):
+        assert torch.allclose(
+            getattr(pruned, name), getattr(reference, name),
+            atol=2e-6, rtol=2e-6,
+        )
+    assert torch.count_nonzero(pruned.tensor) == 0
+    assert torch.count_nonzero(pruned.factorized_ionic_piezo) == 0
+
+
+def test_pruned_strict_objective_keeps_inactive_towers_out_of_autograd():
+    torch.manual_seed(40)
+    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[8], 5.0, 32)
+    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+    model = PiezoJet(cutoff=5.0, num_blocks=1)
+    components = model.predict_components(
+        graph,
+        compute_macro_response=False,
+        compute_factorized_response=False,
+    )
+    strict_like_loss = (
+        components.displacement_response.square().mean()
+        + components.internal_strain.square().mean()
+    )
+    strict_like_loss.backward()
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in model.displacement_response_head.parameters()
+    )
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in model.response_factors.cross_derivative_head.parameters()
+    )
+    for inactive in (
+        model.macro_encoder,
+        model.macro_total_head,
+        model.electronic_head,
+        model.background,
+        model.born_head,
+    ):
+        assert all(parameter.grad is None for parameter in inactive.parameters())
 
 
 def test_explicit_stable_dfpt_diagnostic_uses_exact_stationary_optical_inverse():
@@ -167,6 +236,10 @@ def test_response_generator_converts_all_si_blocks_to_one_energy_density_unit():
 
 
 def test_elastic_response_counts_shared_strain_curvature_once():
+    # Keep the independently recomputed optical solve away from an accidental
+    # cancellation-sensitive random draw; this is an algebraic identity test,
+    # not a random stress test.
+    torch.manual_seed(0)
     response = AtomCoordinateResponsePotential(optical_solve_policy="regularized")
     atoms = 2
     relative = torch.zeros(3, 3 * atoms)

@@ -20,6 +20,8 @@ cartesian_channels: 48
 # over-restrictive Lambda=B^T K S factorization.
 factor_architecture: independent_quadratic_response
 global_context_dim: 128
+displacement_attention_dim: 64
+displacement_cross_rank: 24
 spectral_channels: 16
 spectral_shells: 8
 # Dimensionless physical cutoff |g| V^(1/3) for the complete reciprocal
@@ -85,26 +87,34 @@ phi_oracle_normal_loss_weight: 0.0
 # no pseudoinverse chart or predicted-factor inverse in its gradient path.
 ionic_piezo_loss_weight: 1.0
 # Strict completions supervise U_eta against the explicitly regularized
-# true-DFPT target. A separate normal-equation residual ties independent
-# predicted U_eta, Phi and Lambda without differentiating through an inverse.
+# true-DFPT target.  The optional first-order real U/V block residual enforces
+# (Phi+i*delta*I)(U+iV)=Lambda without squaring the condition number.
 displacement_response_loss_weight: 1.0
-displacement_normal_equation_loss_weight: 0.1
-# The default preserves the registered replay objective. The prospective
-# teacher-forced experiment sets these through explicit CLI arguments: it
-# establishes nonzero U_eta with true DFPT factors/BECs, then delays the
-# homogeneous normal equation whose all-zero fields are an exact solution.
-displacement_pretrain_epochs: 0
+displacement_first_order_consistency_loss_weight: 0.1
+max_displacement_consistency_gradient_ratio: 1.0
+# Establish nonzero U_eta with true DFPT factors/BECs before the attached
+# first-order consistency term is warmed up and ramped.
+displacement_pretrain_epochs: 5
 displacement_pretrain_learning_rate: 0.0005
 displacement_pretrain_target_weight: 1.0
 displacement_pretrain_true_born_macro_weight: 1.0
-normal_equation_warmup_epochs: 0
-normal_equation_ramp_epochs: 0
-# Read-only replay diagnostics: compare the normal-equation and direct-target
-# gradients on the U_{eta,delta} head and bin residual energy by true |lambda|.
-# This does not alter either registered loss weight.
+# Preserve the teacher-U AdamW moments instead of restarting that tower at the
+# joint boundary.  Its lower LR protects the learned response while the other
+# independent towers continue at the registered joint rate below.
+preserve_displacement_optimizer_state: true
+joint_displacement_learning_rate: 0.0005
+collect_u_gradient_diagnostics: false
+displacement_consistency_warmup_epochs: 3
+displacement_consistency_ramp_epochs: 3
+# Compare first-order consistency and direct-target gradients on the U head;
+# the actual consistency/direct gradient ratio is capped above.
 collect_conditioning_diagnostics: true
 electronic_piezo_loss_weight: 1.0
-branch_sum_loss_weight: 1.0
+# OUTCAR total = electronic + ionic is already source-audited.  Re-optimizing
+# the same identity supplies no new label information and was measured to send
+# a 3.7x-larger, opposing gradient into U while the electronic head was still
+# inaccurate.  Keep branch-sum closure as a logged diagnostic, not a loss.
+branch_sum_loss_weight: 0.0
 # Direct-factor curriculum.  Z*, Phi, and printed Lambda are first optimized
 # without differentiating through the stiff Phi^+ response product.  The
 # internal-strain multiplier compensates its substantially smaller measured

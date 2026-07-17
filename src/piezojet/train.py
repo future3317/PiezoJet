@@ -317,64 +317,74 @@ def displacement_response_target_loss(
     return torch.stack(losses).mean() if losses else prediction.sum() * 0.0
 
 
-def displacement_normal_equation_loss(
+def displacement_first_order_block_loss(
     displacement_response: torch.Tensor,
+    auxiliary_response: torch.Tensor,
     force_constants_flat: torch.Tensor,
     internal_strain: torch.Tensor,
     graph_mask: torch.Tensor,
+    force_constant_mask: torch.Tensor,
     node_ptr: torch.Tensor,
     response: AtomCoordinateResponsePotential,
 ) -> torch.Tensor:
-    """Enforce the regularized equilibrium equation without inverse gradients.
+    """First-order real block residual for the signed regularized response.
 
-    For the declared signed Tikhonov estimator this is exactly
-    ``(Phi^2 + delta^2 I) U = Phi Lambda`` on the optical subspace.
+    Writing ``(Phi + i delta I)(U + i V) = Lambda`` gives
+    ``Phi U - delta V = Lambda`` and ``Phi V + delta U = 0``.  Unlike the
+    historical squared normal equation, this system does not square the
+    spectral condition number or overweight hard modes by ``lambda^4``.
     """
     graph_mask = graph_mask.reshape(-1).to(dtype=torch.bool)
+    force_constant_mask = force_constant_mask.reshape(-1).to(dtype=torch.bool)
     losses: list[torch.Tensor] = []
     force_offset = 0
-    delta2 = response.optical_regularization ** 2
+    delta = response.optical_regularization
     for graph_index in range(node_ptr.numel() - 1):
         start, stop = int(node_ptr[graph_index]), int(node_ptr[graph_index + 1])
         atoms = stop - start
         values = 9 * atoms * atoms
-        blocks = force_constants_flat[
-            force_offset : force_offset + values
-        ].reshape(atoms, atoms, 3, 3)
-        force_offset += values
+        blocks = None
+        if bool(force_constant_mask[graph_index]):
+            blocks = force_constants_flat[
+                force_offset : force_offset + values
+            ].reshape(atoms, atoms, 3, 3)
+            force_offset += values
         if not bool(graph_mask[graph_index]):
             continue
+        if blocks is None:
+            raise ValueError("First-order U/V consistency requires true Phi")
         matrix = response._matrix_from_blocks(blocks)
         u = response._coupling_voigt(
             displacement_response[start:stop]
         ).reshape(3 * atoms, 6)
+        v = response._coupling_voigt(
+            auxiliary_response[start:stop]
+        ).reshape(3 * atoms, 6)
         coupling = response._coupling_voigt(
             internal_strain[start:stop]
         ).reshape(3 * atoms, 6)
-        left = matrix @ (matrix @ u) + delta2 * u
-        right = matrix @ coupling
-        losses.append(invariant_pseudo_huber(left, right, scale_floor=1e-6))
+        real_residual = matrix @ u - delta * v - coupling
+        imaginary_residual = matrix @ v + delta * u
+        residual = torch.cat((real_residual, imaginary_residual), dim=-1)
+        target_scale = torch.linalg.vector_norm(coupling).clamp_min(1e-6)
+        relative = torch.linalg.vector_norm(residual) / target_scale
+        losses.append(torch.sqrt(1.0 + relative.square()) - 1.0)
     if force_offset != force_constants_flat.numel():
-        raise ValueError("Predicted force constants did not match graph boundaries")
-    return torch.stack(losses).mean() if losses else displacement_response.sum() * 0.0
+        raise ValueError("True force constants did not match first-order masks")
+    return torch.stack(losses).mean() if losses else (
+        displacement_response.sum() + auxiliary_response.sum()
+    ) * 0.0
 
 
-def normal_equation_weight_for_epoch(
+def displacement_consistency_weight_for_epoch(
     base_weight: float,
     epoch: int,
     warmup_epochs: int,
     ramp_epochs: int,
 ) -> float:
-    """Delay the homogeneous normal equation until direct U supervision acts.
-
-    ``Phi=Lambda=U=0`` exactly satisfies the normal equation.  Applying that
-    term from a cold start therefore supplies no restoring force against the
-    bilinear zero basin.  The schedule is deliberately simple and fully
-    recorded: zero during warmup, then a linear ramp to the declared weight.
-    Zero warmup/ramp exactly reproduces the historical objective.
-    """
+    """Warm up and linearly ramp the first-order U/V consistency residual."""
     if base_weight < 0.0 or warmup_epochs < 0 or ramp_epochs < 0:
-        raise ValueError("Normal-equation schedule parameters must be non-negative")
+        raise ValueError("Consistency schedule parameters must be non-negative")
     if epoch <= warmup_epochs:
         return 0.0
     if ramp_epochs == 0:
@@ -383,8 +393,9 @@ def normal_equation_weight_for_epoch(
     return float(base_weight) * fraction
 
 
-def normal_equation_spectral_residual_diagnostics(
+def first_order_spectral_residual_diagnostics(
     displacement_response: torch.Tensor,
+    auxiliary_response: torch.Tensor,
     predicted_force_constants_flat: torch.Tensor,
     predicted_internal_strain: torch.Tensor,
     true_force_constants_flat: torch.Tensor,
@@ -393,7 +404,7 @@ def normal_equation_spectral_residual_diagnostics(
     node_ptr: torch.Tensor,
     response: AtomCoordinateResponsePotential,
 ) -> dict[str, float | int]:
-    """Resolve the predicted normal-equation residual in true optical modes.
+    """Resolve the first-order U/V block residual in true optical modes.
 
     The diagnostic is read-only and does not alter the registered loss.  True
     ``|lambda|`` defines four fixed regions so a hard-mode-dominated residual
@@ -402,7 +413,6 @@ def normal_equation_spectral_residual_diagnostics(
     strict_mask = strict_mask.reshape(-1).to(dtype=torch.bool)
     force_constant_mask = force_constant_mask.reshape(-1).to(dtype=torch.bool)
     delta = response.optical_regularization
-    delta2 = delta ** 2
     region_names = (
         "below_delta",
         "delta_to_3delta",
@@ -440,17 +450,23 @@ def normal_equation_spectral_residual_diagnostics(
         u = response._coupling_voigt(
             displacement_response[start:stop].detach()
         ).reshape(3 * atoms, 6).to(torch.float64)
+        v = response._coupling_voigt(
+            auxiliary_response[start:stop].detach()
+        ).reshape(3 * atoms, 6).to(torch.float64)
         coupling = response._coupling_voigt(
             predicted_internal_strain[start:stop].detach()
         ).reshape(3 * atoms, 6).to(torch.float64)
-        residual = predicted_matrix @ (predicted_matrix @ u) + delta2 * u
-        residual = residual - predicted_matrix @ coupling
+        residual_real = predicted_matrix @ u - delta * v - coupling
+        residual_imaginary = predicted_matrix @ v + delta * u
         basis = response._optical_basis(atoms, true_matrix)
         if basis.shape[1] == 0:
             continue
         eigenvalues, reduced_vectors = torch.linalg.eigh(basis.T @ true_matrix @ basis)
         optical_vectors = basis @ reduced_vectors
-        per_mode_energy = (optical_vectors.T @ residual).square().sum(dim=1)
+        per_mode_energy = (
+            (optical_vectors.T @ residual_real).square().sum(dim=1)
+            + (optical_vectors.T @ residual_imaginary).square().sum(dim=1)
+        )
         absolute = eigenvalues.abs()
         masks = {
             "below_delta": absolute < delta,
@@ -490,6 +506,179 @@ def _parameter_gradient_norm(
         if gradient is not None:
             squared = squared + gradient.square().sum()
     return squared.sqrt()
+
+
+def _paired_parameter_gradient_metrics(
+    first_loss: torch.Tensor,
+    second_loss: torch.Tensor,
+    parameters: tuple[torch.nn.Parameter, ...],
+) -> dict[str, float]:
+    """Measure two task gradients on one parameter group without mutation."""
+    first_gradients = torch.autograd.grad(
+        first_loss, parameters, retain_graph=True, allow_unused=True
+    )
+    second_gradients = torch.autograd.grad(
+        second_loss, parameters, retain_graph=True, allow_unused=True
+    )
+    first_squared = first_loss.new_zeros(())
+    second_squared = first_loss.new_zeros(())
+    dot = first_loss.new_zeros(())
+    for parameter, first, second in zip(parameters, first_gradients, second_gradients):
+        first_value = torch.zeros_like(parameter) if first is None else first
+        second_value = torch.zeros_like(parameter) if second is None else second
+        first_squared = first_squared + first_value.square().sum()
+        second_squared = second_squared + second_value.square().sum()
+        dot = dot + (first_value * second_value).sum()
+    first_norm = first_squared.sqrt()
+    second_norm = second_squared.sqrt()
+    epsilon = torch.finfo(first_norm.dtype).eps
+    cosine = dot / (first_norm * second_norm).clamp_min(epsilon)
+    return {
+        "direct_u_gradient_norm": float(first_norm.detach()),
+        "true_born_ionic_gradient_norm": float(second_norm.detach()),
+        "gradient_cosine": float(cosine.detach()),
+    }
+
+
+def _unique_trainable_parameters(*modules: torch.nn.Module) -> tuple[torch.nn.Parameter, ...]:
+    parameters: list[torch.nn.Parameter] = []
+    seen: set[int] = set()
+    for module in modules:
+        for parameter in module.parameters():
+            if parameter.requires_grad and id(parameter) not in seen:
+                parameters.append(parameter)
+                seen.add(id(parameter))
+    return tuple(parameters)
+
+
+def _displacement_core_parameters(model: PiezoJet) -> tuple[torch.nn.Parameter, ...]:
+    """Parameters trained by the teacher-U stage, in checkpoint order."""
+    return _unique_trainable_parameters(
+        model.displacement_encoder,
+        model.displacement_local_polar,
+        model.displacement_global_context,
+        model.displacement_response_head,
+    )
+
+
+def _displacement_auxiliary_parameters(model: PiezoJet) -> tuple[torch.nn.Parameter, ...]:
+    return _unique_trainable_parameters(model.displacement_auxiliary_head)
+
+
+def _joint_optimizer(
+    model: PiezoJet,
+    cfg: dict,
+    *,
+    displacement_optimizer_state: dict | None,
+) -> tuple[torch.optim.AdamW, bool]:
+    """Build joint AdamW while optionally retaining teacher-U moments.
+
+    Loading a whole teacher optimizer into a newly constructed all-model
+    optimizer is invalid because the parameter groups differ.  We instead
+    recreate its exact U-only group, restore that state, then append the new
+    auxiliary-V and non-U groups.  This preserves moments without coupling the
+    independent macro/factor towers to teacher-stage history.
+    """
+    core = _displacement_core_parameters(model)
+    auxiliary = _displacement_auxiliary_parameters(model)
+    displacement_ids = {id(parameter) for parameter in core + auxiliary}
+    other = tuple(
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) not in displacement_ids
+    )
+    learning_rate = float(cfg["learning_rate"])
+    displacement_learning_rate = float(
+        cfg.get("joint_displacement_learning_rate", learning_rate)
+    )
+    weight_decay = float(cfg["weight_decay"])
+    preserve = bool(cfg.get("preserve_displacement_optimizer_state", False))
+    restored = preserve and displacement_optimizer_state is not None
+    if restored:
+        optimizer = torch.optim.AdamW(
+            core,
+            lr=float(cfg.get("displacement_pretrain_learning_rate", displacement_learning_rate)),
+            weight_decay=weight_decay,
+        )
+        optimizer.load_state_dict(displacement_optimizer_state)
+        for group in optimizer.param_groups:
+            group["lr"] = displacement_learning_rate
+            group["weight_decay"] = weight_decay
+        if auxiliary:
+            optimizer.add_param_group(
+                {"params": auxiliary, "lr": displacement_learning_rate, "weight_decay": weight_decay}
+            )
+        if other:
+            optimizer.add_param_group(
+                {"params": other, "lr": learning_rate, "weight_decay": weight_decay}
+            )
+        return optimizer, True
+    groups: list[dict] = []
+    if core or auxiliary:
+        groups.append(
+            {
+                "params": core + auxiliary,
+                "lr": displacement_learning_rate,
+                "weight_decay": weight_decay,
+            }
+        )
+    if other:
+        groups.append({"params": other, "lr": learning_rate, "weight_decay": weight_decay})
+    return torch.optim.AdamW(groups), False
+
+
+def _optimizer_for_resume(
+    model: PiezoJet,
+    cfg: dict,
+    optimizer_state: dict,
+) -> torch.optim.AdamW:
+    """Recreate the exact saved parameter-group topology before loading AdamW."""
+    core = _displacement_core_parameters(model)
+    auxiliary = _displacement_auxiliary_parameters(model)
+    displacement_ids = {id(parameter) for parameter in core + auxiliary}
+    other = tuple(
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) not in displacement_ids
+    )
+    group_count = len(optimizer_state.get("param_groups", []))
+    if group_count == 1:
+        groups = [tuple(parameter for parameter in model.parameters() if parameter.requires_grad)]
+    elif group_count == 2:
+        groups = [core + auxiliary, other]
+    elif group_count == 3:
+        groups = [core, auxiliary, other]
+    else:
+        raise ValueError(f"Unsupported saved optimizer group count: {group_count}")
+    expected = [len(group["params"]) for group in optimizer_state["param_groups"]]
+    observed = [len(group) for group in groups]
+    if observed != expected:
+        raise ValueError(
+            "Saved optimizer parameter groups do not match the current model: "
+            f"expected {expected}, observed {observed}"
+        )
+    optimizer = torch.optim.AdamW(
+        [{"params": group} for group in groups],
+        lr=float(cfg["learning_rate"]),
+        weight_decay=float(cfg["weight_decay"]),
+    )
+    optimizer.load_state_dict(optimizer_state)
+    return optimizer
+
+
+def _read_metric_rows(path: Path) -> list[dict[str, float | int]]:
+    if not path.is_file():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = []
+        for row in csv.DictReader(handle):
+            parsed: dict[str, float | int] = {}
+            for key, value in row.items():
+                if value is None or value == "":
+                    continue
+                parsed[key] = int(float(value)) if key == "epoch" else float(value)
+            rows.append(parsed)
+    return rows
 
 
 def force_constant_loss(
@@ -672,7 +861,8 @@ def _epoch(
     born_weight: float = 0.0,
     ionic_weight: float = 0.0,
     displacement_response_weight: float = 0.0,
-    displacement_normal_weight: float = 0.0,
+    displacement_consistency_weight: float = 0.0,
+    max_consistency_gradient_ratio: float = 1.0,
     electronic_weight: float = 0.0,
     branch_sum_weight: float = 0.0,
     force_weight: float = 0.0,
@@ -690,9 +880,24 @@ def _epoch(
     max_train_updates: int | None = None,
     collect_diagnostics: bool = False,
     collect_conditioning_diagnostics: bool = False,
+    collect_u_gradient_diagnostics: bool = False,
 ) -> tuple[float, float, list[dict[str, float | int]], dict[str, float], int]:
     training = optimizer is not None
     model.train(training)
+    evaluate_all_components = not training
+    compute_macro_response = evaluate_all_components or any(
+        weight != 0.0
+        for weight in (macro_weight, macro_dielectric_weight, macro_elastic_weight)
+    )
+    compute_factorized_response = evaluate_all_components or any(
+        weight != 0.0
+        for weight in (
+            dielectric_weight,
+            ionic_dielectric_weight,
+            ionic_elastic_weight,
+            elastic_weight,
+        )
+    )
     total, count, elapsed, diagnostics = 0.0, 0, 0.0, []
     response_predictions, response_targets = [], []
     component_totals = {
@@ -719,15 +924,23 @@ def _epoch(
         "ionic_piezo": 0.0,
         "factorized_ionic_piezo": 0.0,
         "displacement_response": 0.0,
-        "displacement_normal_equation": 0.0,
+        "displacement_first_order_consistency": 0.0,
         "electronic_piezo": 0.0,
         "branch_sum": 0.0,
     }
     conditioning_totals = {
         "materials": 0,
-        "normal_u_head_gradient_norm_ratio_sum": 0.0,
-        "weighted_normal_u_head_gradient_norm_ratio_sum": 0.0,
+        "consistency_u_head_gradient_norm_ratio_sum": 0.0,
+        "weighted_consistency_u_head_gradient_norm_ratio_sum": 0.0,
         "total_optical_residual_squared": 0.0,
+        "u_gradient_materials": 0,
+        "direct_u_gradient_norm_sum": 0.0,
+        "true_born_ionic_gradient_norm_sum": 0.0,
+        "direct_u_true_born_ionic_gradient_cosine_sum": 0.0,
+        "branch_sum_gradient_norm_sum": 0.0,
+        "direct_u_branch_sum_gradient_cosine_sum": 0.0,
+        "combined_branch_response_gradient_norm_sum": 0.0,
+        "direct_u_combined_branch_response_gradient_cosine_sum": 0.0,
         **{
             f"{name}_mode_count": 0
             for name in (
@@ -752,22 +965,53 @@ def _epoch(
         batch = batch.to(device, non_blocking=device.type == "cuda")
         start = time.perf_counter()
         with torch.set_grad_enabled(training):
-            components = model.predict_components(batch)
+            components = model.predict_components(
+                batch,
+                compute_macro_response=compute_macro_response,
+                compute_factorized_response=compute_factorized_response,
+            )
             prediction = components.tensor
-            full = full_loss(prediction, batch.y, scale, bin_weights)
-            dielectric_component = dielectric_loss(
-                components.dielectric, batch.y_dielectric, batch.dielectric_mask
+            # A constant zero keeps inactive towers out of autograd entirely.
+            # Using ``prediction.sum() * 0`` would create explicit zero
+            # gradients, causing AdamW to apply weight decay to parameters
+            # that this data stream is meant to leave untouched.
+            zero = torch.zeros(
+                (), dtype=components.physical_tensor.dtype,
+                device=components.physical_tensor.device,
             )
-            macro_dielectric_component = dielectric_loss(
-                components.macro_dielectric, batch.y_dielectric, batch.dielectric_mask
+            full = (
+                full_loss(prediction, batch.y, scale, bin_weights)
+                if compute_macro_response else zero
             )
-            macro_elastic_component = elastic_auxiliary_loss(
-                components.macro_elastic, batch.y_elastic_gpa, batch.elastic_mask
+            dielectric_component = (
+                dielectric_loss(
+                    components.dielectric, batch.y_dielectric,
+                    batch.dielectric_mask,
+                )
+                if evaluate_all_components or dielectric_weight != 0.0 else zero
             )
-            ionic_dielectric_component = dielectric_loss(
-                components.ionic_dielectric,
-                batch.y_dfpt_ionic_dielectric,
-                batch.dfpt_ionic_dielectric_mask,
+            macro_dielectric_component = (
+                dielectric_loss(
+                    components.macro_dielectric, batch.y_dielectric,
+                    batch.dielectric_mask,
+                )
+                if compute_macro_response else zero
+            )
+            macro_elastic_component = (
+                elastic_auxiliary_loss(
+                    components.macro_elastic, batch.y_elastic_gpa,
+                    batch.elastic_mask,
+                )
+                if compute_macro_response else zero
+            )
+            ionic_dielectric_component = (
+                dielectric_loss(
+                    components.ionic_dielectric,
+                    batch.y_dfpt_ionic_dielectric,
+                    batch.dfpt_ionic_dielectric_mask,
+                )
+                if evaluate_all_components or ionic_dielectric_weight != 0.0
+                else zero
             )
             ionic_elastic_component = (
                 ionic_elastic_response_loss(
@@ -781,39 +1025,72 @@ def _epoch(
                     model.response,
                 )
                 if ionic_elastic_weight != 0.0
-                else components.elastic_softening.sum() * 0.0
+                else zero
             )
-            elastic_component = elastic_auxiliary_loss(
-                components.elastic, batch.y_elastic_gpa, batch.elastic_mask
+            elastic_component = (
+                elastic_auxiliary_loss(
+                    components.elastic, batch.y_elastic_gpa,
+                    batch.elastic_mask,
+                )
+                if evaluate_all_components or elastic_weight != 0.0 else zero
             )
-            born_component = born_loss(
-                components.born_charges, batch.y_born, batch.born_mask, batch.batch
+            born_component = (
+                born_loss(
+                    components.born_charges, batch.y_born,
+                    batch.born_mask, batch.batch,
+                )
+                if evaluate_all_components or born_weight != 0.0 else zero
             )
-            ionic_component, supervised_ionic_prediction = displacement_macro_piezo_loss(
-                components.displacement_response,
-                batch.y_born,
-                batch.y_ionic_piezo,
-                batch.ionic_piezo_mask,
-                batch,
-                model.response,
+            need_ionic = (
+                evaluate_all_components or ionic_weight != 0.0
+                or branch_sum_weight != 0.0 or collect_u_gradient_diagnostics
             )
-            electronic_component = macroscopic_piezo_loss(
-                components.electronic_piezo,
-                batch.y_electronic_piezo,
-                batch.dfpt_branch_mask,
+            if need_ionic:
+                ionic_component, supervised_ionic_prediction = displacement_macro_piezo_loss(
+                    components.displacement_response,
+                    batch.y_born,
+                    batch.y_ionic_piezo,
+                    batch.ionic_piezo_mask,
+                    batch,
+                    model.response,
+                )
+            else:
+                ionic_component = zero
+                supervised_ionic_prediction = components.ionic_piezo * 0.0
+            electronic_component = (
+                macroscopic_piezo_loss(
+                    components.electronic_piezo,
+                    batch.y_electronic_piezo,
+                    batch.dfpt_branch_mask,
+                )
+                if evaluate_all_components or electronic_weight != 0.0
+                or branch_sum_weight != 0.0 or collect_u_gradient_diagnostics
+                else zero
             )
-            branch_sum_component = macroscopic_piezo_loss(
-                components.electronic_piezo + supervised_ionic_prediction,
-                batch.y_dfpt_total_piezo,
-                batch.dfpt_branch_mask,
+            branch_sum_component = (
+                macroscopic_piezo_loss(
+                    components.electronic_piezo + supervised_ionic_prediction,
+                    batch.y_dfpt_total_piezo,
+                    batch.dfpt_branch_mask,
+                )
+                if evaluate_all_components or branch_sum_weight != 0.0
+                or collect_u_gradient_diagnostics else zero
             )
-            force_component = force_constant_loss(
-                components.force_constants_flat, batch.dfpt_force_constants_flat, batch.ptr,
-                batch.force_constant_mask,
+            force_component = (
+                force_constant_loss(
+                    components.force_constants_flat,
+                    batch.dfpt_force_constants_flat, batch.ptr,
+                    batch.force_constant_mask,
+                )
+                if evaluate_all_components or force_weight != 0.0 else zero
             )
-            soft_component = soft_optical_eigenvalue_loss(
-                components.force_constants_flat, batch.dfpt_force_constants_flat, batch.ptr,
-                batch.force_constant_mask,
+            soft_component = (
+                soft_optical_eigenvalue_loss(
+                    components.force_constants_flat,
+                    batch.dfpt_force_constants_flat, batch.ptr,
+                    batch.force_constant_mask,
+                )
+                if evaluate_all_components or soft_mode_weight != 0.0 else zero
             )
             low_action_component, low_leak_component = (
                 low_mode_operator_action_losses(
@@ -824,7 +1101,7 @@ def _epoch(
                     mode_count=int(getattr(model, "operator_low_mode_count", 6)),
                 )
                 if low_mode_action_weight != 0.0 or low_mode_leak_weight != 0.0
-                else (components.force_constants_flat.sum() * 0.0, components.force_constants_flat.sum() * 0.0)
+                else (zero, zero)
             )
             phi_probe_component = (
                 mixed_force_constant_probe_loss(
@@ -838,18 +1115,27 @@ def _epoch(
                     material_ids=batch.material_id,
                 )
                 if phi_probe_weight != 0.0
-                else components.force_constants_flat.sum() * 0.0
+                else zero
             )
-            internal_component = internal_strain_loss(
-                components.internal_strain, batch.dfpt_internal_strain_flat,
-                batch.dfpt_internal_strain_ions, batch.dfpt_internal_strain_directions,
-                batch.dfpt_internal_strain_count, batch.ptr,
+            internal_component = (
+                internal_strain_loss(
+                    components.internal_strain, batch.dfpt_internal_strain_flat,
+                    batch.dfpt_internal_strain_ions,
+                    batch.dfpt_internal_strain_directions,
+                    batch.dfpt_internal_strain_count, batch.ptr,
+                )
+                if evaluate_all_components or internal_strain_weight != 0.0
+                else zero
             )
-            full_internal_component = full_internal_strain_loss(
-                components.internal_strain,
-                batch.dfpt_internal_strain_full,
-                batch.internal_strain_full_mask,
-                batch.batch,
+            full_internal_component = (
+                full_internal_strain_loss(
+                    components.internal_strain,
+                    batch.dfpt_internal_strain_full,
+                    batch.internal_strain_full_mask,
+                    batch.batch,
+                )
+                if evaluate_all_components or internal_strain_full_weight != 0.0
+                else zero
             )
             lambda_probe_component = (
                 internal_strain_probe_loss(
@@ -860,7 +1146,7 @@ def _epoch(
                     material_ids=batch.material_id,
                 )
                 if lambda_probe_weight != 0.0
-                else components.internal_strain.sum() * 0.0
+                else zero
             )
             born_probe_component = (
                 born_charge_probe_loss(
@@ -871,7 +1157,7 @@ def _epoch(
                     material_ids=batch.material_id,
                 )
                 if born_probe_weight != 0.0
-                else components.born_charges.sum() * 0.0
+                else zero
             )
             oracle_mask = batch.internal_strain_full_mask.reshape(-1) & batch.ionic_piezo_mask.reshape(-1)
             born_oracle_component = (
@@ -887,7 +1173,7 @@ def _epoch(
                     model.response,
                 )
                 if born_oracle_weight != 0.0
-                else components.born_charges.sum() * 0.0
+                else zero
             )
             phi_oracle_normal_component = (
                 phi_oracle_normal_equation_loss(
@@ -900,36 +1186,131 @@ def _epoch(
                     model.response,
                 )
                 if phi_oracle_normal_weight != 0.0
-                else components.force_constants_flat.sum() * 0.0
+                else zero
             )
-            displacement_component = displacement_response_target_loss(
-                components.displacement_response,
-                batch.dfpt_force_constants_flat,
-                batch.dfpt_internal_strain_full,
-                batch.internal_strain_full_mask,
-                batch.force_constant_mask,
-                batch.ptr,
-                model.response,
+            displacement_component = (
+                displacement_response_target_loss(
+                    components.displacement_response,
+                    batch.dfpt_force_constants_flat,
+                    batch.dfpt_internal_strain_full,
+                    batch.internal_strain_full_mask,
+                    batch.force_constant_mask,
+                    batch.ptr,
+                    model.response,
+                )
+                if evaluate_all_components
+                or displacement_response_weight != 0.0
+                or displacement_consistency_weight != 0.0
+                else zero
             )
-            displacement_normal_component = displacement_normal_equation_loss(
-                components.displacement_response,
-                components.force_constants_flat,
-                components.internal_strain,
-                batch.internal_strain_full_mask,
-                batch.ptr,
-                model.response,
+            if displacement_consistency_weight != 0.0:
+                _, auxiliary_displacement = model.predict_displacement_block_response(
+                    batch
+                )
+                displacement_consistency_component = displacement_first_order_block_loss(
+                    components.displacement_response,
+                    auxiliary_displacement,
+                    batch.dfpt_force_constants_flat,
+                    batch.dfpt_internal_strain_full,
+                    batch.internal_strain_full_mask,
+                    batch.force_constant_mask,
+                    batch.ptr,
+                    model.response,
+                )
+            else:
+                auxiliary_displacement = components.displacement_response * 0.0
+                displacement_consistency_component = zero
+            active_strain_component = (
+                response_active_internal_strain_loss(
+                    components.internal_strain,
+                    batch.y_born,
+                    batch.dfpt_force_constants_flat,
+                    batch.y_ionic_piezo,
+                    batch.ionic_piezo_mask,
+                    batch.ptr,
+                    batch.cell.reshape(-1, 3, 3),
+                    model.response,
+                    batch.force_constant_mask,
+                )
+                if evaluate_all_components
+                or response_active_strain_weight != 0.0 else zero
             )
-            active_strain_component = response_active_internal_strain_loss(
-                components.internal_strain,
-                batch.y_born,
-                batch.dfpt_force_constants_flat,
-                batch.y_ionic_piezo,
-                batch.ionic_piezo_mask,
-                batch.ptr,
-                batch.cell.reshape(-1, 3, 3),
-                model.response,
-                batch.force_constant_mask,
+            effective_consistency_weight = displacement_consistency_weight
+            strict_materials = int(
+                batch.internal_strain_full_mask.reshape(-1).sum()
             )
+            direct_norm = components.displacement_response.new_zeros(())
+            consistency_norm = components.displacement_response.new_zeros(())
+            if (
+                training
+                and strict_materials
+                and displacement_consistency_weight != 0.0
+            ):
+                head_parameters = tuple(model.displacement_response_head.parameters())
+                direct_norm = _parameter_gradient_norm(
+                    displacement_component, head_parameters
+                )
+                consistency_norm = _parameter_gradient_norm(
+                    displacement_consistency_component, head_parameters
+                )
+                epsilon = torch.finfo(direct_norm.dtype).eps
+                cap = (
+                    max_consistency_gradient_ratio
+                    * displacement_response_weight
+                    * float(direct_norm.detach())
+                    / max(float(consistency_norm.detach()), float(epsilon))
+                )
+                effective_consistency_weight = min(
+                    displacement_consistency_weight, cap
+                )
+            gradient_materials = int(
+                (
+                    batch.internal_strain_full_mask.reshape(-1).to(dtype=torch.bool)
+                    & batch.ionic_piezo_mask.reshape(-1).to(dtype=torch.bool)
+                ).sum()
+            )
+            if training and collect_u_gradient_diagnostics and gradient_materials:
+                gradient_metrics = _paired_parameter_gradient_metrics(
+                    displacement_component,
+                    ionic_component,
+                    _displacement_core_parameters(model),
+                )
+                conditioning_totals["u_gradient_materials"] += gradient_materials
+                conditioning_totals["direct_u_gradient_norm_sum"] += (
+                    gradient_metrics["direct_u_gradient_norm"] * gradient_materials
+                )
+                conditioning_totals["true_born_ionic_gradient_norm_sum"] += (
+                    gradient_metrics["true_born_ionic_gradient_norm"] * gradient_materials
+                )
+                conditioning_totals[
+                    "direct_u_true_born_ionic_gradient_cosine_sum"
+                ] += gradient_metrics["gradient_cosine"] * gradient_materials
+                branch_sum_metrics = _paired_parameter_gradient_metrics(
+                    displacement_component,
+                    branch_sum_component,
+                    _displacement_core_parameters(model),
+                )
+                conditioning_totals["branch_sum_gradient_norm_sum"] += (
+                    branch_sum_metrics["true_born_ionic_gradient_norm"]
+                    * gradient_materials
+                )
+                conditioning_totals[
+                    "direct_u_branch_sum_gradient_cosine_sum"
+                ] += branch_sum_metrics["gradient_cosine"] * gradient_materials
+                combined_metrics = _paired_parameter_gradient_metrics(
+                    displacement_component,
+                    ionic_component + branch_sum_component,
+                    _displacement_core_parameters(model),
+                )
+                conditioning_totals[
+                    "combined_branch_response_gradient_norm_sum"
+                ] += (
+                    combined_metrics["true_born_ionic_gradient_norm"]
+                    * gradient_materials
+                )
+                conditioning_totals[
+                    "direct_u_combined_branch_response_gradient_cosine_sum"
+                ] += combined_metrics["gradient_cosine"] * gradient_materials
             auxiliary = (
                 dielectric_weight * dielectric_component
                 + macro_dielectric_weight * macro_dielectric_component
@@ -940,7 +1321,7 @@ def _epoch(
                 + born_weight * born_component
                 + ionic_weight * ionic_component
                 + displacement_response_weight * displacement_component
-                + displacement_normal_weight * displacement_normal_component
+                + effective_consistency_weight * displacement_consistency_component
                 + electronic_weight * electronic_component
                 + branch_sum_weight * branch_sum_component
                 + force_weight * force_component
@@ -960,32 +1341,29 @@ def _epoch(
             if not torch.isfinite(loss):
                 raise FloatingPointError("Non-finite optimization loss encountered")
             if training:
-                strict_materials = int(
-                    batch.internal_strain_full_mask.reshape(-1).sum()
-                )
                 if collect_conditioning_diagnostics and strict_materials:
-                    head_parameters = tuple(model.displacement_response_head.parameters())
-                    direct_norm = _parameter_gradient_norm(
-                        displacement_component, head_parameters
-                    )
-                    normal_norm = _parameter_gradient_norm(
-                        displacement_normal_component, head_parameters
-                    )
                     epsilon = torch.finfo(direct_norm.dtype).eps
-                    raw_ratio = normal_norm / (direct_norm + epsilon)
+                    if displacement_consistency_weight == 0.0:
+                        head_parameters = tuple(model.displacement_response_head.parameters())
+                        direct_norm = _parameter_gradient_norm(
+                            displacement_component, head_parameters
+                        )
+                        consistency_norm = direct_norm * 0.0
+                    raw_ratio = consistency_norm / (direct_norm + epsilon)
                     weighted_ratio = (
-                        displacement_normal_weight * normal_norm
+                        effective_consistency_weight * consistency_norm
                         / (displacement_response_weight * direct_norm + epsilon)
                     )
                     conditioning_totals["materials"] += strict_materials
                     conditioning_totals[
-                        "normal_u_head_gradient_norm_ratio_sum"
+                        "consistency_u_head_gradient_norm_ratio_sum"
                     ] += float(raw_ratio.detach()) * strict_materials
                     conditioning_totals[
-                        "weighted_normal_u_head_gradient_norm_ratio_sum"
+                        "weighted_consistency_u_head_gradient_norm_ratio_sum"
                     ] += float(weighted_ratio.detach()) * strict_materials
-                    spectral = normal_equation_spectral_residual_diagnostics(
+                    spectral = first_order_spectral_residual_diagnostics(
                         components.displacement_response,
+                        auxiliary_displacement,
                         components.force_constants_flat,
                         components.internal_strain,
                         batch.dfpt_force_constants_flat,
@@ -1012,8 +1390,9 @@ def _epoch(
         if collect_diagnostics:
             diagnostics.extend(_diagnostics(prediction.detach(), batch.y.detach(), batch, model, scale))
         total += float(loss.detach()) * batch.num_graphs
-        response_predictions.append(prediction.detach().cpu())
-        response_targets.append(batch.y.detach().cpu())
+        if compute_macro_response:
+            response_predictions.append(prediction.detach().cpu())
+            response_targets.append(batch.y.detach().cpu())
         detached_components = {
             "piezo_full": full,
             "dielectric": dielectric_component,
@@ -1036,9 +1415,12 @@ def _epoch(
             "internal_strain_full": full_internal_component,
             "response_active_strain": active_strain_component,
             "ionic_piezo": ionic_component,
-            "factorized_ionic_piezo": components.factorized_ionic_piezo.abs().mean(),
+            "factorized_ionic_piezo": (
+                components.factorized_ionic_piezo.abs().mean()
+                if compute_factorized_response else zero
+            ),
             "displacement_response": displacement_component,
-            "displacement_normal_equation": displacement_normal_component,
+            "displacement_first_order_consistency": displacement_consistency_component,
             "electronic_piezo": electronic_component,
             "branch_sum": branch_sum_component,
         }
@@ -1052,15 +1434,21 @@ def _epoch(
     component_summary = {
         name: value / denominator for name, value in component_totals.items()
     }
+    component_summary["macro_response_evaluated"] = float(
+        compute_macro_response
+    )
+    component_summary["factorized_response_evaluated"] = float(
+        compute_factorized_response
+    )
     conditioning_materials = int(conditioning_totals["materials"])
     if conditioning_materials:
         component_summary.update(
-            conditioning_normal_u_head_gradient_norm_ratio=(
-                conditioning_totals["normal_u_head_gradient_norm_ratio_sum"]
+            conditioning_consistency_u_head_gradient_norm_ratio=(
+                conditioning_totals["consistency_u_head_gradient_norm_ratio_sum"]
                 / conditioning_materials
             ),
-            conditioning_weighted_normal_u_head_gradient_norm_ratio=(
-                conditioning_totals["weighted_normal_u_head_gradient_norm_ratio_sum"]
+            conditioning_weighted_consistency_u_head_gradient_norm_ratio=(
+                conditioning_totals["weighted_consistency_u_head_gradient_norm_ratio_sum"]
                 / conditioning_materials
             ),
             conditioning_materials=float(conditioning_materials),
@@ -1078,10 +1466,49 @@ def _epoch(
             component_summary[f"conditioning_{name}_residual_fraction"] = float(
                 conditioning_totals[f"{name}_residual_squared"]
             ) / max(residual_total, 1e-30)
-    component_summary["tensor_response_skill_vs_zero"] = float(
-        response_tensor_skill(
-            torch.cat(response_predictions), torch.cat(response_targets)
-        )["tensor_response_skill_vs_zero"]
+    gradient_materials = int(conditioning_totals["u_gradient_materials"])
+    if gradient_materials:
+        component_summary.update(
+            u_gradient_materials=float(gradient_materials),
+            direct_u_gradient_norm=(
+                conditioning_totals["direct_u_gradient_norm_sum"] / gradient_materials
+            ),
+            true_born_ionic_gradient_norm=(
+                conditioning_totals["true_born_ionic_gradient_norm_sum"]
+                / gradient_materials
+            ),
+            direct_u_true_born_ionic_gradient_cosine=(
+                conditioning_totals[
+                    "direct_u_true_born_ionic_gradient_cosine_sum"
+                ]
+                / gradient_materials
+            ),
+            branch_sum_gradient_norm=(
+                conditioning_totals["branch_sum_gradient_norm_sum"]
+                / gradient_materials
+            ),
+            direct_u_branch_sum_gradient_cosine=(
+                conditioning_totals["direct_u_branch_sum_gradient_cosine_sum"]
+                / gradient_materials
+            ),
+            combined_branch_response_gradient_norm=(
+                conditioning_totals["combined_branch_response_gradient_norm_sum"]
+                / gradient_materials
+            ),
+            direct_u_combined_branch_response_gradient_cosine=(
+                conditioning_totals[
+                    "direct_u_combined_branch_response_gradient_cosine_sum"
+                ]
+                / gradient_materials
+            ),
+        )
+    component_summary["tensor_response_skill_vs_zero"] = (
+        float(
+            response_tensor_skill(
+                torch.cat(response_predictions), torch.cat(response_targets)
+            )["tensor_response_skill_vs_zero"]
+        )
+        if response_predictions else float("nan")
     )
     return total / denominator, elapsed, diagnostics, component_summary, updates
 
@@ -1539,6 +1966,14 @@ def main() -> None:
         help="Initialize a fresh joint stage from a selected factor checkpoint without restoring its optimizer/epoch",
     )
     parser.add_argument(
+        "--displacement-checkpoint",
+        type=Path,
+        help=(
+            "Initialize a fresh joint-stage adjudication from a selected "
+            "teacher-forced displacement checkpoint, including its AdamW state"
+        ),
+    )
+    parser.add_argument(
         "--pretrained-encoder",
         type=Path,
         help="Explicit inductive Cartesian structural-pretraining checkpoint; overrides config without altering the split.",
@@ -1549,19 +1984,35 @@ def main() -> None:
     parser.add_argument("--factor-pretrain-patience", type=int, help="Early-stopping patience for direct-factor validation loss")
     parser.add_argument(
         "--displacement-pretrain-epochs", type=int,
-        help="Teacher-forced U_eta epochs before bilinear ionic and normal-equation joint training",
+        help="Teacher-forced U_eta epochs before bilinear ionic and first-order-consistency joint training",
     )
     parser.add_argument(
         "--displacement-pretrain-learning-rate", type=float,
         help="Learning rate for the teacher-forced U_eta curriculum",
     )
     parser.add_argument(
-        "--normal-equation-warmup-epochs", type=int,
-        help="Joint epochs with zero normal-equation weight after teacher forcing",
+        "--joint-displacement-learning-rate",
+        type=float,
+        help="Joint-stage learning rate for the isolated U/V tower",
     )
     parser.add_argument(
-        "--normal-equation-ramp-epochs", type=int,
-        help="Joint epochs for linear normal-equation-weight ramp after warmup",
+        "--preserve-displacement-optimizer-state",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Retain teacher-U AdamW moments when entering the joint stage",
+    )
+    parser.add_argument(
+        "--collect-u-gradient-diagnostics",
+        action="store_true",
+        help="Record same-batch strict direct-U versus true-BEC ionic U-tower gradients",
+    )
+    parser.add_argument(
+        "--displacement-consistency-warmup-epochs", type=int,
+        help="Joint epochs with zero first-order U/V consistency weight",
+    )
+    parser.add_argument(
+        "--displacement-consistency-ramp-epochs", type=int,
+        help="Joint epochs for the linear first-order-consistency ramp",
     )
     parser.add_argument(
         "--allow-noninductive-overfit", action="store_true",
@@ -1645,14 +2096,24 @@ def main() -> None:
         if args.displacement_pretrain_learning_rate <= 0:
             raise ValueError("--displacement-pretrain-learning-rate must be positive")
         cfg["displacement_pretrain_learning_rate"] = args.displacement_pretrain_learning_rate
-    if args.normal_equation_warmup_epochs is not None:
-        if args.normal_equation_warmup_epochs < 0:
-            raise ValueError("--normal-equation-warmup-epochs must be non-negative")
-        cfg["normal_equation_warmup_epochs"] = args.normal_equation_warmup_epochs
-    if args.normal_equation_ramp_epochs is not None:
-        if args.normal_equation_ramp_epochs < 0:
-            raise ValueError("--normal-equation-ramp-epochs must be non-negative")
-        cfg["normal_equation_ramp_epochs"] = args.normal_equation_ramp_epochs
+    if args.joint_displacement_learning_rate is not None:
+        if args.joint_displacement_learning_rate <= 0:
+            raise ValueError("--joint-displacement-learning-rate must be positive")
+        cfg["joint_displacement_learning_rate"] = args.joint_displacement_learning_rate
+    if args.preserve_displacement_optimizer_state is not None:
+        cfg["preserve_displacement_optimizer_state"] = (
+            args.preserve_displacement_optimizer_state
+        )
+    if args.collect_u_gradient_diagnostics:
+        cfg["collect_u_gradient_diagnostics"] = True
+    if args.displacement_consistency_warmup_epochs is not None:
+        if args.displacement_consistency_warmup_epochs < 0:
+            raise ValueError("--displacement-consistency-warmup-epochs must be non-negative")
+        cfg["displacement_consistency_warmup_epochs"] = args.displacement_consistency_warmup_epochs
+    if args.displacement_consistency_ramp_epochs is not None:
+        if args.displacement_consistency_ramp_epochs < 0:
+            raise ValueError("--displacement-consistency-ramp-epochs must be non-negative")
+        cfg["displacement_consistency_ramp_epochs"] = args.displacement_consistency_ramp_epochs
     if args.checkpoint_selection_metric is not None:
         cfg["checkpoint_selection_metric"] = args.checkpoint_selection_metric
     if args.output_dir is not None:
@@ -1832,6 +2293,7 @@ def main() -> None:
         )
     model.encoder.load_state_dict(pretrained["encoder"], strict=True)
     model.macro_encoder.load_state_dict(pretrained["encoder"], strict=True)
+    model.displacement_encoder.load_state_dict(pretrained["encoder"], strict=True)
     output = Path(cfg["output_dir"])
     output.mkdir(parents=True, exist_ok=True)
     # The maintained CLI has one optimization objective. Sketch, mode-aware,
@@ -1850,49 +2312,60 @@ def main() -> None:
         "branch_materials": len(branch_set) if branch_set is not None else 0,
         "strict_materials": len(strict_set) if strict_set is not None else 0,
     }
-    factor_rows: list[dict[str, float | int]] = []
+    factor_rows: list[dict[str, float | int]] = (
+        _read_metric_rows(output / "factor_metrics.csv") if args.resume is not None else []
+    )
     factor_best = float("inf")
     factor_best_epoch = 0
+    if factor_rows:
+        factor_best_row = min(factor_rows, key=lambda row: float(row["val_loss"]))
+        factor_best = float(factor_best_row["val_loss"])
+        factor_best_epoch = int(factor_best_row["epoch"])
     factor_epochs = int(cfg.get("factor_pretrain_epochs", 0))
-    if factor_epochs > 0 and args.resume is None and args.factor_checkpoint is None:
-        factor_branch_weights = {
-            "born_weight": float(cfg.get("factor_pretrain_born_weight", 1.0)),
-            "force_weight": float(cfg.get("factor_pretrain_force_weight", 1.0)),
-            "internal_strain_weight": float(cfg.get("factor_pretrain_internal_strain_weight", 5.0)),
-            "internal_strain_full_weight": 0.0,
-            "soft_mode_weight": float(cfg.get("factor_pretrain_soft_mode_weight", 1.0)),
-            "low_mode_action_weight": float(cfg.get("factor_pretrain_low_mode_action_weight", 0.0)),
-            "low_mode_leak_weight": float(cfg.get("factor_pretrain_low_mode_leak_weight", 0.0)),
-            "phi_probe_weight": float(cfg.get("factor_pretrain_phi_probe_weight", 0.0)),
-            "lambda_probe_weight": 0.0,
-            "born_probe_weight": float(cfg.get("factor_pretrain_born_probe_weight", 0.0)),
-            "born_oracle_weight": 0.0,
-            "phi_oracle_normal_weight": 0.0,
-            "response_active_strain_weight": float(
-                cfg.get("factor_pretrain_response_active_strain_weight", 0.0)
-            ),
-        }
-        factor_strict_weights = {
-            "born_weight": 0.0,
-            "force_weight": 0.0,
-            "internal_strain_weight": 0.0,
-            "internal_strain_full_weight": float(
-                cfg.get("factor_pretrain_internal_strain_full_weight", 0.0)
-            ),
-            "soft_mode_weight": 0.0,
-            "low_mode_action_weight": 0.0,
-            "low_mode_leak_weight": 0.0,
-            "phi_probe_weight": 0.0,
-            "lambda_probe_weight": float(cfg.get("factor_pretrain_lambda_probe_weight", 0.0)),
-            "born_probe_weight": 0.0,
-            "born_oracle_weight": float(cfg.get("factor_pretrain_born_oracle_weight", 0.0)),
-            "phi_oracle_normal_weight": float(cfg.get("factor_pretrain_phi_oracle_normal_weight", 0.0)),
-            "response_active_strain_weight": 0.0,
-        }
-        factor_weights = {
-            "branch_stream": factor_branch_weights,
-            "strict_stream": factor_strict_weights,
-        }
+    factor_branch_weights = {
+        "born_weight": float(cfg.get("factor_pretrain_born_weight", 1.0)),
+        "force_weight": float(cfg.get("factor_pretrain_force_weight", 1.0)),
+        "internal_strain_weight": float(cfg.get("factor_pretrain_internal_strain_weight", 5.0)),
+        "internal_strain_full_weight": 0.0,
+        "soft_mode_weight": float(cfg.get("factor_pretrain_soft_mode_weight", 1.0)),
+        "low_mode_action_weight": float(cfg.get("factor_pretrain_low_mode_action_weight", 0.0)),
+        "low_mode_leak_weight": float(cfg.get("factor_pretrain_low_mode_leak_weight", 0.0)),
+        "phi_probe_weight": float(cfg.get("factor_pretrain_phi_probe_weight", 0.0)),
+        "lambda_probe_weight": 0.0,
+        "born_probe_weight": float(cfg.get("factor_pretrain_born_probe_weight", 0.0)),
+        "born_oracle_weight": 0.0,
+        "phi_oracle_normal_weight": 0.0,
+        "response_active_strain_weight": float(
+            cfg.get("factor_pretrain_response_active_strain_weight", 0.0)
+        ),
+    }
+    factor_strict_weights = {
+        "born_weight": 0.0,
+        "force_weight": 0.0,
+        "internal_strain_weight": 0.0,
+        "internal_strain_full_weight": float(
+            cfg.get("factor_pretrain_internal_strain_full_weight", 0.0)
+        ),
+        "soft_mode_weight": 0.0,
+        "low_mode_action_weight": 0.0,
+        "low_mode_leak_weight": 0.0,
+        "phi_probe_weight": 0.0,
+        "lambda_probe_weight": float(cfg.get("factor_pretrain_lambda_probe_weight", 0.0)),
+        "born_probe_weight": 0.0,
+        "born_oracle_weight": float(cfg.get("factor_pretrain_born_oracle_weight", 0.0)),
+        "phi_oracle_normal_weight": float(cfg.get("factor_pretrain_phi_oracle_normal_weight", 0.0)),
+        "response_active_strain_weight": 0.0,
+    }
+    factor_weights = {
+        "branch_stream": factor_branch_weights,
+        "strict_stream": factor_strict_weights,
+    }
+    if (
+        factor_epochs > 0
+        and args.resume is None
+        and args.factor_checkpoint is None
+        and args.displacement_checkpoint is None
+    ):
         factor_optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=float(cfg.get("factor_pretrain_learning_rate", cfg["learning_rate"])),
@@ -1974,8 +2447,10 @@ def main() -> None:
         cfg["factor_pretraining_epochs_completed"] = len(factor_rows)
 
     if args.factor_checkpoint is not None:
-        if args.resume is not None:
-            raise ValueError("--factor-checkpoint and --resume are mutually exclusive")
+        if args.resume is not None or args.displacement_checkpoint is not None:
+            raise ValueError(
+                "--factor-checkpoint, --displacement-checkpoint, and --resume are mutually exclusive"
+            )
         if not args.factor_checkpoint.is_file():
             raise FileNotFoundError(
                 f"Factor checkpoint does not exist: {args.factor_checkpoint}"
@@ -1990,18 +2465,36 @@ def main() -> None:
         cfg["initialized_from_factor_checkpoint"] = str(args.factor_checkpoint)
         cfg["initialized_from_factor_epoch"] = int(factor_saved["epoch"])
 
-    displacement_rows: list[dict[str, float | int]] = []
+    displacement_rows: list[dict[str, float | int]] = (
+        _read_metric_rows(output / "displacement_metrics.csv")
+        if args.resume is not None
+        else []
+    )
     displacement_best = float("inf")
     displacement_best_epoch = 0
+    if displacement_rows:
+        displacement_best_row = min(
+            displacement_rows, key=lambda row: float(row["val_loss"])
+        )
+        displacement_best = float(displacement_best_row["val_loss"])
+        displacement_best_epoch = int(displacement_best_row["epoch"])
+    displacement_optimizer_state: dict | None = None
     displacement_epochs = int(cfg.get("displacement_pretrain_epochs", 0))
-    if displacement_epochs > 0 and args.resume is None:
+    if (
+        displacement_epochs > 0
+        and args.resume is None
+        and args.displacement_checkpoint is None
+    ):
         assert branch_loader is not None and strict_loader is not None
         target_weight = float(cfg.get("displacement_pretrain_target_weight", 1.0))
         macro_weight = float(cfg.get("displacement_pretrain_true_born_macro_weight", 1.0))
         if target_weight <= 0.0 and macro_weight <= 0.0:
             raise ValueError("Teacher-forced displacement pretraining needs a positive target or macro weight")
         displacement_optimizer = torch.optim.AdamW(
-            list(model.encoder.parameters()) + list(model.displacement_response_head.parameters()),
+            list(model.displacement_encoder.parameters())
+            + list(model.displacement_local_polar.parameters())
+            + list(model.displacement_global_context.parameters())
+            + list(model.displacement_response_head.parameters()),
             lr=float(cfg.get("displacement_pretrain_learning_rate", cfg["learning_rate"])),
             weight_decay=float(cfg["weight_decay"]),
         )
@@ -2070,6 +2563,7 @@ def main() -> None:
             writer.writerows(displacement_rows)
         saved = torch.load(output / "displacement_best.pt", map_location=device, weights_only=False)
         model.load_state_dict(saved["model"])
+        displacement_optimizer_state = saved.get("optimizer")
         cfg["displacement_pretraining"] = {
             "epochs_completed": len(displacement_rows),
             "best_epoch": displacement_best_epoch,
@@ -2079,19 +2573,65 @@ def main() -> None:
             "objective": "true-Phi/Lambda U target plus true-BEC ionic macro supervision",
         }
 
-    optimizer = torch.optim.AdamW(
-        [parameter for parameter in model.parameters() if parameter.requires_grad],
-        lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"],
-    )
-    start_epoch = 1
-    resumed_from = None
+    if args.displacement_checkpoint is not None:
+        if args.resume is not None or args.factor_checkpoint is not None:
+            raise ValueError(
+                "--factor-checkpoint, --displacement-checkpoint, and --resume are mutually exclusive"
+            )
+        if not args.displacement_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Displacement checkpoint does not exist: {args.displacement_checkpoint}"
+            )
+        saved = torch.load(
+            args.displacement_checkpoint, map_location=device, weights_only=False
+        )
+        if saved.get("stage") != "teacher_forced_displacement_pretraining":
+            raise ValueError(
+                "--displacement-checkpoint must come from teacher-forced displacement pretraining"
+            )
+        model.load_state_dict(saved["model"])
+        displacement_optimizer_state = saved.get("optimizer")
+        cfg["initialized_from_displacement_checkpoint"] = str(
+            args.displacement_checkpoint
+        )
+        cfg["initialized_from_displacement_epoch"] = int(saved["epoch"])
+        cfg["initialized_from_displacement_commit"] = saved.get("config", {}).get(
+            "git_commit", "unknown"
+        )
+
     if args.resume is not None:
         if not args.resume.is_file():
             raise FileNotFoundError(f"Resume checkpoint does not exist: {args.resume}")
         saved = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(saved["model"])
-        if "optimizer" in saved:
-            optimizer.load_state_dict(saved["optimizer"])
+        if "optimizer" not in saved:
+            raise ValueError("Resume checkpoint has no optimizer state")
+        optimizer = _optimizer_for_resume(model, cfg, saved["optimizer"])
+        displacement_optimizer_state_restored = bool(
+            saved.get("config", {})
+            .get("joint_optimizer", {})
+            .get("teacher_state_restored", False)
+        )
+    else:
+        optimizer, displacement_optimizer_state_restored = _joint_optimizer(
+            model,
+            cfg,
+            displacement_optimizer_state=displacement_optimizer_state,
+        )
+    cfg["joint_optimizer"] = {
+        "base_learning_rate": float(cfg["learning_rate"]),
+        "displacement_learning_rate": float(
+            cfg.get("joint_displacement_learning_rate", cfg["learning_rate"])
+        ),
+        "requested_teacher_state_preservation": bool(
+            cfg.get("preserve_displacement_optimizer_state", False)
+        ),
+        "teacher_state_restored": displacement_optimizer_state_restored,
+        "parameter_groups": "teacher-U core, auxiliary V, remaining model",
+    }
+    start_epoch = 1
+    resumed_from = None
+    if args.resume is not None:
         resumed_from = int(saved["epoch"])
         start_epoch = resumed_from + 1
         cfg["resumed_from_epoch"] = resumed_from
@@ -2100,11 +2640,12 @@ def main() -> None:
     if selection_metric not in {"trs", "loss"}:
         raise ValueError("checkpoint_selection_metric must be 'trs' or 'loss'")
     cfg["primary_checkpoint"] = "trs_best.pt" if selection_metric == "trs" else "loss_best.pt"
-    cfg["normal_equation_schedule"] = {
-        "base_weight": float(cfg.get("displacement_normal_equation_loss_weight", 0.0)),
-        "warmup_epochs": int(cfg.get("normal_equation_warmup_epochs", 0)),
-        "ramp_epochs": int(cfg.get("normal_equation_ramp_epochs", 0)),
-        "rule": "zero through warmup, then linear ramp; zero/ramp both zero reproduces immediate historical weight",
+    cfg["displacement_consistency_schedule"] = {
+        "base_weight": float(cfg.get("displacement_first_order_consistency_loss_weight", 0.0)),
+        "warmup_epochs": int(cfg.get("displacement_consistency_warmup_epochs", 0)),
+        "ramp_epochs": int(cfg.get("displacement_consistency_ramp_epochs", 0)),
+        "max_u_head_gradient_ratio": float(cfg.get("max_displacement_consistency_gradient_ratio", 1.0)),
+        "rule": "zero through warmup, then linear ramp with an actual U-head gradient-ratio cap",
     }
     (output / "config.resolved.yaml").write_text(
         yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8"
@@ -2134,11 +2675,11 @@ def main() -> None:
             selected_epoch = trs_best_epoch if selection_metric == "trs" else loss_best_epoch
             epochs_without_improvement = int(rows[-1]["epoch"]) - selected_epoch
     for epoch in range(start_epoch, int(cfg["epochs"]) + 1):
-        effective_normal_weight = normal_equation_weight_for_epoch(
-            float(cfg.get("displacement_normal_equation_loss_weight", 0.0)),
+        scheduled_consistency_weight = displacement_consistency_weight_for_epoch(
+            float(cfg.get("displacement_first_order_consistency_loss_weight", 0.0)),
             epoch,
-            int(cfg.get("normal_equation_warmup_epochs", 0)),
-            int(cfg.get("normal_equation_ramp_epochs", 0)),
+            int(cfg.get("displacement_consistency_warmup_epochs", 0)),
+            int(cfg.get("displacement_consistency_ramp_epochs", 0)),
         )
         response_weights = dict(
             macro_dielectric_weight=float(cfg.get("macro_dielectric_loss_weight", 0.0)),
@@ -2152,7 +2693,10 @@ def main() -> None:
             displacement_response_weight=float(
                 cfg.get("displacement_response_loss_weight", 0.0)
             ),
-            displacement_normal_weight=effective_normal_weight,
+            displacement_consistency_weight=scheduled_consistency_weight,
+            max_consistency_gradient_ratio=float(
+                cfg.get("max_displacement_consistency_gradient_ratio", 1.0)
+            ),
             electronic_weight=float(cfg.get("electronic_piezo_loss_weight", 0.0)),
             branch_sum_weight=float(cfg.get("branch_sum_loss_weight", 0.0)),
             force_weight=float(cfg.get("force_constant_loss_weight", 0.0)),
@@ -2181,18 +2725,20 @@ def main() -> None:
             macro_dielectric_weight=0.0,
             macro_elastic_weight=0.0,
             displacement_response_weight=0.0,
-            displacement_normal_weight=0.0,
+            displacement_consistency_weight=0.0,
             internal_strain_full_weight=0.0,
             lambda_probe_weight=0.0,
             born_oracle_weight=0.0,
             phi_oracle_normal_weight=0.0,
             ionic_elastic_weight=0.0,
             collect_conditioning_diagnostics=False,
+            collect_u_gradient_diagnostics=False,
         )
         strict_weights = {name: 0.0 for name in response_weights}
         strict_weights.update(
             displacement_response_weight=response_weights["displacement_response_weight"],
-            displacement_normal_weight=response_weights["displacement_normal_weight"],
+            displacement_consistency_weight=response_weights["displacement_consistency_weight"],
+            max_consistency_gradient_ratio=response_weights["max_consistency_gradient_ratio"],
             internal_strain_full_weight=response_weights["internal_strain_full_weight"],
             lambda_probe_weight=response_weights["lambda_probe_weight"],
             born_oracle_weight=response_weights["born_oracle_weight"],
@@ -2201,6 +2747,9 @@ def main() -> None:
             collect_diagnostics=False,
             collect_conditioning_diagnostics=bool(
                 cfg.get("collect_conditioning_diagnostics", True)
+            ),
+            collect_u_gradient_diagnostics=bool(
+                cfg.get("collect_u_gradient_diagnostics", False)
             ),
         )
         if bool(cfg.get("multistream_training", True)):
@@ -2241,7 +2790,7 @@ def main() -> None:
         )
         row = {
             "epoch": epoch,
-            "effective_displacement_normal_equation_weight": effective_normal_weight,
+            "scheduled_displacement_consistency_weight": scheduled_consistency_weight,
             "train_loss": train_value,
             "val_loss": val_value,
             "train_seconds": train_seconds,
@@ -2251,15 +2800,15 @@ def main() -> None:
             "branch_stream_optimizer_updates": branch_updates if bool(cfg.get("multistream_training", True)) else 0,
             "strict_stream_optimizer_updates": strict_updates if bool(cfg.get("multistream_training", True)) else 0,
             "macro_effective_passes": epoch if bool(cfg.get("multistream_training", True)) else float("nan"),
-            "branch_effective_passes": len(factor_rows) + epoch if bool(cfg.get("multistream_training", True)) else float("nan"),
-            "strict_effective_passes": len(factor_rows) + epoch if bool(cfg.get("multistream_training", True)) else float("nan"),
+            "branch_effective_passes": len(factor_rows) + len(displacement_rows) + epoch if bool(cfg.get("multistream_training", True)) else float("nan"),
+            "strict_effective_passes": len(factor_rows) + len(displacement_rows) + epoch if bool(cfg.get("multistream_training", True)) else float("nan"),
             "factor_branch_effective_passes": len(factor_rows),
             "factor_strict_effective_passes": len(factor_rows),
             "joint_branch_effective_passes": epoch,
             "joint_strict_effective_passes": epoch,
             "macro_examples_seen": epoch * len(train_set),
-            "branch_examples_seen": (len(factor_rows) + epoch) * (len(branch_set) if branch_set is not None else 0),
-            "strict_examples_seen": (len(factor_rows) + epoch) * (len(strict_set) if strict_set is not None else 0),
+            "branch_examples_seen": (len(factor_rows) + len(displacement_rows) + epoch) * (len(branch_set) if branch_set is not None else 0),
+            "strict_examples_seen": (len(factor_rows) + len(displacement_rows) + epoch) * (len(strict_set) if strict_set is not None else 0),
             "macro_unique_samples_seen": len(train_set) if epoch > 0 else 0,
             "branch_unique_samples_seen": len(branch_set) if branch_set is not None and (factor_rows or epoch > 0) else 0,
             "strict_unique_samples_seen": len(strict_set) if strict_set is not None and (factor_rows or epoch > 0) else 0,
@@ -2355,10 +2904,10 @@ def main() -> None:
         joint_strict_updates = sum(
             int(row.get("strict_stream_optimizer_updates", 0)) for row in rows
         )
-        normal_equation_updates = sum(
+        consistency_updates = sum(
             int(row.get("strict_stream_optimizer_updates", 0))
             for row in rows
-            if float(row.get("effective_displacement_normal_equation_weight", 0.0)) > 0.0
+            if float(row.get("scheduled_displacement_consistency_weight", 0.0)) > 0.0
         )
 
         def active_updates(weight_name: str, updates: int) -> int:
@@ -2372,14 +2921,16 @@ def main() -> None:
                 "strict": len(strict_set) if strict_set is not None else 0,
             },
             "unique_samples_seen": {
-                "macro": int(rows[-1]["macro_unique_samples_seen"]),
-                "branch": int(rows[-1]["branch_unique_samples_seen"]),
-                "strict": int(rows[-1]["strict_unique_samples_seen"]),
+                "macro": len(train_set),
+                "branch": len(branch_set) if branch_set is not None else 0,
+                "strict": len(strict_set) if strict_set is not None else 0,
             },
             "examples_seen": {
-                "macro": int(rows[-1]["macro_examples_seen"]),
-                "branch": int(rows[-1]["branch_examples_seen"]),
-                "strict": int(rows[-1]["strict_examples_seen"]),
+                "macro": len(rows) * len(train_set),
+                "branch": (len(factor_rows) + len(displacement_rows) + len(rows))
+                * (len(branch_set) if branch_set is not None else 0),
+                "strict": (len(factor_rows) + len(displacement_rows) + len(rows))
+                * (len(strict_set) if strict_set is not None else 0),
             },
             "optimizer_updates": {
                 "factor_branch": factor_branch_updates,
@@ -2407,7 +2958,7 @@ def main() -> None:
                 + (displacement_strict_updates if float(cfg.get("displacement_pretrain_target_weight", 1.0)) > 0.0 else 0),
                 "branch_teacher_forced_true_born_ionic": displacement_branch_updates
                 if float(cfg.get("displacement_pretrain_true_born_macro_weight", 1.0)) > 0.0 else 0,
-                "strict_normal_equation": normal_equation_updates,
+                "strict_first_order_consistency": consistency_updates,
             },
             "interpretation": (
                 "label_gradient_updates counts optimizer steps containing that supervised objective; "
@@ -2424,7 +2975,21 @@ def main() -> None:
             "objective_weights": factor_weights,
         }
     if displacement_rows:
-        summary["displacement_pretraining"] = cfg["displacement_pretraining"]
+        summary["displacement_pretraining"] = {
+            "epochs_completed": len(displacement_rows),
+            "best_epoch": displacement_best_epoch,
+            "best_val_loss": displacement_best,
+            "target_weight": float(
+                cfg.get("displacement_pretrain_target_weight", 1.0)
+            ),
+            "true_born_macro_weight": float(
+                cfg.get("displacement_pretrain_true_born_macro_weight", 1.0)
+            ),
+            "objective": (
+                "true-Phi/Lambda U target plus true-BEC ionic macro supervision"
+            ),
+        }
+    summary["joint_optimizer"] = cfg["joint_optimizer"]
     if resumed_from is not None:
         summary["resumed_from_epoch"] = resumed_from
         summary["resumed_from_commit"] = cfg.get("resumed_from_commit")
