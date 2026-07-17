@@ -319,7 +319,7 @@ unread.  See
 
 The maintained CUDA path batches nonlocal global-`l=3` attention and the
 `Z*^T U` contraction, and omits inactive macro/optical diagnostics during
-branch or strict training.  Forward/gradient oracle tests and the 173-test
+branch or strict training.  Forward/gradient oracle tests and the 187-test
 suite pass; `num_workers` remains zero.  Concurrent microbenchmarks are
 recorded in `docs/reviews/2026-07/GPU_VECTORIZATION_AUDIT_2026-07-17.md` and
 are not promoted as clean end-to-end throughput claims.
@@ -332,7 +332,9 @@ error changes from `0.68049` to `2.17519` and cosine from `0.76921` to
 `0.03024`. This is a negative capacity result, so frozen validation was not
 opened. A fresh matched replay isolates the independent-`Lambda` scalar-energy
 parameterization and material spectral floor while holding operator weights
-fixed.
+fixed. That replay also failed to justify promotion. The historical fixed-v5
+weight bundle and its launcher have therefore been removed from the maintained
+trainer; the registered summaries remain immutable negative evidence.
 
 The end-to-end one-pass smoke is in
 `outputs/direct_u_multistream_smoke_v1/`. It completed on the frozen test20 and

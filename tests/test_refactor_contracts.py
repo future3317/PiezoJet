@@ -1,10 +1,13 @@
 """Regression tests for public contracts introduced by maintenance refactors."""
 
+import inspect
+
 import torch
 
 from piezojet.model import CartesianLocalEnvironmentEncoder, model_from_config
 from piezojet.projectors import translation_projector
 from piezojet.model import AtomCoordinateResponsePotential
+from piezojet import train
 from piezojet.train import first_order_spectral_residual_diagnostics
 
 
@@ -66,3 +69,13 @@ def test_first_order_diagnostic_bins_residual_by_true_stiffness():
     assert metrics["3delta_to_10delta_mode_count"] == 1
     assert metrics["above_10delta_mode_count"] == 0
     assert metrics["below_delta_residual_fraction"] == 1.0
+
+
+def test_main_trainer_exposes_no_historical_memorization_or_weight_bundle_flags():
+    source = inspect.getsource(train.main)
+    for obsolete_flag in (
+        "--m2-1",
+        "--overfit-32",
+        "--operator-learning-capacity",
+    ):
+        assert obsolete_flag not in source

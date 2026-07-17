@@ -1,8 +1,9 @@
 # Historical experiment archive
 
 The maintained package has one production parameterization: independent
-atom-resolved `U_eta`, `energy_learned_strain` physical factors, an isotropic
-background, and the continuous regularized optical operator.
+atom-resolved `U_eta`, independent quadratic-response `Phi/Lambda` coefficients
+of one scalar energy, an isotropic background, and the continuous regularized
+optical operator.
 
 The following executable branches were removed after negative or
 non-identifiable diagnostics:
@@ -12,6 +13,8 @@ non-identifiable diagnostics:
 - predicted-spectrum `auto` switching;
 - sketch/hybrid and mode-aware training objectives;
 - protocol A--G training executors.
+- the M2.1/implicit first-32 memorization shortcut;
+- the fixed-v5 operator-loss bundle and single-material action launchers.
 
 Their persisted JSON, CSV, checkpoints, and reports under `outputs/` remain
 historical evidence. They describe the code and data convention recorded in
@@ -29,9 +32,10 @@ not silently promoted to a completed result.
 The generic gradient-conflict math remains in `gradient_diagnostics.py` for
 read-only auditing. The production trainer does not import it.
 
-Legacy model classes may still exist where required to deserialize an old
-checkpoint or test a tensor identity, but `model_from_config` rejects every
-architecture except the maintained one. A new experimental architecture needs
-a separate module, output directory, frozen split, validation-only selection
-rule, matched control, and report; it must not be added as a silent fallback in
-the production config.
+Historical model classes and CLI aliases are not retained in the production
+factory. Diagnostic-only exact optical propagation and output summarizers remain
+because they test current tensor identities or read immutable artifacts; they
+cannot alter the production configuration. A new experimental architecture
+needs a separate module, output directory, frozen split, validation-only
+selection rule, matched control, and report; it must not be added as a silent
+fallback in the production config.

@@ -21,11 +21,10 @@ from .jarvis_dfpt import JarvisDFPTCache
 from .model import AtomCoordinateResponsePotential, PiezoJet, model_from_config
 from .pretraining_protocol import validate_inductive_checkpoint
 from .project_config import load_project_config
+from .projectors import translation_projector
 from .metrics import response_tensor_skill
 from .tensor_ops import (
-    cartesian_to_piezo_voigt,
     piezo_scale,
-    piezo_to_irreps,
     piezo_voigt_to_cartesian,
 )
 from .data import RESPONSE_NORM_BOUNDS
@@ -701,10 +700,7 @@ def force_constant_loss(
         target_offset += values
         target_matrix = target.permute(0, 2, 1, 3).reshape(3 * atoms, 3 * atoms)
         target_matrix = 0.5 * (target_matrix + target_matrix.transpose(0, 1))
-        translation = target_matrix.new_zeros(3 * atoms, 3)
-        for axis in range(3):
-            translation[axis::3, axis] = atoms ** -0.5
-        projector = torch.eye(3 * atoms, dtype=target.dtype, device=target.device) - translation @ translation.transpose(0, 1)
+        projector, _ = translation_projector(atoms, target_matrix)
         target_matrix = projector @ target_matrix @ projector
         cleaned = target_matrix.reshape(atoms, 3, atoms, 3).permute(0, 2, 1, 3)
         losses.append(invariant_pseudo_huber(predicted, cleaned))
@@ -811,38 +807,6 @@ def full_internal_strain_loss(
     return torch.stack(losses).mean()
 
 
-def _diagnostics(prediction: torch.Tensor, target: torch.Tensor, batch, model: PiezoJet, normalized_scale: torch.Tensor) -> list[dict[str, float | int]]:
-    pred_voigt = cartesian_to_piezo_voigt(prediction)
-    target_voigt = cartesian_to_piezo_voigt(target)
-    diff_voigt = pred_voigt - target_voigt
-    pred_irreps = piezo_to_irreps(prediction)
-    target_irreps = piezo_to_irreps(target)
-    irrep_diff = pred_irreps - target_irreps
-    block_slices = (("1o", 0, 6), ("2o", 6, 11), ("3o", 11, 18))
-    node_counts = (batch.ptr[1:] - batch.ptr[:-1]).tolist() if hasattr(batch, "ptr") else [batch.num_nodes]
-    degree = torch.zeros(batch.num_nodes, device=prediction.device, dtype=torch.long)
-    degree.scatter_add_(0, batch.edge_index[1], torch.ones_like(batch.edge_index[1]))
-    isolated = int((degree == 0).sum())
-    grad_norm = torch.sqrt(sum((parameter.grad.detach().square().sum() for parameter in model.parameters() if parameter.grad is not None), torch.zeros((), device=prediction.device)))
-    rows = []
-    for index in range(prediction.shape[0]):
-        row: dict[str, float | int] = {
-            "sample_index": index,
-            "unnormalized_tensor_mse": float(diff_voigt[index].square().mean()),
-            "frob_error": float(torch.linalg.vector_norm(diff_voigt[index]) / torch.sqrt(torch.tensor(18.0, device=prediction.device))),
-            "normalized_frob_error": float(torch.linalg.vector_norm(diff_voigt[index]) / (normalized_scale * torch.sqrt(torch.tensor(18.0, device=prediction.device)))),
-            "predicted_tensor_norm": float(torch.linalg.vector_norm(pred_voigt[index])),
-            "target_tensor_norm": float(torch.linalg.vector_norm(target_voigt[index])),
-            "gradient_norm": float(grad_norm),
-            "atom_count": int(node_counts[index]),
-            "isolated_nodes_in_batch": isolated,
-        }
-        for name, start, end in block_slices:
-            row[f"irrep_{name}_error"] = float(torch.linalg.vector_norm(irrep_diff[index, start:end]))
-        rows.append(row)
-    return rows
-
-
 def _epoch(
     model,
     loader,
@@ -878,10 +842,9 @@ def _epoch(
     phi_oracle_normal_weight: float = 0.0,
     response_active_strain_weight: float = 0.0,
     max_train_updates: int | None = None,
-    collect_diagnostics: bool = False,
     collect_conditioning_diagnostics: bool = False,
     collect_u_gradient_diagnostics: bool = False,
-) -> tuple[float, float, list[dict[str, float | int]], dict[str, float], int]:
+) -> tuple[float, float, dict[str, float], int]:
     training = optimizer is not None
     model.train(training)
     evaluate_all_components = not training
@@ -898,7 +861,7 @@ def _epoch(
             elastic_weight,
         )
     )
-    total, count, elapsed, diagnostics = 0.0, 0, 0.0, []
+    total, count, elapsed = 0.0, 0, 0.0
     response_predictions, response_targets = [], []
     component_totals = {
         "piezo_full": 0.0,
@@ -1387,8 +1350,6 @@ def _epoch(
                     raise FloatingPointError("Non-finite parameter gradient encountered")
                 optimizer.step()
                 updates += 1
-        if collect_diagnostics:
-            diagnostics.extend(_diagnostics(prediction.detach(), batch.y.detach(), batch, model, scale))
         total += float(loss.detach()) * batch.num_graphs
         if compute_macro_response:
             response_predictions.append(prediction.detach().cpu())
@@ -1510,7 +1471,7 @@ def _epoch(
         )
         if response_predictions else float("nan")
     )
-    return total / denominator, elapsed, diagnostics, component_summary, updates
+    return total / denominator, elapsed, component_summary, updates
 
 
 def _macro_epoch(
@@ -1935,7 +1896,6 @@ def load_explicit_splits(path: Path, known_ids: set[str]) -> dict[str, list[str]
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--overfit-32", action="store_true")
     parser.add_argument("--epochs", type=int, help="Override config epochs for a bounded smoke run")
     parser.add_argument("--train-updates-per-epoch", type=int, help="Cap optimizer updates per joint epoch; enables exact fixed-update full-corpus protocols")
     parser.add_argument("--factor-train-updates-per-epoch", type=int, help="Cap optimizer updates per direct-factor epoch in a fixed-update protocol")
@@ -1958,7 +1918,6 @@ def main() -> None:
         "--splits-file", type=Path,
         help="Frozen explicit train/val/test JSON; do not combine with --material-ids-file",
     )
-    parser.add_argument("--m2-1", action="store_true", help="Strict 300-epoch 32-sample memorization experiment")
     parser.add_argument("--resume", type=Path, help="Resume a saved checkpoint at its next epoch")
     parser.add_argument(
         "--factor-checkpoint",
@@ -2023,25 +1982,12 @@ def main() -> None:
         choices=("trs", "loss"),
         help="Preregister the joint-stage early-stopping and primary-checkpoint metric",
     )
-    parser.add_argument(
-        "--operator-learning-capacity", action="store_true",
-        help=(
-            "Enable the preregistered gradient-balanced direct-operator loss bundle. "
-            "Valid only for explicit 1/8/32 same-ID noninductive capacity runs."
-        ),
-    )
     args = parser.parse_args()
     cfg = load_project_config(args.config)
     if args.seed is not None:
         cfg["seed"] = args.seed
     if args.pretrained_encoder is not None:
         cfg["pretrained_encoder"] = str(args.pretrained_encoder)
-    if args.m2_1:
-        cfg["epochs"] = 300
-        cfg["batch_size"] = 32
-        cfg["weight_decay"] = 0.0
-        cfg["output_dir"] = "outputs/m2_1"
-        args.overfit_32 = True
     if args.epochs is not None:
         if args.epochs < 1:
             raise ValueError("--epochs must be positive")
@@ -2156,54 +2102,6 @@ def main() -> None:
         cfg["material_ids_split"] = args.material_ids_split
         cfg["bounded_smoke_material_count"] = len(selected_ids)
         cfg["restricted_split_counts"] = {name: len(values) for name, values in splits.items()}
-    elif args.overfit_32:
-        splits["train"] = splits["train"][:32]
-        splits["val"] = splits["train"]
-    if args.operator_learning_capacity:
-        if (
-            not args.allow_noninductive_overfit
-            or args.material_ids_file is None
-            or args.material_ids_split != "same"
-            or len(splits["train"]) not in (1, 8, 32)
-        ):
-            raise ValueError(
-                "--operator-learning-capacity requires an explicit 1/8/32 same-ID "
-                "--allow-noninductive-overfit cohort"
-            )
-        # Derived once from the retained samples8 unweighted gradient-route
-        # audit (operator_learning_batch_invariance_v5).  They are deliberately
-        # held fixed for the independent-Lambda/spectral-floor replay so that
-        # the architecture and normalization change is not confounded with
-        # response-operator weight tuning.  The current-schema v6 audit records
-        # the new routes but is not used to alter this preregistered budget.
-        capacity_weights = {
-            "low_mode_action_loss_weight": 0.00111,
-            "low_mode_leak_loss_weight": 0.01486,
-            "phi_probe_loss_weight": 0.000378,
-            "phi_oracle_normal_loss_weight": 0.000397,
-            "lambda_probe_loss_weight": 0.462,
-            "born_probe_loss_weight": 0.533,
-            "born_oracle_loss_weight": 0.391,
-            "ionic_dielectric_loss_weight": 0.5,
-            "ionic_elastic_loss_weight": 0.356,
-            "factor_pretrain_low_mode_action_weight": 0.00111,
-            "factor_pretrain_low_mode_leak_weight": 0.01486,
-            "factor_pretrain_phi_probe_weight": 0.000378,
-            "factor_pretrain_phi_oracle_normal_weight": 0.000397,
-            "factor_pretrain_lambda_probe_weight": 0.462,
-            "factor_pretrain_born_probe_weight": 0.533,
-            "factor_pretrain_born_oracle_weight": 0.391,
-        }
-        cfg.update(capacity_weights)
-        cfg["operator_learning_capacity"] = {
-            "enabled": True,
-            "selection": "same-ID 1/8/32 only; no frozen validation/test read",
-            "weight_source": (
-                "fixed samples8 unweighted parameter-group gradient audit v5; "
-                "not retuned after independent-Lambda/spectral-floor correction"
-            ),
-            "weights": capacity_weights,
-        }
     cache_key = graph_cache_key(records, cfg["cutoff"], cfg["max_neighbors"])
     dfpt_dir = cfg.get("jarvis_dfpt_dir")
     strain_completion_dir = cfg.get("jarvis_strain_completion_dir")
@@ -2255,7 +2153,6 @@ def main() -> None:
         DataLoader(strict_set, batch_size=cfg["batch_size"], shuffle=True, **loader_options)
         if strict_set is not None else None
     )
-    train_ids = set(splits["train"])
     first_target = torch.cat([train_set[index].y_voigt for index in range(len(train_set))])
     scale = piezo_scale(first_target).to(device)
     bin_weights = response_bin_weights(torch.stack([train_set[index].y.squeeze(0) for index in range(len(train_set))])).to(device)
@@ -2657,8 +2554,6 @@ def main() -> None:
     epochs_without_improvement = 0
     patience = int(cfg.get("early_stopping_patience", 0))
     rows: list[dict[str, float | int]] = []
-    all_sample_rows: list[dict[str, float | int]] = []
-    diagnostic_rows: list[dict[str, float | int]] = []
     existing_metrics = output / "metrics.csv"
     if args.resume is not None and existing_metrics.is_file():
         with existing_metrics.open(newline="", encoding="utf-8") as handle:
@@ -2715,7 +2610,6 @@ def main() -> None:
             response_active_strain_weight=float(
                 cfg.get("response_active_strain_loss_weight", 0.0)
             ),
-            collect_diagnostics=args.m2_1,
             collect_conditioning_diagnostics=bool(
                 cfg.get("collect_conditioning_diagnostics", True)
             ),
@@ -2744,7 +2638,6 @@ def main() -> None:
             born_oracle_weight=response_weights["born_oracle_weight"],
             phi_oracle_normal_weight=response_weights["phi_oracle_normal_weight"],
             ionic_elastic_weight=response_weights["ionic_elastic_weight"],
-            collect_diagnostics=False,
             collect_conditioning_diagnostics=bool(
                 cfg.get("collect_conditioning_diagnostics", True)
             ),
@@ -2763,17 +2656,16 @@ def main() -> None:
                 elastic_weight=response_weights["macro_elastic_weight"],
             )
             assert branch_loader is not None and strict_loader is not None
-            branch_value, branch_seconds, _, branch_components, branch_updates = _epoch(
+            branch_value, branch_seconds, branch_components, branch_updates = _epoch(
                 model, branch_loader, optimizer, scale, bin_weights, device,
                 macro_weight=0.0, **branch_weights,
             )
-            strict_value, strict_seconds, _, strict_components, strict_updates = _epoch(
+            strict_value, strict_seconds, strict_components, strict_updates = _epoch(
                 model, strict_loader, optimizer, scale, bin_weights, device,
                 macro_weight=0.0, **strict_weights,
             )
             train_value = macro_value + branch_value + strict_value
             train_seconds = macro_seconds + branch_seconds + strict_seconds
-            train_diagnostics = []
             train_updates = macro_updates + branch_updates + strict_updates
             train_components = {
                 **{f"macro_stream_{key}": value for key, value in macro_components.items()},
@@ -2781,11 +2673,11 @@ def main() -> None:
                 **{f"strict_stream_{key}": value for key, value in strict_components.items()},
             }
         else:
-            train_value, train_seconds, train_diagnostics, train_components, train_updates = _epoch(
+            train_value, train_seconds, train_components, train_updates = _epoch(
                 model, train_loader, optimizer, scale, bin_weights, device,
                 max_train_updates=cfg.get("train_updates_per_epoch"), **response_weights,
             )
-        val_value, val_seconds, val_diagnostics, val_components, _ = _epoch(
+        val_value, val_seconds, val_components, _ = _epoch(
             model, val_loader, None, scale, bin_weights, device, **response_weights,
         )
         row = {
@@ -2816,11 +2708,6 @@ def main() -> None:
         row.update({f"train_{name}_loss": value for name, value in train_components.items()})
         row.update({f"val_{name}_loss": value for name, value in val_components.items()})
         rows.append(row)
-        if args.m2_1:
-            all_sample_rows.extend({"epoch": epoch, "phase": "train", **item} for item in train_diagnostics)
-            all_sample_rows.extend({"epoch": epoch, "phase": "eval", **item} for item in val_diagnostics)
-            diagnostic_rows.append({"epoch": epoch, "phase": "train", **{key: value for key, value in train_diagnostics[0].items() if key != "sample_index"}})
-            diagnostic_rows.append({"epoch": epoch, "phase": "eval", **{key: value for key, value in val_diagnostics[0].items() if key != "sample_index"}})
         checkpoint = {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -2848,13 +2735,7 @@ def main() -> None:
             torch.save(checkpoint, output / "trs_best.pt")
         selected_improved = trs_improved if selection_metric == "trs" else loss_improved
         epochs_without_improvement = 0 if selected_improved else epochs_without_improvement + 1
-        if not args.m2_1 or epoch == 1 or epoch % 10 == 0 or epoch == int(cfg["epochs"]):
-            print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
-        if args.m2_1:
-            with (output / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows(rows)
+        print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
         if patience > 0 and epochs_without_improvement >= patience:
             selected_value = trs_best if selection_metric == "trs" else loss_best
             print(
@@ -2878,7 +2759,6 @@ def main() -> None:
         "epochs_completed": len(rows),
         "metrics_rows": len(rows),
         "optimization_loss": "full",
-        "memorization_loss": "full" if args.m2_1 else None,
         "runtime_device": runtime_device,
         "all_finite": True,
     }
@@ -2994,40 +2874,6 @@ def main() -> None:
         summary["resumed_from_epoch"] = resumed_from
         summary["resumed_from_commit"] = cfg.get("resumed_from_commit")
         summary["metrics_coverage"] = [int(rows[0]["epoch"]), int(rows[-1]["epoch"])] if rows else []
-    if args.m2_1:
-        with (output / "sample_errors.csv").open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=all_sample_rows[0].keys())
-            writer.writeheader()
-            writer.writerows(all_sample_rows)
-        with (output / "diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=diagnostic_rows[0].keys())
-            writer.writeheader()
-            writer.writerows(diagnostic_rows)
-        summary["diagnostics"] = ["sample_errors.csv", "diagnostics.csv"]
-        summary["interpretation_boundary"] = "Same-cohort memorization only; not validation generalization."
-        report = f"""# M2.1 strict memorization test
-
-## Git commit
-
-`{cfg['git_commit']}`
-
-## Data manifest
-
-GMTNet commit `{cfg['data_commit']}`; fixed first 32 material IDs from the existing seed-42 training split.
-
-## Configuration
-
-300 epochs, batch size 32, full tensor loss, weight decay 0, seed {cfg['seed']}, dropout disabled.
-
-## What was implemented
-
-Per-sample Cartesian/Voigt errors, irreps block errors, gradient norms, predicted/target tensor norms, graph atom statistics, and non-finite checks.
-
-## Interpretation boundary
-
-This is a strict same-cohort memorization test. It does not estimate random-split or chemical OOD generalization.
-"""
-        (output / "report.md").write_text(report, encoding="utf-8")
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 

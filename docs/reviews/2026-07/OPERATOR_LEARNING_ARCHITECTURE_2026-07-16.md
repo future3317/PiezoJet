@@ -150,14 +150,14 @@ Unweighted samples8 gradient routes are stored in the v5 audit. New losses
 share, rather than multiply, each direct-factor gradient budget. The four Phi
 terms share one force-constant-head budget; the two BEC terms share one BEC
 budget; Lambda probe and ionic elastic share one Lambda budget. Exact weights
-are persisted by `--operator-learning-capacity` in every resolved run config.
+are persisted in every retained resolved run config.
 
 The independent-Lambda/spectral-floor replay deliberately holds those v5
 weights fixed. The v6 route audit is retained for interpretation but is not
 used to retune this replay, keeping the parameterization/normalization delta
 separate from another action-weight sweep.
 
-The flag is rejected unless the run is an explicit 1/8/32 same-ID cohort with
-`--allow-noninductive-overfit`. Passing this ladder is necessary before any
-formula-disjoint validation run and is never sufficient for a performance
-claim.
+The matched ladder failed its 32-material gate. Its fixed-weight injection flag
+and launcher were subsequently removed from the maintained trainer rather than
+kept as an executable fallback. The immutable outputs and summarizer remain for
+audit and never authorize a formula-disjoint validation run.

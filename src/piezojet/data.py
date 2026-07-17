@@ -21,7 +21,10 @@ from .gmtnet_io import (
     PIEZO_FILE as _PIEZO_FILE,
     load_gmtnet_records as _load_gmtnet_records,
 )
-from .projector import get_cartesian_point_group_operations, project_piezo_to_point_group
+from .symmetry_projection import (
+    get_cartesian_point_group_operations,
+    project_piezo_to_point_group,
+)
 from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 
@@ -50,7 +53,13 @@ def formula(record: dict[str, Any]) -> str:
 
 
 def response_norm_bin(target: torch.Tensor) -> int:
-    """Return a rotation-invariant response stratum for one Cartesian tensor."""
+    """Return a rotation-invariant response stratum for one Cartesian tensor.
+
+    For ``e_ijk=e_ikj``, the Cartesian Frobenius metric includes both symmetric
+    shear entries. This is not double counting: it is exactly the Euclidean
+    norm of the orthonormal 18-dimensional irrep coordinates. An unweighted
+    six-column engineering-Voigt norm would not be rotation invariant.
+    """
     norm = float(torch.linalg.vector_norm(target))
     if norm == 0.0:
         return 0

@@ -29,6 +29,16 @@ def test_piezo_cartesian_irrep_round_trip():
     assert torch.allclose(cartesian_to_piezo_voigt(restored), source, atol=1e-5)
 
 
+def test_cartesian_frobenius_norm_equals_orthonormal_18d_irrep_norm():
+    """Cartesian shear duplication is the metric weight, not double counting."""
+    torch.manual_seed(17)
+    source = torch.randn(11, 3, 6)
+    cartesian = piezo_voigt_to_cartesian(source)
+    cartesian_norm = torch.linalg.vector_norm(cartesian.reshape(11, -1), dim=-1)
+    irrep_norm = torch.linalg.vector_norm(piezo_to_irreps(cartesian), dim=-1)
+    assert torch.allclose(cartesian_norm, irrep_norm, atol=1e-5, rtol=1e-6)
+
+
 def test_general_born_tensor_irrep_round_trip():
     torch.manual_seed(3)
     born = torch.randn(7, 3, 3)

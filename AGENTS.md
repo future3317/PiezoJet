@@ -173,6 +173,10 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   executors have been removed from the maintained package. Their persisted
   outputs remain historical evidence and must not be presented as current
   code paths.
+- The M2.1/implicit-first-32 shortcuts and the fixed-v5 operator-action bundle
+  are also removed. Same-ID diagnostics require an explicit material-ID file
+  and `--allow-noninductive-overfit`; negative operator artifacts remain
+  readable only through their summarizer and registry.
 
 ## Current direct-U candidate
 

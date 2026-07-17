@@ -27,19 +27,13 @@ from .jarvis_dfpt import (
     source_born_to_internal,
 )
 from .model import AtomCoordinateResponsePotential
+from .projectors import translation_projector
 from .tensor_ops import piezo_voigt_to_cartesian, source_voigt_to_canonical
 
 
 def _matrix(blocks: torch.Tensor) -> torch.Tensor:
     atoms = blocks.shape[0]
     return blocks.permute(0, 2, 1, 3).reshape(3 * atoms, 3 * atoms)
-
-
-def _translations(atoms: int, reference: torch.Tensor) -> torch.Tensor:
-    translation = reference.new_zeros(3 * atoms, 3)
-    for axis in range(3):
-        translation[axis::3, axis] = atoms ** -0.5
-    return translation
 
 
 def force_constant_convention_metrics(payload: dict[str, Any]) -> dict[str, float]:
@@ -58,7 +52,7 @@ def force_constant_convention_metrics(payload: dict[str, Any]) -> dict[str, floa
     scale = -torch.sqrt(masses[:, None, None, None] * masses[None, :, None, None])
     expected = raw * scale
     force_matrix, raw_matrix = _matrix(force), _matrix(raw)
-    translation = _translations(force.shape[0], force)
+    _, translation = translation_projector(force.shape[0], force)
     return {
         "mass_unweighting_relative_error": float(
             torch.linalg.vector_norm(force - expected)
