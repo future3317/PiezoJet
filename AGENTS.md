@@ -198,6 +198,48 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   branch/strict training and constant-zero losses keep AdamW from decaying
   towers on the wrong stream. `num_workers` remains zero.
 
+## Electronic-generator adjudication
+
+- `data/processed/strict_train1603_development_folds_v1.json` is the only
+  method-development fold map for the new electronic candidate. It partitions
+  strict train1603 into five formula-disjoint development folds of
+  321/321/320/321/320 materials. It does not read frozen val10/test20 labels and
+  does not replace the canonical production split.
+- The current Cartesian electronic head fails the samples32 same-ID capacity
+  gate (active relative error 0.60814, cosine 0.39285), with the dominant
+  residual in `l=3`. The explicit global-irrep `l<=3` control passes on the same
+  panel (0.04492, 0.99973). These are train-only model-class diagnostics.
+- `DifferentialPolarizationTower` is the retained shared linearized
+  coefficient-generator control. It directly emits BEC/electronic
+  coefficients and must not be described as the literal perturbed-structure
+  polarization model. Its samples32 electronic/BEC relative errors are
+  0.03942/0.01933. Adding response-jet probes gives 0.04167/0.02104 and is not
+  an improvement.
+- `AutodiffDifferentialPolarizationTower` is the single nonlinear candidate:
+  `Delta P=P_theta(T_eta(x+u_o))-P_theta(x)`, with positions, cell, and periodic
+  shifts deformed consistently and no absolute Berry-phase target. BEC and
+  electronic piezo are three-output reverse-mode Jacobians of this map. Do not
+  wrap coefficient evaluation in `inference_mode`.
+- Differentiable reciprocal geometry is never retained in the fixed-geometry
+  cache across optimizer steps. Large same-ID cohorts use material-count-
+  weighted gradient accumulation; one optimizer update remains the exact
+  cohort-mean objective. The samples8/200 CUDA gate passes with electronic
+  relative error/cosine 0.14986/0.99961 and BEC 0.02105/0.99937. The
+  preregistered samples32/200 gate also passes the joint strong threshold:
+  electronic active relative error/cosine are 0.09839/0.99786, l=3 stabilized
+  relative error is 0.07766, and BEC relative error/cosine are
+  0.04673/0.99710. It used 16+16 material-weighted microbatches, 4,443 CUDA
+  optimizer seconds, and 14.09 GiB peak allocated memory. These remain
+  noninductive capacity results and are not a production promotion. Because
+  all five development folds contain some samples32 IDs, this fitted
+  checkpoint must not initialize a held-out-fold experiment.
+- The fresh literal-autodiff samples8 response-jet control uses weight 0.25
+  and three probes. It changes electronic active error 0.14986 -> 0.13981 and
+  l=3 error 0.11294 -> 0.10529, while BEC error worsens 0.02105 -> 0.02455 and
+  optimizer time rises 964 -> 1,018 seconds. Preserve this mixed result, but
+  do not add the algebraically redundant probe objective to the maintained
+  candidate.
+
 - `outputs/operator_learning_capacity_v2/summary.json` is a retained negative
   same-ID capacity result: the operator bundle helps 1/8 materials but fails
   at 32, including a Phi direction reversal. It does not authorize validation.

@@ -1,3 +1,9 @@
+> **Superseded historical snapshot.** The pInv/ridge observable-lift chart
+> described below was subsequently falsified and removed from the maintained
+> model and trainer. It remains only as an audit trail. The current ionic path
+> is the independent translation-free `Z*^T U_{eta,delta}` response documented
+> in `AGENTS.md` and `DIRECT_U_IDENTIFIABILITY_CORRECTION_2026-07-15.md`.
+
 # Operator and observable-lift correction — 2026-07-15
 
 ## Policy now implemented

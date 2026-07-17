@@ -8,7 +8,7 @@
     "historical_conventions_must_not_be_pooled": true,
     "artifact_index": "outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl"
   },
-  "cohort_count": 134,
+  "cohort_count": 135,
   "cohorts": [
     {
       "experiment_id": "audit",
@@ -2485,6 +2485,318 @@
             "last.pt",
             "loss_best.pt",
             "trs_best.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "electronic_generator_adjudication_v1",
+      "artifact_root": "outputs/electronic_generator_adjudication_v1",
+      "family": "electronic_generator_model_class_adjudication",
+      "archival_status": "current",
+      "execution_status": "completed_controls_and_same_id_capacity_with_retained_failures",
+      "result_disposition": "current_head_negative_global_irrep_linearized_and_literal_positive_same_id_capacity_literal_jet_mixed_negative_control",
+      "convention_epoch": "v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p",
+      "comparability_group": "exact_clone_val10_and_separate_same_id_train_capacity_cohorts",
+      "paper_use": "appendix_post_freeze_diagnostic",
+      "interpretation_boundary": "E0 exact-clone, E1 validation10 factor substitution/oracle, E2 current-head, E3 global-irrep, linearized controls, and literal autodiff differential-polarization same-ID capacity. Same-ID rows are noninductive; the linearized generator is not the literal Delta-P model. Test20 is unread and no row authorizes a production or held-out performance claim.",
+      "split": "E1 frozen validation10 only; capacity rows use declared strict-train samples1/8/32; test20 unread",
+      "artifact_summary": {
+        "file_count": 71,
+        "bytes": 836399521,
+        "last_modified_utc": "2026-07-17T10:19:47.293773Z",
+        "run_records": 19,
+        "completed_run_records": 16,
+        "partial_or_blocked_run_records": 3
+      },
+      "key_artifacts": [
+        "electronic_generator_adjudication_v1/e0_exact_clone/summary.json",
+        "electronic_generator_adjudication_v1/e0_exact_clone_cpu/summary.json",
+        "electronic_generator_adjudication_v1/e2_cuda_vectorization_smoke_samples32/metrics.csv",
+        "electronic_generator_adjudication_v1/e2_cuda_vectorization_smoke_samples32/summary.json",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity/samples1_seed42/INTERRUPTED.md",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity_optimized/samples1_seed42_v2/metrics.csv",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity_optimized/samples1_seed42_v2/summary.json",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity_optimized/samples32_seed42_v2/metrics.csv",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity_optimized/samples32_seed42_v2/summary.json",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity_optimized/samples8_seed42_v2/metrics.csv",
+        "electronic_generator_adjudication_v1/e2_current_head_capacity_optimized/samples8_seed42_v2/summary.json",
+        "electronic_generator_adjudication_v1/e3_global_irrep_capacity/samples32_seed42/INTERRUPTED.md",
+        "electronic_generator_adjudication_v1/e3_global_irrep_capacity/samples32_seed42/metrics.csv",
+        "electronic_generator_adjudication_v1/e3_global_irrep_capacity/samples32_seed42/summary.json",
+        "electronic_generator_adjudication_v1/e3_global_irrep_capacity/samples32_seed42_v2/INTERRUPTED.md",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/checkpoint_smoke_samples1/latest.pt",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/checkpoint_smoke_samples1/metrics.csv",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/checkpoint_smoke_samples1/summary.json",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/differential_jet_samples8_2ep/metrics.csv",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/differential_jet_samples8_2ep/summary.json",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/global_irrep_samples1_2ep_v2/metrics.csv",
+        "electronic_generator_adjudication_v1/e3_p1_smoke/global_irrep_samples1_2ep_v2/summary.json",
+        "electronic_generator_adjudication_v1/j1_differential_jet_capacity/samples32_seed42/latest.pt",
+        "electronic_generator_adjudication_v1/j1_differential_jet_capacity/samples32_seed42/metrics.csv",
+        "electronic_generator_adjudication_v1/j1_differential_jet_capacity/samples32_seed42/summary.json",
+        "electronic_generator_adjudication_v1/j1_literal_autodiff_jet_capacity/samples8_seed42/latest.pt",
+        "electronic_generator_adjudication_v1/j1_literal_autodiff_jet_capacity/samples8_seed42/metrics.csv",
+        "electronic_generator_adjudication_v1/j1_literal_autodiff_jet_capacity/samples8_seed42/summary.json",
+        "electronic_generator_adjudication_v1/p1_differential_capacity/samples32_seed42/latest.pt",
+        "electronic_generator_adjudication_v1/p1_differential_capacity/samples32_seed42/metrics.csv",
+        "electronic_generator_adjudication_v1/p1_differential_capacity/samples32_seed42/summary.json",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples1_seed42_smoke/latest.pt",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples1_seed42_smoke/metrics.csv",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples1_seed42_smoke/summary.json",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples32_seed42/latest.pt",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples32_seed42/metrics.csv",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples32_seed42/summary.json",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples8_microbatch4_seed42_smoke/metrics.csv",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples8_microbatch4_seed42_smoke/summary.json",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples8_seed42/latest.pt",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples8_seed42/metrics.csv",
+        "electronic_generator_adjudication_v1/p1_literal_autodiff_capacity/samples8_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "e0_exact_clone",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "e0_exact_clone_cpu",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "e2_cuda_vectorization_smoke_samples32",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "e2_current_head_capacity/samples1_seed42",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "INTERRUPTED.md"
+          ],
+          "checkpoint_files": [
+            "best.pt"
+          ]
+        },
+        {
+          "path": "e2_current_head_capacity_optimized/samples1_seed42_v2",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "e2_current_head_capacity_optimized/samples32_seed42_v2",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "e2_current_head_capacity_optimized/samples8_seed42_v2",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "e3_global_irrep_capacity/samples32_seed42",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "INTERRUPTED.md",
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "e3_global_irrep_capacity/samples32_seed42_v2",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "INTERRUPTED.md"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "e3_p1_smoke/checkpoint_smoke_samples1",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
+          ]
+        },
+        {
+          "path": "e3_p1_smoke/differential_jet_samples8_2ep",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "e3_p1_smoke/global_irrep_samples1_2ep_v2",
+          "execution_status": "completed_with_summary",
+          "seed": null,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "j1_differential_jet_capacity/samples32_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
+          ]
+        },
+        {
+          "path": "j1_literal_autodiff_jet_capacity/samples8_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
+          ]
+        },
+        {
+          "path": "p1_differential_capacity/samples32_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
+          ]
+        },
+        {
+          "path": "p1_literal_autodiff_capacity/samples1_seed42_smoke",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
+          ]
+        },
+        {
+          "path": "p1_literal_autodiff_capacity/samples32_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
+          ]
+        },
+        {
+          "path": "p1_literal_autodiff_capacity/samples8_microbatch4_seed42_smoke",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt"
+          ]
+        },
+        {
+          "path": "p1_literal_autodiff_capacity/samples8_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "metrics.csv",
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "final.pt",
+            "latest.pt"
           ]
         }
       ]

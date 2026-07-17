@@ -192,6 +192,56 @@ total-only labels improve ionic factors.
 
 ## Current evidence
 
+The electronic-branch adjudication first rules out a trainer/control mismatch:
+an exact-clone CPU run has bitwise-identical predictions, losses, gradients,
+parameters, and AdamW state for ten updates; CUDA differs only at the expected
+scatter/roundoff scale.  The maintained Cartesian electronic head then fails
+the samples32 same-ID capacity gate (active relative error `0.60814`, cosine
+`0.39285`), with the dominant residual in the `l=3` block.  Its read-only
+geometric-basis oracle likewise leaves mean `l=3` residual `0.19716` on val10.
+An explicit global-irrep `l<=3` control removes this representation floor on
+the same train-only samples32 panel (active relative error `0.04492`, cosine
+`0.99973`).
+
+Two different notions of a polarization generator are kept distinct.  The
+shared *linearized coefficient-generator control* directly emits `Z*` and
+`e_el`, then defines their common first-order increment; on samples32 it fits
+electronic response to relative error `0.03942` and BEC to `0.01933`.  Adding
+stochastic response-jet probes does not improve either endpoint (`0.04167` and
+`0.02104`, respectively).  The nonlinear autodiff candidate instead evaluates
+
+\[
+\Delta P_\theta(x;u,\eta)=P_\theta(T_\eta(x+u_o))-P_\theta(x)
+\]
+
+on genuinely perturbed positions, cell, and periodic edge shifts, and obtains
+both tensors as Jacobians at zero.  It never assigns an absolute Berry-phase
+polarization target.  Exact-zero, uniform-translation, Jacobian,
+engineering-shear finite-difference, O(3), atom-permutation, batch-invariance,
+and second-order-training tests pass.  Its completed samples8/200 CUDA gate has
+electronic active relative error `0.14986`, cosine `0.99961`, BEC relative error
+`0.02105`, BEC cosine `0.99937`, and acoustic leakage `6.1e-7 e`.  The
+preregistered samples32/200 gate also passes: electronic active relative error
+is `0.09839`, cosine `0.99786`, the `l=3` stabilized relative error is
+`0.07766`, and BEC relative error/cosine are `0.04673/0.99710`, with acoustic
+leakage `1.13e-6 e`.  The run used two material-weighted 16-material CUDA
+microbatches, 4,443 optimizer seconds, and 14.09 GiB peak allocated memory.
+These are noninductive model-class results, not validation performance or a
+production promotion.  A fresh samples8 response-jet control (weight `0.25`,
+three probes) changes electronic active error from `0.14986` to `0.13981` and
+`l=3` error from `0.11294` to `0.10529`, but worsens BEC error from `0.02105`
+to `0.02455` and adds 5.5% runtime.  The mixed result does not justify adding
+the algebraically redundant probe objective to the maintained candidate.
+
+Method selection no longer needs the frozen val10 panel.  Five immutable,
+formula-disjoint folds partition strict train1603 only, with development sizes
+`321/321/320/321/320`; their role map is
+`data/processed/strict_train1603_development_folds_v1.json`.  Frozen val10 and
+test20 labels are not read when constructing these folds.  Every development
+fold contains some samples32 capacity IDs, so the fitted same-ID checkpoint is
+forbidden as a fold initializer; development must start from response-random
+or structure-only-pretrained parameters.
+
 The explicit global-`l=3` displacement head resolves the former same-ID
 representation bottleneck.  On the preregistered samples32 capacity panel, a
 200-epoch no-consistency fit reaches `U` relative error `0.15827`, cosine
@@ -225,7 +275,7 @@ unread.  See
 
 The maintained CUDA path batches nonlocal global-`l=3` attention and the
 `Z*^T U` contraction, and omits inactive macro/optical diagnostics during
-branch or strict training.  Forward/gradient oracle tests and the 153-test
+branch or strict training.  Forward/gradient oracle tests and the 173-test
 suite pass; `num_workers` remains zero.  Concurrent microbenchmarks are
 recorded in `docs/reviews/2026-07/GPU_VECTORIZATION_AUDIT_2026-07-17.md` and
 are not promoted as clean end-to-end throughput claims.
@@ -324,6 +374,8 @@ Evaluate the frozen physical panel with:
 - `src/piezojet/evaluate_dfpt.py`: physical units, strict substitution grid,
   stability strata, spectra, delta sensitivity, low-rank oracle, and
   response-active projector/cross-covariance diagnostics;
+- `src/piezojet/electronic_capacity.py`: current-head, global-irrep,
+  linearized-coefficient, and literal-autodiff same-ID model-class probes;
 - `src/piezojet/train_direct_baseline.py`: matched macro-only control;
 - `docs/reviews/2026-07/DIRECT_U_IDENTIFIABILITY_CORRECTION_2026-07-15.md`: detailed correction
   report;
@@ -333,6 +385,10 @@ Evaluate the frozen physical panel with:
   teacher-forced `U_eta` curriculum, and the registered noninductive 1/8/32
   capacity ladder. These same-ID diagnostics are not held-out performance
   experiments.
+- `docs/reviews/2026-07/ELECTRONIC_GENERATOR_ADJUDICATION_2026-07-17.md`:
+  exact-clone control, electronic irrep/basis forensics, linearized controls,
+  literal nonlinear differential-polarization implementation, capacity gates,
+  and development-fold boundary;
 - `docs/reviews/2026-07/PREDICTIVE_VALIDITY_REPLAY_PROTOCOL_2026-07-16.md`: frozen separation of the
   physical and macro experiments, conditioning diagnostics, and statistical
   decision rules;

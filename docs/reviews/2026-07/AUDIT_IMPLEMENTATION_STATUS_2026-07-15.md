@@ -1,3 +1,9 @@
+> **Superseded historical snapshot.** This file records the implementation
+> state reached during 2026-07-15 and is not the maintained model contract.
+> In particular, later adjudication replaced `energy_learned_strain` with the
+> independent quadratic-response parameterization. Use `AGENTS.md` and
+> `ELECTRONIC_GENERATOR_ADJUDICATION_2026-07-17.md` for the current surface.
+
 # 外部技术审查实施状态（2026-07-15）
 
 本文按 [`详细审核和调查.md`](详细审核和调查.md) 的可证伪假设核对当前代码。

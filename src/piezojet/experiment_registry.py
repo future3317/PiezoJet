@@ -77,7 +77,28 @@ def _cohort_policy(name: str) -> dict[str, Any]:
         ),
     }
 
-    if name == "global_l3_joint_optimizer_adjudication_v1":
+    if name == "electronic_generator_adjudication_v1":
+        policy.update(
+            family="electronic_generator_model_class_adjudication",
+            archival_status="current",
+            execution_status="completed_controls_and_same_id_capacity_with_retained_failures",
+            result_disposition=(
+                "current_head_negative_global_irrep_linearized_and_literal_positive_"
+                "same_id_capacity_literal_jet_mixed_negative_control"
+            ),
+            convention_epoch="v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p",
+            comparability_group="exact_clone_val10_and_separate_same_id_train_capacity_cohorts",
+            paper_use="appendix_post_freeze_diagnostic",
+            interpretation_boundary=(
+                "E0 exact-clone, E1 validation10 factor substitution/oracle, E2 current-head, "
+                "E3 global-irrep, linearized controls, and literal autodiff differential-"
+                "polarization same-ID capacity. Same-ID rows are noninductive; the linearized "
+                "generator is not the literal Delta-P model. Test20 is unread and no row "
+                "authorizes a production or held-out performance claim."
+            ),
+            split="E1 frozen validation10 only; capacity rows use declared strict-train samples1/8/32; test20 unread",
+        )
+    elif name == "global_l3_joint_optimizer_adjudication_v1":
         policy.update(
             family="global_l3_joint_gradient_adjudication",
             archival_status="current",
