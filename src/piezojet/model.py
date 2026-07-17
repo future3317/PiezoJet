@@ -1455,19 +1455,27 @@ class IndependentElectrostaticHeads(nn.Module):
         del self.piezo_generator.born_irreps
         del self.piezo_generator.born_context_gates
 
-    def coefficients(self, batch) -> ElectromechanicalJetPrediction:
+    def born_charges(self, batch) -> torch.Tensor:
         born_features, _, born_context = (
             self.born_generator.encode_response_features(batch)
         )
+        return self.born_generator.decode_born(
+            born_features, born_context, batch.batch
+        )
+
+    def electronic_response(
+        self, batch
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         _, piezo_features, piezo_context = (
             self.piezo_generator.encode_response_features(batch)
         )
-        born = self.born_generator.decode_born(
-            born_features, born_context, batch.batch
-        )
-        electronic, dielectric = self.piezo_generator.decode_electronic(
+        return self.piezo_generator.decode_electronic(
             piezo_features, piezo_context
         )
+
+    def coefficients(self, batch) -> ElectromechanicalJetPrediction:
+        born = self.born_charges(batch)
+        electronic, dielectric = self.electronic_response(batch)
         return ElectromechanicalJetPrediction(
             born, electronic, dielectric,
         )

@@ -26,6 +26,7 @@ from .electronic_capacity import (
     electronic_capacity_metrics,
     irrep_balanced_capacity_loss,
 )
+from .electrostatic_protocol import ARCHITECTURES
 from .model import (
     ElectromechanicalJetHead,
     IndependentElectrostaticHeads,
@@ -33,14 +34,6 @@ from .model import (
 )
 from .project_config import load_project_config
 from .train import seed_everything
-
-
-ARCHITECTURES = (
-    "a0_independent_irreps",
-    "a1_electromechanical_jet",
-    "a2_nonlinear_cartesian",
-    "a3_nonlinear_reduced",
-)
 
 
 def _model_kwargs(config: dict[str, object]) -> dict[str, object]:
@@ -94,18 +87,69 @@ def _losses(model: nn.Module, batch, architecture: str, create_graph: bool):
     return electronic, born
 
 
+def backward_training_objective(
+    model: nn.Module, batch, architecture: str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Backpropagate one exact joint objective with bounded A0 graph memory."""
+    if architecture != "a0_independent_irreps":
+        electronic, born = _losses(model, batch, architecture, create_graph=True)
+        loss = electronic + born
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Non-finite electrostatic fold loss")
+        loss.backward()
+        return electronic, born
+
+    # A0's two towers share no parameters. Backpropagating each loss before
+    # constructing the other tower's graph is exactly equivalent to backward
+    # on their sum, while peak activation memory is that of one tower rather
+    # than both towers together.
+    electronic_prediction, _ = model.electronic_response(batch)
+    electronic = irrep_balanced_capacity_loss(
+        electronic_prediction, batch.y_electronic_piezo
+    )
+    if not torch.isfinite(electronic):
+        raise FloatingPointError("Non-finite A0 electronic loss")
+    electronic.backward()
+    born_prediction = model.born_charges(batch)
+    born = born_material_balanced_loss(
+        born_prediction, batch.y_born, batch.batch
+    )
+    if not torch.isfinite(born):
+        raise FloatingPointError("Non-finite A0 Born-charge loss")
+    born.backward()
+    return electronic, born
+
+
 def task_gradient_geometry(
     model: nn.Module, batch, architecture: str
 ) -> dict[str, float | int | None]:
     model.train()
-    electronic, born = _losses(model, batch, architecture, create_graph=True)
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    electronic_grad = torch.autograd.grad(
-        electronic, parameters, retain_graph=True, allow_unused=True
-    )
-    born_grad = torch.autograd.grad(
-        born, parameters, allow_unused=True
-    )
+    if architecture == "a0_independent_irreps":
+        electronic_prediction, _ = model.electronic_response(batch)
+        electronic = irrep_balanced_capacity_loss(
+            electronic_prediction, batch.y_electronic_piezo
+        )
+        electronic_grad = torch.autograd.grad(
+            electronic, parameters, allow_unused=True
+        )
+        born_prediction = model.born_charges(batch)
+        born = born_material_balanced_loss(
+            born_prediction, batch.y_born, batch.batch
+        )
+        born_grad = torch.autograd.grad(
+            born, parameters, allow_unused=True
+        )
+    else:
+        electronic, born = _losses(
+            model, batch, architecture, create_graph=True
+        )
+        electronic_grad = torch.autograd.grad(
+            electronic, parameters, retain_graph=True, allow_unused=True
+        )
+        born_grad = torch.autograd.grad(
+            born, parameters, allow_unused=True
+        )
     electronic_total_squared = sum(
         gradient.detach().square().sum()
         for gradient in electronic_grad if gradient is not None
@@ -352,13 +396,10 @@ def main() -> None:
         batch = batch.to(device)
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        electronic, born = _losses(
-            model, batch, args.architecture, create_graph=True
+        electronic, born = backward_training_objective(
+            model, batch, args.architecture
         )
-        loss = electronic + born
-        if not torch.isfinite(loss):
-            raise FloatingPointError("Non-finite electrostatic fold loss")
-        loss.backward()
+        loss = electronic.detach() + born.detach()
         optimizer.step()
         row = {
             "update": update,
@@ -431,6 +472,10 @@ def main() -> None:
             "cuda_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
             "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else None,
             "jacobian_execution": "three fixed reverse VJPs; e3nn scripted detach has no vmap batching rule" if args.architecture.startswith(("a2", "a3")) else "direct coefficient forward",
+            "a0_backward_execution": (
+                "sequential exact disjoint-task backward; one tower graph resident"
+                if args.architecture == "a0_independent_irreps" else None
+            ),
         },
         "gradient_geometry": {
             "diagnostic_batch_materials": int(diagnostic_batch.num_graphs),

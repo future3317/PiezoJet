@@ -37,6 +37,27 @@ class E3nnStructurePretrainingHead(nn.Module):
         return self.species(features), self.displacement(features)
 
 
+def electrostatic_pretraining_ids(
+    folds: dict[str, object],
+    fold_index: int,
+    known_ids: set[str],
+    train_limit: int,
+    seed: int,
+) -> list[str]:
+    """Resolve one formula-safe fold train panel without reading held-out labels."""
+    fold = next(
+        (entry for entry in folds["folds"] if entry["fold"] == fold_index),
+        None,
+    )
+    if fold is None:
+        raise ValueError(f"Fold {fold_index} is absent from electrostatic folds")
+    ids = electrostatic_fold_train_ids(folds, fold_index)
+    unknown = set(ids) - known_ids
+    if unknown:
+        raise ValueError(f"Unknown electrostatic train IDs: {sorted(unknown)[:5]}")
+    return deterministic_subset(ids, train_limit, seed + 1000)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -75,19 +96,12 @@ def main() -> None:
         if args.fold is None:
             raise ValueError("--fold is required with --electrostatic-folds")
         folds = json.loads(args.electrostatic_folds.read_text(encoding="utf-8-sig"))
-        fold = next(
-            (entry for entry in folds["folds"] if entry["fold"] == args.fold),
-            None,
-        )
-        if fold is None:
-            raise ValueError(f"Fold {args.fold} is absent from {args.electrostatic_folds}")
-        unknown = set(fold["train"]) - known_ids
-        if unknown:
-            raise ValueError(f"Unknown electrostatic train IDs: {sorted(unknown)[:5]}")
-        ids = deterministic_subset(
-            electrostatic_fold_train_ids(folds, args.fold),
+        ids = electrostatic_pretraining_ids(
+            folds,
+            args.fold,
+            known_ids,
             args.train_limit,
-            int(cfg["seed"]) + 1000,
+            int(cfg["seed"]),
         )
         pretraining_provenance = provenance(
             ids, args.electrostatic_folds, "train"
