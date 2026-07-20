@@ -1,5 +1,13 @@
+import pytest
+
 import piezojet.data as data_module
-from piezojet.data import PiezoDataset, formula, load_gmtnet_records, record_to_graph
+from piezojet.data import (
+    PiezoDataset,
+    completion_label_metadata,
+    formula,
+    load_gmtnet_records,
+    record_to_graph,
+)
 
 
 def test_formula_is_reduced_and_independent_of_unit_cell_multiplicity():
@@ -36,3 +44,25 @@ def test_explicit_none_dielectric_is_a_masked_missing_label():
     graph = record_to_graph(record, 5.0, 32)
     assert not bool(graph.dielectric_mask)
     assert graph.y_dielectric.shape == (1, 3, 3)
+
+
+def test_completion_schema_routes_only_certified_full_lambda_labels():
+    label_type, certificate = completion_label_metadata({
+        "schema": 2,
+        "audit": {"accepted": True, "invariant_dimensions": 7},
+    })
+    assert label_type == "strict_completion"
+    assert certificate["invariant_dimensions"] == 7
+    label_type, _ = completion_label_metadata({
+        "schema": 3,
+        "lambda_label_type": "joint_identifiable",
+        "identifiability": {"identifiable_dimension": 5},
+        "audit": {"accepted": True},
+    })
+    assert label_type == "joint_identifiable"
+    with pytest.raises(ValueError, match="full-Lambda label"):
+        completion_label_metadata({
+            "schema": 3,
+            "lambda_label_type": "macro_only",
+            "audit": {"accepted": True},
+        })

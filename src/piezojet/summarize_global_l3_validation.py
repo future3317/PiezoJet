@@ -99,7 +99,10 @@ def summarize(
         "schema": 1,
         "status": "completed_validation_only",
         "selection": "minimum run-local validation loss independently per seed",
-        "split": "train1603; formula-disjoint val10; frozen test20 unread",
+        "split": (
+            "legacy train1603 grouped by unreduced unit-cell formula; reduced-formula "
+            "overlap with val10 exists; frozen test20 unread"
+        ),
         "seeds": seeds,
         "physical_individual": {str(seed): physical[seed] for seed in seeds},
         "physical_mean_sample_sd": _aggregate(physical, physical_names),

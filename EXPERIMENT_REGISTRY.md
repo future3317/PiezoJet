@@ -4,7 +4,7 @@ This is the human-readable index of every top-level cohort under `outputs/`. The
 
 Negative, failed, interrupted, partial, running, and historical runs are intentionally retained. A directory's existence never implies a valid performance result.
 
-Registered top-level cohorts: **139**.
+Registered top-level cohorts: **148**.
 
 | Cohort | Family | Execution | Result | Convention | Paper use | Runs (complete/partial) |
 |---|---|---|---|---|---|---:|
@@ -128,6 +128,7 @@ Registered top-level cohorts: **139**.
 | `response_operator_action_cpu_smoke_v1` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `schema4_provenance_rebuild_v1` | data_convention_and_provenance_audit | completed | support_audit | source_audited_bec_transpose | appendix_provenance | 0 (0/0) |
 | `smoke_tensorial_operator_gpu` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
+| `strain_completion_v12_joint_identifiable_v1` | certified_joint_lambda_completion | completed | valid_zero_new_labels | v12_independent_heldout_block_certificate | appendix_data_and_identifiability_audit | 1 (0/0) |
 | `stratified_subset_resampling_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 6 (5/0) |
 | `strict_completion_train108_protocol_b_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 5 (3/0) |
 | `strict_completion_train97_protocol_b_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 5 (3/0) |
@@ -147,6 +148,14 @@ Registered top-level cohorts: **139**.
 | `u_capacity_adjudication_v2_balanced_objective` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 5 (5/0) |
 | `u_capacity_adjudication_v3_long_fit` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 2 (2/0) |
 | `u_capacity_adjudication_v4_global_l3` | global_l3_same_id_capacity_gate | completed | positive_noninductive_capacity_diagnostic | v10_global_l3_independent_u | appendix_capacity_diagnostic_only | 3 (3/0) |
+| `vnext_identifiability_census_smoke_v1` | lambda_identifiability_implementation_smoke | completed | support_smoke | v12_symmetry_acoustic_scaled_certificate | project_ledger_only | 1 (1/0) |
+| `vnext_identifiability_census_v1` | lambda_identifiability_census | completed | support_audit_eleven_algebraic_increments | v12_symmetry_acoustic_scaled_certificate | appendix_data_and_identifiability_audit | 1 (1/0) |
+| `vnext_stage0_legacy_checkpoint_rejection_v1` | checkpoint_provenance_negative_smoke | completed | expected_rejection_passed | v11_exact_panel_pretraining_resume | appendix_provenance | 1 (0/1) |
+| `vnext_stage3_checkpoint_runner_smoke_v1` | electrostatic_stage_a_checkpoint_runner_smoke | completed | support_smoke_not_performance | v12_deterministic_schedule_exact_resume | project_ledger_only | 1 (1/0) |
+| `vnext_stage3_corrected_adjudication_v2` | corrected_three_task_electrostatic_formula_disjoint_adjudication | interrupted | pretraining_stopped_before_first_checkpoint | v13_stabilized_bec_full_fold_pretraining | appendix_incomplete_only | 1 (0/1) |
+| `vnext_stage3_corrected_selection_smoke_v1` | corrected_electrostatic_runner_smoke | completed | support_smoke_not_performance | v13_stabilized_bec_full_fold_pretraining | project_ledger_only | 1 (1/0) |
+| `vnext_stage3_electrostatic_adjudication_v1` | three_task_electrostatic_jet_formula_disjoint_adjudication | partial_with_invalid_checkpoint_selection | retained_execution_evidence_not_architecture_result | v12_a0_a1_a15_bec_piezo_dielectric | appendix_after_registered_candidates_complete | 3 (2/1) |
+| `vnext_stage3_throughput_smoke_v1` | corrected_electrostatic_runner_smoke | completed | support_smoke_not_performance | v13_stabilized_bec_full_fold_pretraining | project_ledger_only | 3 (3/0) |
 
 ## Non-comparable families
 

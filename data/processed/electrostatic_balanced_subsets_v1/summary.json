@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "fold": 0,
+  "seed": 42,
+  "population": 3951,
+  "manifests": [
+    {
+      "limit": 200,
+      "path": "data\\processed\\electrostatic_balanced_subsets_v1\\fold0_balanced_n200_seed42.json",
+      "sha256": "45fa39ae1e460b188439863360cd5a4b49d4d09e3e18988e11f0fd730e39941a"
+    },
+    {
+      "limit": 800,
+      "path": "data\\processed\\electrostatic_balanced_subsets_v1\\fold0_balanced_n800_seed42.json",
+      "sha256": "1d517b5223e258281945689637bf841c4cc5da9886e4fc4fa58ddc8e285e2448"
+    }
+  ],
+  "frozen_validation_test_labels_read": false
+}

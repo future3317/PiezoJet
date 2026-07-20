@@ -6,6 +6,7 @@ from piezojet.checkpoint_provenance import (
     build_checkpoint_provenance,
     validate_checkpoint_provenance,
 )
+from piezojet.pretrain_e3nn import validate_resume_payload
 
 
 def _write_split(path, train=("a", "b"), val=("c",), test=("d",)):
@@ -79,4 +80,35 @@ def test_only_explicit_same_id_diagnostic_may_overlap_splits(tmp_path):
     with pytest.raises(ValueError, match="split_kind|noninductive_same_id"):
         validate_checkpoint_provenance(
             {"checkpoint_provenance": diagnostic}, inductive
+        )
+
+
+def test_e3nn_pretraining_resume_requires_exact_panel_and_optimizer_state():
+    provenance = {"schema": 2, "material_id_sha256": "current"}
+    complete = {
+        "architecture": "e3nn_periodic_v1",
+        "pretraining_provenance": provenance,
+        "head": {},
+        "optimizer": {},
+    }
+    validate_resume_payload(complete, provenance)
+    contract = {"logical_batch_size": 32}
+    validate_resume_payload(
+        {**complete, "pretraining_contract": contract}, provenance, contract
+    )
+    with pytest.raises(ValueError, match="pretraining contract"):
+        validate_resume_payload(
+            {**complete, "pretraining_contract": {"logical_batch_size": 16}},
+            provenance,
+            contract,
+        )
+    with pytest.raises(ValueError, match="exact current panel"):
+        validate_resume_payload(
+            {**complete, "pretraining_provenance": {**provenance, "material_id_sha256": "old"}},
+            provenance,
+        )
+    with pytest.raises(ValueError, match="Legacy pretraining checkpoint"):
+        validate_resume_payload(
+            {key: value for key, value in complete.items() if key != "optimizer"},
+            provenance,
         )

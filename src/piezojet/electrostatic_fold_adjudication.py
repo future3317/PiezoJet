@@ -6,10 +6,12 @@ import argparse
 import json
 import math
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 from torch import nn
+from torch.utils.flop_counter import FlopCounterMode
 from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
@@ -25,10 +27,17 @@ from .electronic_capacity import (
     born_capacity_metrics,
     born_material_balanced_loss,
     dielectric_capacity_metrics,
+    dielectric_material_balanced_loss,
     electronic_capacity_metrics,
     irrep_balanced_capacity_loss,
 )
-from .electrostatic_protocol import ARCHITECTURES
+from .electrostatic_protocol import (
+    ARCHITECTURES,
+    STABILIZED_SELECTION_VERSION,
+    development_selection,
+    matched_material_schedule,
+)
+from .electrostatic_subset import load_response_subset
 from .model import (
     ElectromechanicalJetHead,
     IndependentElectrostaticHeads,
@@ -36,7 +45,7 @@ from .model import (
 )
 from .project_config import load_project_config
 from .pretraining_protocol import validate_inductive_checkpoint
-from .train import _data_commit, seed_everything
+from .train import _data_commit, _git_commit, seed_everything
 
 
 def _model_kwargs(config: dict[str, object]) -> dict[str, object]:
@@ -79,12 +88,17 @@ def _losses(model: nn.Module, batch, architecture: str, create_graph: bool):
     born = born_material_balanced_loss(
         prediction.born_charges, batch.y_born, batch.batch
     )
-    return electronic, born
+    dielectric = dielectric_material_balanced_loss(
+        prediction.electronic_dielectric,
+        batch.y_dfpt_electronic_dielectric,
+        batch.dfpt_electronic_dielectric_mask,
+    )
+    return electronic, born, dielectric
 
 
 def backward_training_objective(
     model: nn.Module, batch, architecture: str, *, gradient_scale: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Backpropagate one joint objective, optionally as a mean microbatch.
 
     ``gradient_scale`` is the material fraction of one logical update.  It
@@ -95,18 +109,20 @@ def backward_training_objective(
     if gradient_scale <= 0.0:
         raise ValueError("gradient_scale must be positive")
     if architecture != "a0_independent_irreps":
-        electronic, born = _losses(model, batch, architecture, create_graph=True)
-        loss = electronic + born
+        electronic, born, dielectric = _losses(
+            model, batch, architecture, create_graph=True
+        )
+        loss = electronic + born + dielectric
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite electrostatic fold loss")
         (loss * gradient_scale).backward()
-        return electronic, born
+        return electronic, born, dielectric
 
-    # A0's two towers share no parameters. Backpropagating each loss before
-    # constructing the other tower's graph is exactly equivalent to backward
+    # A0's three towers share no parameters. Backpropagating each loss before
+    # constructing the next tower's graph is exactly equivalent to backward
     # on their sum, while peak activation memory is that of one tower rather
-    # than both towers together.
-    electronic_prediction, _ = model.electronic_response(batch)
+    # than all three towers together.
+    electronic_prediction = model.electronic_response(batch)
     electronic = irrep_balanced_capacity_loss(
         electronic_prediction, batch.y_electronic_piezo
     )
@@ -120,7 +136,16 @@ def backward_training_objective(
     if not torch.isfinite(born):
         raise FloatingPointError("Non-finite A0 Born-charge loss")
     (born * gradient_scale).backward()
-    return electronic, born
+    dielectric_prediction = model.dielectric_response(batch)
+    dielectric = dielectric_material_balanced_loss(
+        dielectric_prediction,
+        batch.y_dfpt_electronic_dielectric,
+        batch.dfpt_electronic_dielectric_mask,
+    )
+    if not torch.isfinite(dielectric):
+        raise FloatingPointError("Non-finite A0 dielectric loss")
+    (dielectric * gradient_scale).backward()
+    return electronic, born, dielectric
 
 
 def task_gradient_geometry(
@@ -129,7 +154,7 @@ def task_gradient_geometry(
     model.train()
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if architecture == "a0_independent_irreps":
-        electronic_prediction, _ = model.electronic_response(batch)
+        electronic_prediction = model.electronic_response(batch)
         electronic = irrep_balanced_capacity_loss(
             electronic_prediction, batch.y_electronic_piezo
         )
@@ -143,15 +168,27 @@ def task_gradient_geometry(
         born_grad = torch.autograd.grad(
             born, parameters, allow_unused=True
         )
+        dielectric_prediction = model.dielectric_response(batch)
+        dielectric = dielectric_material_balanced_loss(
+            dielectric_prediction,
+            batch.y_dfpt_electronic_dielectric,
+            batch.dfpt_electronic_dielectric_mask,
+        )
+        dielectric_grad = torch.autograd.grad(
+            dielectric, parameters, allow_unused=True
+        )
     else:
-        electronic, born = _losses(
+        electronic, born, dielectric = _losses(
             model, batch, architecture, create_graph=True
         )
         electronic_grad = torch.autograd.grad(
             electronic, parameters, retain_graph=True, allow_unused=True
         )
         born_grad = torch.autograd.grad(
-            born, parameters, allow_unused=True
+            born, parameters, retain_graph=True, allow_unused=True
+        )
+        dielectric_grad = torch.autograd.grad(
+            dielectric, parameters, allow_unused=True
         )
     electronic_total_squared = sum(
         gradient.detach().square().sum()
@@ -161,6 +198,10 @@ def task_gradient_geometry(
         gradient.detach().square().sum()
         for gradient in born_grad if gradient is not None
     )
+    dielectric_total_squared = sum(
+        gradient.detach().square().sum()
+        for gradient in dielectric_grad if gradient is not None
+    )
     shared = [
         (left.detach(), right.detach())
         for left, right in zip(electronic_grad, born_grad, strict=True)
@@ -169,16 +210,25 @@ def task_gradient_geometry(
     result: dict[str, float | int | None] = {
         "electronic_loss": float(electronic.detach()),
         "born_loss": float(born.detach()),
+        "dielectric_loss": float(dielectric.detach()),
         "electronic_parameter_tensors": sum(
             gradient is not None for gradient in electronic_grad
         ),
         "born_parameter_tensors": sum(gradient is not None for gradient in born_grad),
+        "dielectric_parameter_tensors": sum(
+            gradient is not None for gradient in dielectric_grad
+        ),
         "electronic_total_gradient_norm": float(torch.sqrt(electronic_total_squared)),
         "born_total_gradient_norm": float(torch.sqrt(born_total_squared)),
+        "dielectric_total_gradient_norm": float(
+            torch.sqrt(dielectric_total_squared)
+        ),
         "shared_parameter_tensors": len(shared),
         "shared_electronic_gradient_norm": None,
         "shared_born_gradient_norm": None,
         "shared_gradient_cosine": None,
+        "electronic_dielectric_shared_gradient_cosine": None,
+        "born_dielectric_shared_gradient_cosine": None,
     }
     if not shared:
         return result
@@ -193,6 +243,24 @@ def task_gradient_geometry(
         "shared_born_gradient_norm": float(right_norm),
         "shared_gradient_cosine": float(cosine),
     })
+    def pair_cosine(left_grad, right_grad):
+        pairs = [
+            (left.detach(), right.detach())
+            for left, right in zip(left_grad, right_grad, strict=True)
+            if left is not None and right is not None
+        ]
+        if not pairs:
+            return None
+        left_norm = torch.sqrt(sum(left.square().sum() for left, _ in pairs))
+        right_norm = torch.sqrt(sum(right.square().sum() for _, right in pairs))
+        dot = sum((left * right).sum() for left, right in pairs)
+        return float(dot / (left_norm * right_norm).clamp_min(1e-30))
+    result["electronic_dielectric_shared_gradient_cosine"] = pair_cosine(
+        electronic_grad, dielectric_grad
+    )
+    result["born_dielectric_shared_gradient_cosine"] = pair_cosine(
+        born_grad, dielectric_grad
+    )
     return result
 
 
@@ -255,6 +323,14 @@ def load_structure_pretraining(
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     if payload.get("architecture") != "e3nn_periodic_v1":
         raise ValueError("Structure checkpoint is not a PeriodicCrystalEncoder pretrain")
+    expected_code_commit = None if config is None else config.get("code_commit")
+    if (
+        expected_code_commit is not None
+        and payload.get("code_commit") != expected_code_commit
+    ):
+        raise ValueError(
+            "Structure checkpoint code commit differs from the pinned Stage-A commit"
+        )
     pretraining_provenance = validate_inductive_checkpoint(
         payload, train_ids, development_ids, config
     )
@@ -262,7 +338,8 @@ def load_structure_pretraining(
     if architecture == "a0_independent_irreps":
         model.born_generator.encoder.load_state_dict(state, strict=True)
         model.piezo_generator.encoder.load_state_dict(state, strict=True)
-        encoder_copies = 2
+        model.dielectric_generator.encoder.load_state_dict(state, strict=True)
+        encoder_copies = 3
     elif architecture in {
         "a1_electromechanical_jet", "a15_soft_shared_electromechanical_jet"
     }:
@@ -355,9 +432,22 @@ def main() -> None:
     )
     parser.add_argument("--eval-interval", type=int, default=25)
     parser.add_argument("--train-limit", type=int, default=0)
+    parser.add_argument(
+        "--train-ids-file", type=Path,
+        help="Preregistered balanced response-supervision subset manifest",
+    )
     parser.add_argument("--development-limit", type=int, default=0)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument(
+        "--code-commit",
+        help="Pinned 40-character source commit recorded by the execution plan",
+    )
     parser.add_argument("--pretrained-encoder", type=Path)
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        help="Resume an exact deterministic schedule from a run-local progress.pt",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -373,17 +463,30 @@ def main() -> None:
 
     config = load_project_config(args.config)
     config["data_commit"] = _data_commit(config["data_root"])
+    code_commit = args.code_commit or _git_commit()
+    if len(code_commit) != 40 or any(
+        character not in "0123456789abcdefABCDEF" for character in code_commit
+    ):
+        raise ValueError("--code-commit must be one 40-character Git commit SHA")
+    config["code_commit"] = code_commit.lower()
     config["seed"] = args.seed
     config["fold_identity"] = f"electrostatic-development-fold-{args.fold}"
     folds = json.loads(args.folds.read_text(encoding="utf-8-sig"))
     fold = next((value for value in folds["folds"] if value["fold"] == args.fold), None)
     if fold is None:
         raise ValueError(f"Fold {args.fold} is absent from {args.folds}")
-    train_ids = deterministic_subset(
-        electrostatic_fold_train_ids(folds, args.fold),
-        args.train_limit,
-        args.seed + 1000,
-    )
+    full_fold_train_ids = electrostatic_fold_train_ids(folds, args.fold)
+    if args.train_ids_file is not None and args.train_limit:
+        raise ValueError("--train-ids-file and --train-limit are mutually exclusive")
+    subset_manifest = None
+    if args.train_ids_file is not None:
+        train_ids, subset_manifest = load_response_subset(
+            args.train_ids_file, fold=args.fold, allowed_ids=full_fold_train_ids
+        )
+    else:
+        train_ids = deterministic_subset(
+            full_fold_train_ids, args.train_limit, args.seed + 1000
+        )
     dev_ids = deterministic_subset(
         list(fold["development"]), args.development_limit, args.seed + 2000
     )
@@ -393,6 +496,14 @@ def main() -> None:
         config,
         split_kind=f"electrostatic_development_fold_{args.fold}",
     )
+    checkpoint_provenance["code_commit"] = config["code_commit"]
+    if args.train_ids_file is not None:
+        checkpoint_provenance["response_subset_manifest"] = str(
+            args.train_ids_file.resolve()
+        )
+        checkpoint_provenance["response_subset_material_id_sha256"] = (
+            subset_manifest["material_id_sha256"]
+        )
     seed_everything(args.seed)
     records = load_gmtnet_records(config["data_root"])
     cache_key = graph_cache_key(
@@ -402,26 +513,81 @@ def main() -> None:
     dev_set = _dataset(config, records, dev_ids, cache_key)
     if args.batch_size > len(train_set):
         raise ValueError("Logical batch size cannot exceed the training panel")
-    device = torch.device(args.device)
-    generator = torch.Generator().manual_seed(args.seed)
-    train_loader = DataLoader(
-        train_set, batch_size=microbatch_size, shuffle=True,
-        num_workers=0, generator=generator, drop_last=True,
+    schedule = matched_material_schedule(
+        len(train_set), args.updates, args.batch_size, microbatch_size, args.seed
     )
+    device = torch.device(args.device)
     dev_loader = DataLoader(
         dev_set, batch_size=evaluation_batch_size, shuffle=False, num_workers=0,
     )
+    train_eval_loader = DataLoader(
+        train_set, batch_size=evaluation_batch_size, shuffle=False, num_workers=0,
+    )
+    if args.resume is None:
+        if args.output_dir.exists():
+            raise FileExistsError(f"Stage-A output directory exists: {args.output_dir}")
+        args.output_dir.mkdir(parents=True, exist_ok=False)
+    else:
+        if not args.resume.resolve().is_relative_to(args.output_dir.resolve()):
+            raise ValueError("Resume checkpoint must be inside --output-dir")
+        if not args.output_dir.is_dir():
+            raise FileNotFoundError(f"Resume output directory is absent: {args.output_dir}")
     model = make_model(args.architecture, config).to(device)
     pretraining = (
         load_structure_pretraining(
             model, args.architecture, args.pretrained_encoder, device,
-            train_ids, dev_ids, config,
+            full_fold_train_ids, dev_ids, config,
         )
         if args.pretrained_encoder is not None
         else None
     )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=1e-6
+    )
+    training_contract = {
+        "architecture": args.architecture,
+        "fold": args.fold,
+        "seed": args.seed,
+        "updates": args.updates,
+        "logical_batch_size": args.batch_size,
+        "microbatch_size": microbatch_size,
+        "learning_rate": args.learning_rate,
+        "train_ids": train_ids,
+        "full_fold_structure_pretraining_ids": full_fold_train_ids,
+        "development_ids": dev_ids,
+    }
+    start_update = 1
+    history: list[dict[str, object]] = []
+    best_score = math.inf
+    best_state = None
+    best_update = None
+    saved_initial_gradient = None
+    if args.resume is not None:
+        payload = torch.load(args.resume, map_location=device, weights_only=False)
+        if payload.get("status") not in {"running", "interrupted"}:
+            raise ValueError("Resume checkpoint is not an incomplete Stage-A run")
+        if payload.get("training_contract") != training_contract:
+            raise ValueError("Resume training contract differs from the current command")
+        if payload.get("checkpoint_provenance") != checkpoint_provenance:
+            raise ValueError("Resume checkpoint provenance differs from the current fold")
+        model.load_state_dict(payload["model"], strict=True)
+        optimizer.load_state_dict(payload["optimizer"])
+        completed_update = int(payload["completed_update"])
+        start_update = completed_update + 1
+        history = list(payload["history"])
+        best_score = float(payload["best_score"])
+        best_state = payload["best_model"]
+        saved_best_update = payload.get("best_update")
+        best_update = (
+            int(saved_best_update) if saved_best_update is not None else None
+        )
+        saved_initial_gradient = payload["initial_gradient"]
+    scheduled_tail = schedule[(start_update - 1) * args.batch_size :]
+    train_loader = DataLoader(
+        Subset(train_set, scheduled_tail),
+        batch_size=microbatch_size,
+        shuffle=False,
+        num_workers=0,
     )
     iterator = iter(train_loader)
     diagnostic_indices, diagnostic_materials = response_active_diagnostic_indices(
@@ -431,83 +597,180 @@ def main() -> None:
         Subset(train_set, diagnostic_indices), batch_size=len(diagnostic_indices),
         shuffle=False, num_workers=0,
     ))).to(device)
-    initial_gradient = task_gradient_geometry(
-        model, diagnostic_batch, args.architecture
+    initial_gradient = (
+        saved_initial_gradient
+        if saved_initial_gradient is not None
+        else task_gradient_geometry(model, diagnostic_batch, args.architecture)
     )
     optimizer.zero_grad(set_to_none=True)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
         torch.cuda.synchronize(device)
     started = time.perf_counter()
-    history = []
-    best_score = math.inf
-    best_state = None
-    best_update = None
-    for update in range(1, args.updates + 1):
-        try:
-            batch = next(iterator)
-        except StopIteration:
-            iterator = iter(train_loader)
-            batch = next(iterator)
+    counted_flops_per_update: int | None = None
+    cuda_update_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+    for update in range(start_update, args.updates + 1):
+        batch = next(iterator)
         batch = batch.to(device)
         optimizer.zero_grad(set_to_none=True)
         logical_electronic = 0.0
         logical_born = 0.0
+        logical_dielectric = 0.0
+        start_event = end_event = None
+        if device.type == "cuda":
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+        flop_context = (
+            FlopCounterMode(display=False)
+            if counted_flops_per_update is None
+            else nullcontext()
+        )
         # Every physical batch has the same number of graphs (drop_last=True),
         # and the divisibility check gives the same mathematical material-mean
         # objective. Floating-point reductions need not be bitwise identical
         # to one larger forward pass.
-        for microbatch in range(args.batch_size // microbatch_size):
-            if microbatch:
-                try:
+        with flop_context:
+            for microbatch in range(args.batch_size // microbatch_size):
+                if microbatch:
                     batch = next(iterator)
-                except StopIteration:
-                    iterator = iter(train_loader)
-                    batch = next(iterator)
-            batch = batch.to(device)
-            model.train()
-            fraction = int(batch.num_graphs) / args.batch_size
-            electronic, born = backward_training_objective(
-                model, batch, args.architecture, gradient_scale=fraction,
-            )
-            logical_electronic += float(electronic.detach()) * fraction
-            logical_born += float(born.detach()) * fraction
-            del batch
-        loss = logical_electronic + logical_born
-        optimizer.step()
+                batch = batch.to(device)
+                model.train()
+                fraction = int(batch.num_graphs) / args.batch_size
+                electronic, born, dielectric = backward_training_objective(
+                    model, batch, args.architecture, gradient_scale=fraction,
+                )
+                logical_electronic += float(electronic.detach()) * fraction
+                logical_born += float(born.detach()) * fraction
+                logical_dielectric += float(dielectric.detach()) * fraction
+                del batch
+            loss = logical_electronic + logical_born + logical_dielectric
+            optimizer.step()
+        if isinstance(flop_context, FlopCounterMode):
+            counted_flops_per_update = int(flop_context.get_total_flops())
+        if start_event is not None and end_event is not None:
+            end_event.record()
+            cuda_update_events.append((start_event, end_event))
         row = {
             "update": update,
             "train_loss": loss,
             "train_electronic_loss": logical_electronic,
             "train_born_loss": logical_born,
+            "train_dielectric_loss": logical_dielectric,
         }
         if update % args.eval_interval == 0 or update == args.updates:
             metrics = _evaluate(model, dev_loader, args.architecture)
-            score = (
-                float(metrics["electronic"]["mean_stabilized_relative_frobenius_error"])
-                + float(metrics["born"]["mean_relative_frobenius_error"])
-            )
+            train_metrics = _evaluate(model, train_eval_loader, args.architecture)
+            selection = development_selection(metrics)
+            score = float(selection["raw_score"])
             row["development_selection_score"] = score
-            if score < best_score:
+            row["development_selection"] = selection
+            row["development_metrics"] = metrics
+            row["train_metrics"] = train_metrics
+            if bool(selection["eligible"]) and score < best_score:
                 best_score, best_update = score, update
                 best_state = {
                     name: value.detach().cpu().clone()
                     for name, value in model.state_dict().items()
                 }
+            evaluation_payload = {
+                "schema": 1,
+                "status": "running",
+                "completed_update": update,
+                "training_contract": training_contract,
+                "checkpoint_provenance": checkpoint_provenance,
+                "model": {
+                    name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()
+                },
+                "optimizer": optimizer.state_dict(),
+                "history": [*history, row],
+                "best_score": best_score,
+                "best_update": best_update,
+                "best_model": best_state,
+                "initial_gradient": initial_gradient,
+                "development_metrics": metrics,
+                "train_metrics": train_metrics,
+                "selection_score": score,
+                "selection": selection,
+            }
+            checkpoint_dir = args.output_dir / "evaluation_checkpoints"
+            checkpoint_dir.mkdir(exist_ok=True)
+            torch.save(
+                evaluation_payload,
+                checkpoint_dir / f"update_{update:08d}.pt",
+            )
+            torch.save(evaluation_payload, args.output_dir / "progress.pt")
+            (args.output_dir / "progress.json").write_text(
+                json.dumps({
+                    "schema": 1,
+                    "status": "running",
+                    "completed_update": update,
+                    "best_update": best_update,
+                    "best_score": best_score,
+                    "selection_version": STABILIZED_SELECTION_VERSION,
+                    "frozen_validation_test_labels_read": False,
+                }, indent=2) + "\n",
+                encoding="utf-8",
+            )
         history.append(row)
         if update == 1 or update % args.eval_interval == 0:
             print(json.dumps(row))
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     seconds = time.perf_counter() - started
+    optimizer_seconds = (
+        sum(start.elapsed_time(end) for start, end in cuda_update_events) / 1000.0
+        if cuda_update_events
+        else seconds
+    )
     if best_state is None:
-        raise RuntimeError("No development checkpoint was selected")
+        summary = {
+            "schema": 2,
+            "status": "completed_no_eligible_checkpoint",
+            "protocol": (
+                "formula-disjoint three-task first-order electrostatic-jet "
+                "development adjudication"
+            ),
+            "architecture": args.architecture,
+            "fold": args.fold,
+            "seed": args.seed,
+            "checkpoint_provenance": checkpoint_provenance,
+            "train_materials": len(train_set),
+            "development_materials": len(dev_set),
+            "frozen_validation_test_labels_read": False,
+            "selection_version": STABILIZED_SELECTION_VERSION,
+            "selection": (
+                "no checkpoint passed all directional and amplitude guardrails; "
+                "no selected.pt was written"
+            ),
+            "history": history,
+            "runtime": {
+                "device": str(device),
+                "seconds": seconds,
+                "optimizer_seconds": optimizer_seconds,
+                "counted_flops_per_update": counted_flops_per_update,
+            },
+        }
+        (args.output_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+        )
+        (args.output_dir / "progress.json").write_text(
+            json.dumps({
+                "schema": 1,
+                "status": "completed_no_eligible_checkpoint",
+                "completed_update": args.updates,
+                "selected_update": None,
+                "frozen_validation_test_labels_read": False,
+            }, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return
     model.load_state_dict(best_state)
     selected_metrics = _evaluate(model, dev_loader, args.architecture)
     final_gradient = task_gradient_geometry(
         model, diagnostic_batch, args.architecture
     )
-    args.output_dir.mkdir(parents=True, exist_ok=False)
     torch.save({
         "model": best_state,
         "architecture": args.architecture,
@@ -517,8 +780,11 @@ def main() -> None:
         "checkpoint_provenance": checkpoint_provenance,
     }, args.output_dir / "selected.pt")
     summary = {
-        "schema": 1,
-            "protocol": "formula-disjoint first-order electrostatic-jet development adjudication",
+        "schema": 2,
+        "protocol": (
+            "formula-disjoint three-task first-order electrostatic-jet "
+            "development adjudication"
+        ),
         "architecture": args.architecture,
         "fold": args.fold,
         "seed": args.seed,
@@ -526,6 +792,10 @@ def main() -> None:
         "train_materials": len(train_set),
         "development_materials": len(dev_set),
         "train_limit": args.train_limit,
+        "response_subset_manifest": (
+            str(args.train_ids_file.resolve()) if args.train_ids_file else None
+        ),
+        "structure_pretraining_universe_materials": len(full_fold_train_ids),
         "development_limit": args.development_limit,
         "frozen_validation_test_labels_read": False,
         "initialization": (
@@ -536,24 +806,46 @@ def main() -> None:
         ),
         "structure_pretraining": pretraining,
         "optimizer_updates": args.updates,
+        "material_exposures": args.updates * args.batch_size,
+        "effective_train_passes": args.updates * args.batch_size / len(train_set),
         "logical_batch_size": args.batch_size,
         "microbatch_size": microbatch_size,
         "microbatches_per_update": args.batch_size // microbatch_size,
         "evaluation_batch_size": evaluation_batch_size,
         "diagnostic_batch_size": int(diagnostic_batch.num_graphs),
         "num_workers": 0,
-        "selection": "minimum development electronic-relative plus BEC-relative score",
+        "selection": (
+            "minimum development electronic-stabilized-relative plus "
+            "BEC-stabilized-relative plus "
+            "electronic-dielectric-relative score"
+        ),
+        "selection_version": STABILIZED_SELECTION_VERSION,
+        "selection_weights": {
+            "electronic_stabilized_relative": 1.0,
+            "born_stabilized_relative": 1.0,
+            "electronic_dielectric_stabilized_relative": 1.0,
+        },
+        "evaluation_checkpoint_policy": (
+            "one immutable model+optimizer+train/development-metrics checkpoint "
+            "per full-development evaluation point"
+        ),
         "selected_update": best_update,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "runtime": {
             "device": str(device),
             "seconds": seconds,
+            "optimizer_seconds": optimizer_seconds,
+            "counted_flops_per_update": counted_flops_per_update,
+            "flop_count_scope": (
+                "torch-dispatch-supported forward, backward, and AdamW operations "
+                "for one measured logical update"
+            ),
             "updates_per_second": args.updates / seconds,
             "cuda_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
             "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else None,
             "jacobian_execution": "direct first-order coefficient forward",
             "a0_backward_execution": (
-                "sequential exact disjoint-task backward; one tower graph resident"
+                "sequential exact three-disjoint-task backward; one tower graph resident"
                 if args.architecture == "a0_independent_irreps" else None
             ),
         },
@@ -570,6 +862,17 @@ def main() -> None:
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
+    (args.output_dir / "progress.json").write_text(
+        json.dumps({
+            "schema": 1,
+            "status": "complete",
+            "completed_update": args.updates,
+            "selected_update": best_update,
+            "frozen_validation_test_labels_read": False,
+        }, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (args.output_dir / "progress.pt").unlink(missing_ok=True)
     print(json.dumps({"selected_update": best_update, "metrics": selected_metrics}, indent=2))
 
 

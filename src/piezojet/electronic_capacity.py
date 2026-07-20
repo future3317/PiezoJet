@@ -6,6 +6,7 @@ import argparse
 import csv
 from hashlib import sha256
 import json
+import math
 import time
 from pathlib import Path
 
@@ -287,6 +288,9 @@ def electronic_capacity_metrics(
         "mean_active_cosine": (
             float(cosine[active].mean()) if bool(active.any()) else float("nan")
         ),
+        "mean_active_amplitude_ratio": (
+            float(amplitude[active].mean()) if bool(active.any()) else float("nan")
+        ),
         "mean_stabilized_amplitude_ratio": float(amplitude.mean()),
         "per_material": [
             {
@@ -328,11 +332,41 @@ def born_material_balanced_loss(
     return (residual_energy / denominator).mean()
 
 
+def dielectric_material_balanced_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    floor_per_component: float = 1.0,
+) -> torch.Tensor:
+    """One normalized full electronic-dielectric tensor vote per material."""
+    valid = mask.reshape(-1).to(torch.bool)
+    if not bool(valid.any()):
+        return prediction.sum() * 0.0
+    predicted = prediction[valid]
+    expected = target[valid]
+    residual_energy = (predicted - expected).square().sum(dim=(-1, -2))
+    target_energy = expected.square().sum(dim=(-1, -2))
+    floor_energy = floor_per_component**2 * expected.shape[-1] * expected.shape[-2]
+    return (residual_energy / target_energy.clamp_min(floor_energy)).mean()
+
+
 def born_capacity_metrics(
     prediction: torch.Tensor,
     target: torch.Tensor,
     batch_index: torch.Tensor,
+    floor_per_component: float = 0.1,
 ) -> dict[str, object]:
+    """Material-balanced Born-charge metrics with an explicit zero-target floor.
+
+    The stabilized denominator is identical to ``born_material_balanced_loss``:
+    one ``floor_per_component`` contribution for every atomic Cartesian
+    component.  The raw relative error remains available for nonzero-target
+    diagnostics, but it must not be used for checkpoint selection because an
+    exactly zero symmetry-projected target otherwise has an undefined relative
+    error.
+    """
+    if floor_per_component <= 0.0:
+        raise ValueError("floor_per_component must be positive")
     graphs = int(batch_index.max()) + 1
     rows: list[dict[str, float | int]] = []
     for graph_index in range(graphs):
@@ -342,6 +376,8 @@ def born_capacity_metrics(
         predicted_norm = torch.linalg.vector_norm(predicted)
         target_norm = torch.linalg.vector_norm(expected)
         residual_norm = torch.linalg.vector_norm(predicted - expected)
+        component_count = expected.numel()
+        stabilized_floor = floor_per_component * math.sqrt(component_count)
         cosine = (predicted * expected).sum() / (
             predicted_norm * target_norm
         ).clamp_min(1e-30)
@@ -354,15 +390,40 @@ def born_capacity_metrics(
                 "relative_frobenius_error": float(
                     residual_norm / target_norm.clamp_min(1e-30)
                 ),
+                "stabilized_relative_frobenius_error": float(
+                    residual_norm / target_norm.clamp_min(stabilized_floor)
+                ),
+                "stabilized_denominator_floor_e": stabilized_floor,
+                "exact_zero_target": int(float(target_norm) == 0.0),
                 "cosine": float(cosine),
                 "acoustic_sum_norm_e": float(torch.linalg.vector_norm(acoustic)),
             }
         )
+    zero_rows = [row for row in rows if row["exact_zero_target"]]
+    nonzero_rows = [row for row in rows if not row["exact_zero_target"]]
     return {
         "materials": graphs,
+        "floor_per_component_e": floor_per_component,
         "mean_relative_frobenius_error": sum(
             float(row["relative_frobenius_error"]) for row in rows
         ) / graphs,
+        "mean_nonzero_relative_frobenius_error": (
+            sum(float(row["relative_frobenius_error"]) for row in nonzero_rows)
+            / len(nonzero_rows)
+            if nonzero_rows else None
+        ),
+        "mean_nonzero_cosine": (
+            sum(float(row["cosine"]) for row in nonzero_rows) / len(nonzero_rows)
+            if nonzero_rows else None
+        ),
+        "mean_stabilized_relative_frobenius_error": sum(
+            float(row["stabilized_relative_frobenius_error"]) for row in rows
+        ) / graphs,
+        "exact_zero_target_materials": len(zero_rows),
+        "mean_exact_zero_prediction_norm_e": (
+            sum(float(row["prediction_norm_e"]) for row in zero_rows) / len(zero_rows)
+            if zero_rows else None
+        ),
         "mean_cosine": sum(float(row["cosine"]) for row in rows) / graphs,
         "mean_acoustic_sum_norm_e": sum(
             float(row["acoustic_sum_norm_e"]) for row in rows

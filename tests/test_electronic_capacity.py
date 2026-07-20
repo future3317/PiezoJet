@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 from types import SimpleNamespace
@@ -43,7 +45,24 @@ def test_born_loss_and_metrics_are_material_balanced_and_auditable():
     metrics = born_capacity_metrics(target, target, batch_index)
     assert metrics["materials"] == 2
     assert metrics["mean_relative_frobenius_error"] == pytest.approx(0.0)
+    assert metrics["mean_stabilized_relative_frobenius_error"] == pytest.approx(0.0)
     assert metrics["mean_cosine"] == pytest.approx(1.0)
+
+
+def test_born_metrics_stabilize_exact_zero_material_without_hiding_raw_audit():
+    prediction = torch.full((2, 3, 3), 1e-7)
+    target = torch.zeros_like(prediction)
+    batch_index = torch.tensor([0, 0])
+
+    metrics = born_capacity_metrics(prediction, target, batch_index)
+
+    assert metrics["exact_zero_target_materials"] == 1
+    assert metrics["mean_exact_zero_prediction_norm_e"] == pytest.approx(
+        float(torch.linalg.vector_norm(prediction))
+    )
+    assert math.isfinite(metrics["mean_stabilized_relative_frobenius_error"])
+    assert metrics["mean_stabilized_relative_frobenius_error"] < 1e-5
+    assert metrics["mean_relative_frobenius_error"] > 1e20
 
 
 def test_response_jet_probe_loss_is_zero_for_identical_jacobians():
@@ -57,10 +76,12 @@ def test_response_jet_probe_loss_is_zero_for_identical_jacobians():
     born = torch.randn(3, 3, 3)
     born = born - born.mean(dim=0)
     electronic = piezo_from_irreps(torch.randn(1, 18))
-    target = ElectromechanicalJetPrediction(born, electronic, None)
+    target = ElectromechanicalJetPrediction(
+        born, electronic, torch.zeros(1, 3, 3)
+    )
     assert response_jet_probe_loss(target, target, batch, probes=4) == pytest.approx(0.0)
     shifted = ElectromechanicalJetPrediction(
-        born * 0.5, electronic * 0.5, None
+        born * 0.5, electronic * 0.5, torch.zeros(1, 3, 3)
     )
     assert response_jet_probe_loss(shifted, target, batch, probes=32) > 0.01
 

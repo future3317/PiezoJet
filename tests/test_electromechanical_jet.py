@@ -87,6 +87,31 @@ def test_born_and_electronic_tensors_are_exact_jacobians_of_one_increment():
     )
 
 
+def test_electronic_dielectric_is_exact_electric_field_jacobian():
+    torch.manual_seed(9)
+    graph = _graph()
+    model = _model().eval()
+    prediction = model.coefficients(graph)
+    electric_field = torch.zeros(1, 3, requires_grad=True)
+    field_jacobian = torch.autograd.functional.jacobian(
+        lambda value: model.polarization_increment_from_coefficients(
+            prediction,
+            torch.zeros_like(graph.pos),
+            torch.zeros(1, 3, 3),
+            graph,
+            value,
+        ),
+        electric_field,
+    )
+    identity = torch.eye(3, dtype=prediction.electronic_dielectric.dtype)
+    expected = model.VACUUM_PERMITTIVITY_C_PER_VM * (
+        prediction.electronic_dielectric[0] - identity
+    )
+    assert torch.allclose(
+        field_jacobian[0, :, 0], expected, atol=1e-18, rtol=2e-6
+    )
+
+
 def test_electromechanical_jet_coefficients_and_increment_are_o3_equivariant():
     torch.manual_seed(11)
     graph = _graph(17)

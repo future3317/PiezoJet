@@ -30,6 +30,39 @@ from .tensor_ops import cartesian_to_piezo_voigt, piezo_voigt_to_cartesian, sour
 
 
 GRAPH_CACHE_SCHEMA = 5
+LAMBDA_LABEL_TYPES = (
+    "full_dfpt",
+    "full_finite_strain",
+    "strict_completion",
+    "joint_identifiable",
+    "partial_blocks",
+    "macro_only",
+)
+FULL_LAMBDA_LABEL_TYPES = frozenset(LAMBDA_LABEL_TYPES[:4])
+LAMBDA_LABEL_TYPE_CODES = {name: index for index, name in enumerate(LAMBDA_LABEL_TYPES)}
+
+
+def completion_label_metadata(completion: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Validate a persisted full-Lambda label and expose its certificate."""
+    schema = completion.get("schema")
+    if schema == 2:
+        label_type = "strict_completion"
+        certificate = completion.get("audit", {})
+    elif schema == 3:
+        label_type = completion.get("lambda_label_type")
+        certificate = completion.get("identifiability", {})
+    else:
+        raise ValueError(f"Unsupported strain-completion schema: {schema}")
+    if label_type not in FULL_LAMBDA_LABEL_TYPES:
+        raise ValueError(
+            "A completion payload may contain internal_strain_full only for an "
+            "atom-resolved or certified full-Lambda label"
+        )
+    if not bool(completion.get("audit", {}).get("accepted", False)):
+        raise ValueError("Full-Lambda completion payload is not accepted")
+    return str(label_type), certificate
+
+
 SPLIT_SCHEMA = 3
 SYMMETRY_TARGET_CACHE_SCHEMA = 2
 RESPONSE_NORM_BOUNDS = (0.0, 0.05, 0.5, 1.0)
@@ -489,12 +522,16 @@ class PiezoDataset(Dataset):
                 torch.load(completion_path, map_location="cpu", weights_only=False)
                 if completion_path is not None and completion_path.is_file() else None
             )
-            if completion is not None and (
-                completion.get("schema") != 2
-                or completion.get("jid") != str(record["JARVIS_ID"])
-                or not bool(completion.get("audit", {}).get("accepted", False))
-            ):
-                raise ValueError(f"Invalid strain-completion payload: {completion_path}")
+            completion_metadata = None
+            if completion is not None:
+                if completion.get("jid") != str(record["JARVIS_ID"]):
+                    raise ValueError(f"Invalid strain-completion payload: {completion_path}")
+                try:
+                    completion_metadata = completion_label_metadata(completion)
+                except ValueError as error:
+                    raise ValueError(
+                        f"Invalid strain-completion payload: {completion_path}: {error}"
+                    ) from error
             raw_born = (
                 dfpt["born_charges"]
                 if has_dfpt
@@ -693,16 +730,34 @@ class PiezoDataset(Dataset):
                     False, dtype=torch.bool
                 )
             if completion is not None:
+                label_type, certificate = completion_metadata
                 full_internal = completion["internal_strain_full"].to(dtype=target.dtype)
                 if full_internal.shape != (graph.num_nodes, 3, 3, 3):
                     raise ValueError(f"Invalid completed strain-force shape: {completion_path}")
                 graph.dfpt_internal_strain_full = full_internal
                 graph.internal_strain_full_mask = torch.tensor(True, dtype=torch.bool)
+                graph.lambda_label_type_code = torch.tensor(
+                    LAMBDA_LABEL_TYPE_CODES[label_type], dtype=torch.long
+                )
+                graph.lambda_identifiable_dimension = torch.tensor(
+                    int(certificate.get("identifiable_dimension", certificate.get("invariant_dimensions", 0))),
+                    dtype=torch.long,
+                )
+                graph.lambda_null_dimension = torch.tensor(
+                    int(certificate.get("null_dimension_joint", 0)), dtype=torch.long
+                )
             else:
                 graph.dfpt_internal_strain_full = torch.zeros(
                     graph.num_nodes, 3, 3, 3, dtype=target.dtype
                 )
                 graph.internal_strain_full_mask = torch.tensor(False, dtype=torch.bool)
+                partial = has_dfpt and int(graph.dfpt_internal_strain_count.item()) > 0
+                label_type = "partial_blocks" if partial else "macro_only"
+                graph.lambda_label_type_code = torch.tensor(
+                    LAMBDA_LABEL_TYPE_CODES[label_type], dtype=torch.long
+                )
+                graph.lambda_identifiable_dimension = torch.tensor(0, dtype=torch.long)
+                graph.lambda_null_dimension = torch.tensor(0, dtype=torch.long)
             graph.dfpt_mode_count = torch.tensor([modes], dtype=torch.long)
             graph.point_group_ops, graph.point_group_mask = pad_point_group_operations(rotations)
             graph.is_polar_point_group = torch.tensor(is_polar_point_group(rotations), dtype=torch.bool)

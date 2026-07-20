@@ -22,17 +22,30 @@ from piezojet.electrostatic_fold_adjudication import (
     make_model,
     response_active_diagnostic_indices,
 )
+from piezojet.electrostatic_a0_fold_adjudication import (
+    TASKS,
+    _restore_a0_progress,
+)
+from piezojet.electrostatic_protocol import (
+    STABILIZED_SELECTION_VERSION,
+    development_selection,
+    matched_material_schedule,
+)
 from piezojet.checkpoint_provenance import validate_checkpoint_provenance
 from piezojet.electronic_capacity import (
     born_material_balanced_loss,
     dielectric_capacity_metrics,
+    dielectric_material_balanced_loss,
     irrep_balanced_capacity_loss,
 )
 from piezojet.model import (
     IndependentElectrostaticHeads,
     SoftSharedElectromechanicalJetHead,
 )
-from piezojet.pretrain_e3nn import electrostatic_pretraining_ids
+from piezojet.pretrain_e3nn import (
+    electrostatic_pretraining_ids,
+    logical_pretraining_batch_sizes,
+)
 from piezojet.pretraining_protocol import provenance
 from piezojet.prepare_electrostatic_adjudication import build_plan
 
@@ -72,9 +85,107 @@ def test_independent_control_has_no_shared_task_parameters():
     )
     born_ids = {id(parameter) for parameter in model.born_generator.parameters()}
     piezo_ids = {id(parameter) for parameter in model.piezo_generator.parameters()}
+    dielectric_ids = {
+        id(parameter) for parameter in model.dielectric_generator.parameters()
+    }
     assert not born_ids & piezo_ids
+    assert not born_ids & dielectric_ids
+    assert not piezo_ids & dielectric_ids
     assert not hasattr(model.born_generator, "electronic_irreps")
     assert not hasattr(model.piezo_generator, "born_irreps")
+
+
+def test_a0_matched_schedule_reuses_identical_complete_microbatch_passes():
+    schedule = matched_material_schedule(5, 3, 4, 2, 17)
+    assert schedule == matched_material_schedule(5, 3, 4, 2, 17)
+    assert len(schedule) == 12
+    for start in range(0, len(schedule), 4):
+        assert len(set(schedule[start : start + 4])) == 4
+
+
+def test_a0_resume_restores_all_towers_and_optimizers_at_common_boundary():
+    class TinyA0(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.piezo_generator = torch.nn.Linear(2, 2)
+            self.born_generator = torch.nn.Linear(2, 2)
+            self.dielectric_generator = torch.nn.Linear(2, 2)
+
+    source = TinyA0()
+    source_optimizers = {
+        task: torch.optim.AdamW(getattr(
+            source,
+            {"electronic": "piezo_generator", "born": "born_generator", "dielectric": "dielectric_generator"}[task],
+        ).parameters())
+        for task in TASKS
+    }
+    for task, optimizer in source_optimizers.items():
+        tower = getattr(
+            source,
+            {"electronic": "piezo_generator", "born": "born_generator", "dielectric": "dielectric_generator"}[task],
+        )
+        optimizer.zero_grad(set_to_none=True)
+        tower(torch.ones(1, 2)).sum().backward()
+        optimizer.step()
+
+    contract = {"updates": 10, "eval_interval": 5, "seed": 42}
+    provenance = {"all_ids_sha256": "a" * 64}
+    payload = {
+        "status": "running",
+        "completed_update": 5,
+        "training_contract": contract,
+        "checkpoint_provenance": provenance,
+        "model": {
+            "electronic": source.piezo_generator.state_dict(),
+            "born": source.born_generator.state_dict(),
+            "dielectric": source.dielectric_generator.state_dict(),
+        },
+        "optimizer": {
+            task: optimizer.state_dict() for task, optimizer in source_optimizers.items()
+        },
+        "history": [{"update": 5}],
+        "best_score": 1.25,
+        "best_update": 5,
+        "best_model": {task: {} for task in TASKS},
+        "best_metrics": {task: {} for task in TASKS},
+        "initial_gradients": {task: {"loss": 1.0} for task in TASKS},
+    }
+    restored_model = TinyA0()
+    restored_optimizers = {
+        task: torch.optim.AdamW(getattr(
+            restored_model,
+            {"electronic": "piezo_generator", "born": "born_generator", "dielectric": "dielectric_generator"}[task],
+        ).parameters())
+        for task in TASKS
+    }
+    restored = _restore_a0_progress(
+        restored_model, restored_optimizers, payload, contract, provenance
+    )
+    assert restored["start_block"] == 5
+    assert restored["history"] == [{"update": 5}]
+    for task in TASKS:
+        source_tower = getattr(
+            source,
+            {"electronic": "piezo_generator", "born": "born_generator", "dielectric": "dielectric_generator"}[task],
+        )
+        restored_tower = getattr(
+            restored_model,
+            {"electronic": "piezo_generator", "born": "born_generator", "dielectric": "dielectric_generator"}[task],
+        )
+        for expected, actual in zip(source_tower.parameters(), restored_tower.parameters(), strict=True):
+            assert torch.equal(expected, actual)
+        assert restored_optimizers[task].state
+
+    with pytest.raises(ValueError, match="training contract"):
+        _restore_a0_progress(
+            restored_model, restored_optimizers, payload,
+            {**contract, "seed": 7}, provenance,
+        )
+    with pytest.raises(ValueError, match="block boundary"):
+        _restore_a0_progress(
+            restored_model, restored_optimizers,
+            {**payload, "completed_update": 3}, contract, provenance,
+        )
 
 
 def test_independent_control_runs_only_its_declared_decoders():
@@ -100,6 +211,44 @@ def test_independent_control_runs_only_its_declared_decoders():
     assert torch.linalg.eigvalsh(prediction.electronic_dielectric).min() > 0.999
 
 
+def test_a0_starts_from_the_same_response_function_as_a1_without_sharing_parameters():
+    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[10], 5.0, 12)
+    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+    kwargs = {
+        "embedding_dim": 4,
+        "cutoff": 5.0,
+        "lmax": 3,
+        "num_blocks": 1,
+        "radial_basis": 3,
+        "radial_hidden": 8,
+        "global_context_dim": 8,
+        "spectral_channels": 2,
+        "spectral_shells": 2,
+        "polar_fluctuation_shells": 2,
+        "reciprocal_cutoff": 3.0,
+        "attention_dim": 4,
+    }
+    torch.manual_seed(23)
+    independent = IndependentElectrostaticHeads(**kwargs).eval()
+    torch.manual_seed(23)
+    shared = make_model("a1_electromechanical_jet", {
+        **kwargs, "global_attention_dim": kwargs["attention_dim"],
+    }).eval()
+    independent_prediction = independent.coefficients(graph)
+    shared_prediction = shared.coefficients(graph)
+    assert torch.equal(
+        independent_prediction.born_charges, shared_prediction.born_charges
+    )
+    assert torch.equal(
+        independent_prediction.electronic_piezo,
+        shared_prediction.electronic_piezo,
+    )
+    assert torch.equal(
+        independent_prediction.electronic_dielectric,
+        shared_prediction.electronic_dielectric,
+    )
+
+
 def test_independent_control_sequential_backward_matches_joint_objective():
     graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[10], 5.0, 12)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
@@ -109,6 +258,8 @@ def test_independent_control_sequential_backward_matches_joint_objective():
     graph.y_electronic_piezo = torch.linspace(
         -0.4, 0.5, 27, dtype=torch.float32
     ).reshape(1, 3, 3, 3)
+    graph.y_dfpt_electronic_dielectric = (2.0 * torch.eye(3)).unsqueeze(0)
+    graph.dfpt_electronic_dielectric_mask = torch.tensor(True)
     kwargs = {
         "embedding_dim": 4,
         "cutoff": 5.0,
@@ -134,13 +285,19 @@ def test_independent_control_sequential_backward_matches_joint_objective():
     reference_born = born_material_balanced_loss(
         prediction.born_charges, graph.y_born, graph.batch
     )
-    (reference_electronic + reference_born).backward()
+    reference_dielectric = dielectric_material_balanced_loss(
+        prediction.electronic_dielectric,
+        graph.y_dfpt_electronic_dielectric,
+        graph.dfpt_electronic_dielectric_mask,
+    )
+    (reference_electronic + reference_born + reference_dielectric).backward()
 
-    sequential_electronic, sequential_born = backward_training_objective(
+    sequential_electronic, sequential_born, sequential_dielectric = backward_training_objective(
         model, graph, "a0_independent_irreps"
     )
     assert torch.allclose(sequential_electronic, reference_electronic)
     assert torch.allclose(sequential_born, reference_born)
+    assert torch.allclose(sequential_dielectric, reference_dielectric)
     for (name, parameter), (reference_name, reference_parameter) in zip(
         model.named_parameters(), reference.named_parameters(), strict=True
     ):
@@ -167,6 +324,10 @@ def test_microbatch_gradient_matches_one_logical_material_mean(architecture):
         graph.y_electronic_piezo = torch.linspace(
             -0.4 + offset, 0.5 + offset, 27
         ).reshape(1, 3, 3, 3)
+        graph.y_dfpt_electronic_dielectric = (
+            (2.0 + offset) * torch.eye(3)
+        ).unsqueeze(0)
+        graph.dfpt_electronic_dielectric_mask = torch.tensor(True)
     kwargs = {
         "embedding_dim": 4, "cutoff": 5.0, "lmax": 3, "num_blocks": 1,
         "radial_basis": 3, "radial_hidden": 8, "global_context_dim": 8,
@@ -262,6 +423,46 @@ def test_electrostatic_pretraining_accepts_nonredundant_schema_two_manifest():
         )
 
 
+def test_pretraining_logical_batches_preserve_complete_exposure_epoch():
+    sizes = logical_pretraining_batch_sizes(3951, 4, 32)
+    assert sizes == [32] * 123 + [15]
+    assert sum(sizes) == 3951
+    with pytest.raises(ValueError, match="divisible"):
+        logical_pretraining_batch_sizes(3951, 4, 30)
+
+
+def test_stabilized_selection_guardrails_cannot_be_hidden_by_scalar_score():
+    metrics = {
+        "electronic": {
+            "mean_stabilized_relative_frobenius_error": 0.4,
+            "mean_active_cosine": 0.2,
+            "mean_active_amplitude_ratio": 0.1,
+        },
+        "born": {
+            "mean_stabilized_relative_frobenius_error": 0.3,
+            "mean_nonzero_cosine": 0.1,
+            "mean_exact_zero_prediction_norm_e": 0.02,
+        },
+        "dielectric": {"mean_stabilized_relative_frobenius_error": 0.5},
+    }
+    selection = development_selection(metrics)
+    assert selection["version"] == STABILIZED_SELECTION_VERSION
+    assert selection["raw_score"] == pytest.approx(1.2)
+    assert selection["eligible"] is True
+    assert selection["exact_zero_bec_absolute_leakage_e"] == pytest.approx(0.02)
+
+    collapsed = development_selection({
+        **metrics,
+        "electronic": {
+            **metrics["electronic"],
+            "mean_active_amplitude_ratio": 0.01,
+        },
+    })
+    assert collapsed["raw_score"] == pytest.approx(selection["raw_score"])
+    assert collapsed["eligible"] is False
+    assert "electronic_active_amplitude_collapse" in collapsed["guardrail_failures"]
+
+
 def test_fold_pretraining_checkpoint_strictly_initializes_every_stage_a_encoder(tmp_path):
     """Every maintained candidate rejects encoder-layout drift."""
     config = {
@@ -298,10 +499,14 @@ def test_fold_pretraining_checkpoint_strictly_initializes_every_stage_a_encoder(
             ["train-id"], ["development-id"],
         )
         assert loaded_provenance["encoder_copies_initialized"] == (
-            2 if architecture == "a0_independent_irreps" else 1
+            3 if architecture == "a0_independent_irreps" else 1
         )
         encoders = (
-            [model.born_generator.encoder, model.piezo_generator.encoder]
+            [
+                model.born_generator.encoder,
+                model.piezo_generator.encoder,
+                model.dielectric_generator.encoder,
+            ]
             if architecture == "a0_independent_irreps"
             else [model.encoder]
         )
@@ -339,6 +544,46 @@ def test_fold_pretraining_checkpoint_rejects_development_structure_provenance(tm
         )
 
 
+def test_fold_pretraining_checkpoint_rejects_unpinned_code_commit(tmp_path):
+    config = {
+        "embedding_dim": 4,
+        "cutoff": 3.0,
+        "lmax": 3,
+        "num_blocks": 1,
+        "radial_basis": 3,
+        "radial_hidden": 8,
+        "global_context_dim": 8,
+        "spectral_channels": 2,
+        "spectral_shells": 2,
+        "polar_fluctuation_shells": 2,
+        "reciprocal_cutoff": 3.0,
+        "global_attention_dim": 4,
+        "code_commit": "b" * 40,
+    }
+    from piezojet.baselines import e3nn_direct_baseline_from_config
+
+    source = e3nn_direct_baseline_from_config(config)
+    split_source = tmp_path / "folds.json"
+    split_source.write_text("{}", encoding="utf-8")
+    checkpoint = tmp_path / "encoder.pt"
+    torch.save({
+        "architecture": "e3nn_periodic_v1",
+        "encoder": source.encoder.state_dict(),
+        "pretraining_provenance": provenance(["train-id"], split_source, "train"),
+        "code_commit": "a" * 40,
+    }, checkpoint)
+    with pytest.raises(ValueError, match="code commit"):
+        load_structure_pretraining(
+            make_model("a1_electromechanical_jet", config),
+            "a1_electromechanical_jet",
+            checkpoint,
+            torch.device("cpu"),
+            ["train-id"],
+            ["development-id"],
+            config,
+        )
+
+
 def test_adjudication_plan_is_nonexecuting_fresh_and_frozen_panel_safe(tmp_path):
     folds = tmp_path / "folds.json"
     folds.write_text(json.dumps({
@@ -364,6 +609,42 @@ def test_adjudication_plan_is_nonexecuting_fresh_and_frozen_panel_safe(tmp_path)
     assert all(
         step.get("architecture") in ARCHITECTURES
         for step in plan["steps"][1:4]
+    )
+    assert plan["steps"][1]["argv"][1:3] == [
+        "-m", "piezojet.electrostatic_a0_fold_adjudication"
+    ]
+    assert "--architecture" not in plan["steps"][1]["argv"]
+    assert "--train-limit" not in plan["steps"][0]["argv"]
+
+
+def test_stage_a_plan_separates_full_fold_pretraining_from_fixed_response_subset(tmp_path):
+    folds = tmp_path / "folds.json"
+    folds.write_text(json.dumps({
+        "frozen_validation_test_labels_read": False,
+        "folds": [{"fold": 0, "development": ["dev"]}],
+    }), encoding="utf-8")
+    subset = tmp_path / "balanced.json"
+    subset.write_text(json.dumps({"materials": 200}), encoding="utf-8")
+    plan = build_plan(
+        folds_path=folds,
+        config_path=tmp_path / "config.yaml",
+        cohort_root=tmp_path / "cohort",
+        fold_index=0,
+        seed=42,
+        train_limit=0,
+        development_limit=0,
+        pretrain_epochs=1,
+        updates=1,
+        batch_size=1,
+        eval_interval=1,
+        response_subset_file=subset,
+    )
+    pretrain_argv = plan["steps"][0]["argv"]
+    assert "--train-limit" not in pretrain_argv
+    for step in plan["steps"][1:4]:
+        assert step["argv"][step["argv"].index("--train-ids-file") + 1] == str(subset)
+    assert plan["data_boundary"]["structure_pretraining_scope"] == (
+        "complete fold-train structure universe"
     )
 
 
@@ -411,6 +692,7 @@ def test_soft_shared_jet_preserves_tensor_shapes_and_has_task_adapters():
     assert prediction.born_charges.shape == (graph.num_nodes, 3, 3)
     assert prediction.electronic_piezo.shape == (1, 3, 3, 3)
     assert model.born_adapter is not model.electronic_adapter
+    assert model.dielectric_adapter is not model.electronic_adapter
     assert float(model.born_adapter.residual_scale.detach()) == 0.0
 
 

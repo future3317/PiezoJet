@@ -53,6 +53,15 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   zero-dimensional invariant-space correction treats the unique zero tensor
   as condition number 1 and pseudoinverse norm 0; no acceptance threshold was
   relaxed.
+- `outputs/vnext_identifiability_census_v1/` is the development-safe v12
+  coefficient-space census. On 4,939 records, macro/printed/joint full-rank
+  counts are 788/4,171/4,182; only 11 records gain algebraic rank from the
+  macro observation. `outputs/strain_completion_v12_joint_identifiable_v1/`
+  independently tests those candidates after strict-train1595 calibration.
+  Zero candidates pass all held-out-block and source-completeness gates. This
+  is a valid zero-result audit: the v10 production role remains unchanged and
+  the two numerically plausible but source-incomplete records must not be
+  promoted.
 - `data/processed/strict_completion_benchmark_train_v11_reduced_formula_safe.json`
   is the current train-versus-held-out-safe factor split: train1595/val10/test20.
   Thirteen accepted records sharing a held-out reduced formula are excluded
@@ -273,24 +282,77 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   optimizer time rises 964 -> 1,018 seconds. Preserve this mixed result, but
   do not add the algebraically redundant probe objective to the maintained
   candidate.
-- The maintained A0/A1/A1.5 formula-disjoint runner is
-  `piezojet.electrostatic_fold_adjudication`. Every architecture uses the same
+- The maintained A1/A1.5 formula-disjoint runner is
+  `piezojet.electrostatic_fold_adjudication`; resource-bounded A0 uses
+  `piezojet.electrostatic_a0_fold_adjudication`. Every architecture uses the same
   fold-train-only structure checkpoint, random response heads, stochastic
   mini-batches, `num_workers=0`, and development-only selection. A0 initializes
-  both independent encoder copies from the same checkpoint but shares no
+  all three independent encoder copies from the same checkpoint but shares no
   trainable parameters. The diagnostic batch is fixed, response-active, and
   norm-stratified; reports contain both all-task and shared-parameter gradient
   norms/cosine.
-- A0 backpropagates its two disjoint task losses sequentially within one
-  optimizer step. This is the mathematical gradient of their sum, verified
-  against joint backward parameter by parameter within floating-point
-  tolerance, while only one tower's activation graph is resident at a time.
+- The vNext Stage-A objective has three availability-valid electrostatic
+  tasks: BEC, same-OUTCAR electronic piezo, and electronic dielectric. A0 has
+  three parameter-disjoint towers and three independent AdamW optimizers; A1
+  hard-shares the response trunk; A1.5 has separate
+  BEC, piezo, and dielectric equivariant adapters. Development selection sums
+  the three stabilized normalized relative errors. BEC uses the same
+  `0.1 e/component` denominator floor in training, reporting, and checkpoint
+  selection; the raw zero-target relative error is audit-only.
+- The completed N=200 A1 attempt under
+  `outputs/vnext_stage3_electrostatic_adjudication_v1/` is
+  `completed_but_invalid_checkpoint_selection`, not a negative architecture
+  result. One exactly zero BEC target dominated its old raw-relative selection,
+  and only update 50 was retained, so update 125 cannot be reconstructed.
+- `outputs/vnext_stage3_corrected_adjudication_v2/` is immutable interrupted
+  evidence. Its physical-batch-16 structural pretraining was stopped before
+  epoch one completed after reaching about 16,048/16,380 MiB, and it wrote no
+  checkpoint or performance result. Never resume or reuse its run directory.
+  Its response panels remain the valid nested manifests in
+  `data/processed/electrostatic_balanced_subsets_v1/`: N=200 and N=800 both
+  cover all 85 fold-train elements and contain 200/800 unique reduced formulas.
+- The current frozen protocol is
+  `outputs/vnext_stage3_guardrailed_adjudication_v3/`. The execution order is
+  fresh full-fold structure pretraining, corrected A1 N=200, matched
+  A0/A1/A1.5 N=800, then only the N=800 top two at full fold. Training remains
+  paused until explicitly resumed.
+  Structure pretraining uses the complete 3,951-material fold-train structure
+  universe, while response labels remain restricted to the fixed manifest.
+  It uses physical batch 4 accumulated to logical batch 32 and records 3,951
+  structure exposures, zero response labels, 124 AdamW updates per epoch, and
+  zero development-formula overlap. Response training uses logical batch 32,
+  microbatch 16, evaluation batch 32, and `num_workers=0`; frozen
+  validation10/test20 remain unread.
+- Development selection is `electrostatic_stabilized_v2`: the sum of the three
+  stabilized material-relative errors ranks only checkpoints with positive
+  active electronic cosine, positive nonzero-BEC cosine, and active electronic
+  amplitude ratio at least 0.05. Failed guardrails never trigger a fallback
+  selection. Exact-zero BEC prediction norm is reported as absolute leakage.
+  Every run binds code commit, canonical data, fold/subset hashes and graph
+  schema 5, and reports parameters, counted FLOPs/update, optimizer GPU time,
+  and peak memory.
+- A0 advances the three disjoint towers in common-update blocks while only one
+  tower and optimizer state is CUDA-resident. Disjoint updates commute, and
+  every tower receives the same deterministic material schedule; selection is
+  performed only at common update numbers. The equivalence of sequential and
+  summed-objective gradients is verified parameter by parameter.
   Microbatch accumulation likewise preserves the material-mean objective but
   is not claimed bitwise AdamW-equivalent because reduction order changes.
+- A1/A1.5 persist an immutable checkpoint at every full-development evaluation,
+  plus the latest `progress.pt`. Each checkpoint binds the deterministic
+  material schedule, model, AdamW state, best state, complete train/development
+  metrics, response-subset manifest, structure-pretraining universe, material
+  IDs, fold and data provenance; mismatched resume commands are rejected.
+- If all N=800 candidates fit train but fail development, test BEC-first
+  response-aware pretraining before expanding lmax or using PCGrad. Consider
+  scale--shape outputs only when direction improves but amplitude stays
+  collapsed. Add A0-matched only if A0-full wins and capacity fairness becomes
+  necessary for the paper.
 - `piezojet.prepare_electrostatic_adjudication` only writes an auditable command
   plan and can never launch training. The current Stage-A plan is
   `outputs/electromechanical_jet_fold_adjudication_v2/stage_a_n100_fold0_seed42_plan.json`.
-  It requires a later explicit user request before execution. The fold-only
+  The vNext Stage-A execution was explicitly authorized on 2026-07-18; the
+  older N=100 plan remains non-executed. The fold-only
   pretrainer derives schema-2 train IDs from the global population minus the
   development subset; it must not expect a duplicated `fold["train"]` field.
 - The older plan under `outputs/electromechanical_jet_fold_adjudication/`

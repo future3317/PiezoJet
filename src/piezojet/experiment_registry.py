@@ -100,6 +100,150 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             ),
             split="E1 frozen validation10 only; capacity rows use declared strict-train samples1/8/32; test20 unread",
         )
+    elif name == "vnext_identifiability_census_v1":
+        policy.update(
+            family="lambda_identifiability_census",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="support_audit_eleven_algebraic_increments",
+            convention_epoch="v12_symmetry_acoustic_scaled_certificate",
+            comparability_group="development_train_only_identifiability",
+            paper_use="appendix_data_and_identifiability_audit",
+            interpretation_boundary=(
+                "Rank/condition census on the 4,939 reduced-formula-safe electrostatic "
+                "development records. Frozen validation/test response labels are unread; "
+                "algebraic rank is not by itself a full-Lambda acceptance certificate."
+            ),
+            split="electrostatic_development_folds_v2 population; frozen validation/test unread",
+        )
+    elif name == "vnext_identifiability_census_smoke_v1":
+        policy.update(
+            family="lambda_identifiability_implementation_smoke",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="support_smoke",
+            convention_epoch="v12_symmetry_acoustic_scaled_certificate",
+            comparability_group="not_a_performance_experiment",
+            paper_use="project_ledger_only",
+            interpretation_boundary="Eight-material implementation smoke preceding the full census.",
+        )
+    elif name == "strain_completion_v12_joint_identifiable_v1":
+        policy.update(
+            family="certified_joint_lambda_completion",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="valid_zero_new_labels",
+            convention_epoch="v12_independent_heldout_block_certificate",
+            comparability_group="development_train_only_completion_audit",
+            paper_use="appendix_data_and_identifiability_audit",
+            interpretation_boundary=(
+                "Eleven algebraic candidates were tested after thresholds were calibrated "
+                "on strict-train1595; none passed all source-completeness and independent "
+                "held-out-block gates. No production data role changed."
+            ),
+            split="strict train1595 calibration plus development-only candidates; frozen validation/test unread",
+        )
+    elif name == "vnext_stage0_legacy_checkpoint_rejection_v1":
+        policy.update(
+            family="checkpoint_provenance_negative_smoke",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="expected_rejection_passed",
+            convention_epoch="v11_exact_panel_pretraining_resume",
+            comparability_group="not_a_performance_experiment",
+            paper_use="appendix_provenance",
+            interpretation_boundary=(
+                "A legacy/different-panel checkpoint was rejected before optimization. "
+                "The nonzero process exit is the expected success condition."
+            ),
+        )
+    elif name == "vnext_stage3_electrostatic_adjudication_v1":
+        policy.update(
+            family="three_task_electrostatic_jet_formula_disjoint_adjudication",
+            archival_status="current",
+            execution_status="partial_with_invalid_checkpoint_selection",
+            result_disposition="retained_execution_evidence_not_architecture_result",
+            convention_epoch="v12_a0_a1_a15_bec_piezo_dielectric",
+            comparability_group="fold0_pass_matched_n200_n800_full",
+            paper_use="appendix_after_registered_candidates_complete",
+            interpretation_boundary=(
+                "A0/A1/A1.5 are compared with identical fold-only pretraining, logical "
+                "batches, exposure passes, and three-task selection. Frozen validation10 "
+                "and test20 are unread; partial rows cannot promote a production method."
+            ),
+            split="electrostatic_development_folds_v2 fold0; frozen validation/test unread",
+        )
+    elif name == "vnext_stage3_corrected_adjudication_v2":
+        policy.update(
+            family="corrected_three_task_electrostatic_formula_disjoint_adjudication",
+            archival_status="superseded_interrupted_protocol",
+            execution_status="interrupted",
+            result_disposition="pretraining_stopped_before_first_checkpoint",
+            convention_epoch="v13_stabilized_bec_full_fold_pretraining",
+            comparability_group="fold0_balanced_n200_n800_a0_a1_a15",
+            paper_use="appendix_incomplete_only",
+            interpretation_boundary=(
+                "The physical-batch-16 structural pretraining attempt was stopped by the "
+                "user before epoch one completed and wrote no checkpoint. Its balanced "
+                "subsets remain valid, but the run directories are immutable interruption "
+                "evidence. Frozen validation10/test20 labels were unread."
+            ),
+            split="electrostatic_development_folds_v2 fold0; frozen validation/test unread",
+        )
+    elif name == "vnext_stage3_guardrailed_adjudication_v3":
+        policy.update(
+            family="guardrailed_three_task_electrostatic_formula_disjoint_adjudication",
+            archival_status="current",
+            execution_status="planned_not_executed",
+            result_disposition="frozen_protocol_only",
+            convention_epoch="v14_guardrailed_selection_logical_pretraining_batch",
+            comparability_group="fold0_nested_n200_n800_then_top2_full",
+            paper_use="protocol_only_until_candidates_complete",
+            interpretation_boundary=(
+                "Fresh development-only protocol with code/data/graph/metric provenance, "
+                "physical-batch-4/logical-batch-32 structural pretraining, non-maskable "
+                "direction/amplitude checkpoint guardrails, immutable evaluation states, "
+                "and matched N=800 model-class resources. Frozen validation10/test20 "
+                "labels remain unread and no training is currently authorized."
+            ),
+            split="electrostatic_development_folds_v2 fold0; frozen validation/test unread",
+        )
+    elif name in {
+        "vnext_stage3_corrected_selection_smoke_v1",
+        "vnext_stage3_throughput_smoke_v1",
+    }:
+        policy.update(
+            family="corrected_electrostatic_runner_smoke",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="support_smoke_not_performance",
+            convention_epoch="v13_stabilized_bec_full_fold_pretraining",
+            comparability_group="not_a_performance_experiment",
+            paper_use="project_ledger_only",
+            interpretation_boundary=(
+                "Tiny development-only runner/resource validation. It verifies the "
+                "selection/checkpoint contract or bounded CUDA schedule only and cannot "
+                "support an architecture claim. Frozen validation/test labels are unread."
+            ),
+            split="electrostatic_development_folds_v2 fold0 tiny smoke; frozen panels unread",
+        )
+    elif name == "vnext_stage3_checkpoint_runner_smoke_v1":
+        policy.update(
+            family="electrostatic_stage_a_checkpoint_runner_smoke",
+            archival_status="current",
+            execution_status="completed",
+            result_disposition="support_smoke_not_performance",
+            convention_epoch="v12_deterministic_schedule_exact_resume",
+            comparability_group="not_a_performance_experiment",
+            paper_use="project_ledger_only",
+            interpretation_boundary=(
+                "Four-train/two-development-material one-update CUDA smoke for the "
+                "deterministic schedule and run-local checkpoint writer. Random response "
+                "initialization and tiny panels prohibit any performance interpretation; "
+                "frozen validation/test labels are unread."
+            ),
+            split="electrostatic_development_folds_v2 fold0 tiny smoke; frozen validation/test unread",
+        )
     elif name == "electromechanical_jet_fold_adjudication":
         policy.update(
             family="electrostatic_generator_formula_disjoint_adjudication",
@@ -432,6 +576,8 @@ def _last_status_event(cohort: Path) -> dict[str, Any] | None:
 
 def _run_status(path: Path, *, cohort_running: bool) -> str:
     names = {item.name for item in path.iterdir() if item.is_file()}
+    if "INVALID_CHECKPOINT_SELECTION.md" in names:
+        return "completed_but_invalid_checkpoint_selection"
     if "INTERRUPTED.md" in names:
         return "interrupted"
     if "BLOCKED.md" in names:
@@ -468,6 +614,8 @@ def _run_status(path: Path, *, cohort_running: bool) -> str:
 def _run_records(cohort: Path, *, cohort_running: bool) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for directory in [cohort, *(p for p in cohort.rglob("*") if p.is_dir())]:
+        if "evaluation_checkpoints" in directory.parts:
+            continue
         files = [p for p in directory.iterdir() if p.is_file()]
         names = {p.name for p in files}
         has_marker = bool(names & RUN_MARKERS) or any(p.suffix == ".pt" for p in files)

@@ -152,6 +152,14 @@ The production factor architecture likewise has one accepted identifier,
   finite/shape checks for these four label families. It does not require a completed
   `Lambda`.  Five immutable reduced-formula-disjoint development folds have
   sizes `988/989/987/988/987`; frozen val10/test20 labels are not read.
+- `outputs/vnext_identifiability_census_v1/` certifies the symmetry/acoustic
+  coefficient-space ranks on all 4,939 development-safe records. Macro ionic
+  response alone is full rank for 788, printed blocks for 4,171, and their
+  joint map for 4,182, so only 11 records are algebraic joint increments.
+  `outputs/strain_completion_v12_joint_identifiable_v1/` then calibrates
+  conditioning on strict-train1595 and predicts unused printed blocks. None of
+  the 11 passes every independent and source-completeness gate; v12 therefore
+  adds zero full-Lambda labels and does not replace the v10 production role.
 - The official `jdft_3d-12-12-2022.json` release contains 75,993 unique JIDs
   and is retained as a structure/metadata auxiliary table.  Its overlap with
   the historical GMTNet piezo IDs is 4,937, and some same-JID relaxed cells
@@ -280,7 +288,10 @@ forbidden as a fold initializer. The maintained Stage-A comparison covers
 A0, A1, and A1.5 and uses one
 fold-train-only structure checkpoint for every encoder copy, random response
 heads, identical stochastic updates, and a fixed response-active gradient
-audit batch. A random-initialized N=100 A1 pilot selected update 25 but
+audit batch. It now supervises the complete available first-order electrostatic
+coefficient set: BEC, electronic piezo, and electronic dielectric. A0 has three
+independent towers, A1 hard-shares the response trunk, and A1.5 has three
+task-specific equivariant adapters. A random-initialized N=100 A1 pilot selected update 25 but
 collapsed across formulas (electronic active relative error `0.99826`, cosine
 `0.06239`, amplitude `0.00406`; BEC relative error about `0.99616`). This is a
 negative pilot, not the structure-pretrained adjudication. A read-only audit on
@@ -291,17 +302,61 @@ cosine is `-0.01883`. Thus there is no evidence for a 5,700-fold global task
 scale imbalance; the active-panel gradients are comparable and nearly
 orthogonal/slightly conflicting. The matched A0
 pilot was explicitly interrupted at the user's request and has no result.
-No replacement training is currently running. A0 now uses an exact sequential
-backward over its parameter-disjoint electronic and BEC towers, reducing peak
-activation residency without changing any parameter gradient; a CPU regression
-test compares it with backward on the summed objective within floating-point
-tolerance. Microbatching preserves the same material-mean objective but is not
-claimed to be bitwise AdamW-identical to a larger forward. The next fair
-N=100 Stage-A comparison is recorded as a non-executing plan at
-`outputs/electromechanical_jet_fold_adjudication_v2/stage_a_n100_fold0_seed42_plan.json`.
-It shares one fold-train-only structural checkpoint across A0/A1/A1.5, uses fresh
-run directories, binds every selected checkpoint to the fold/data hashes, and
-requires explicit authorization before any command is run. The similarly named
+The first structure-pretrained N=200 A1 attempt under
+`outputs/vnext_stage3_electrostatic_adjudication_v1/` completed 125 updates,
+but its checkpoint selection is invalid: one exactly zero BEC target entered a
+raw relative-error denominator of `1e-30`. The training objective was already
+finite, so this is not a negative architecture result; only update 50 was
+retained and update 125 cannot be reconstructed. The corrected metric uses the
+same `0.1 e/component` floor for BEC training, reporting, and selection, while
+retaining raw relative error only for audit.
+
+The first replacement protocol under
+`outputs/vnext_stage3_corrected_adjudication_v2/` is now immutable interrupted
+evidence: its physical-batch-16 structural pretraining was stopped before the
+first epoch checkpoint after reaching approximately 16,048/16,380 MiB, and it
+has no performance result. Its nested balanced N=200 and N=800 response
+manifests remain valid in
+`data/processed/electrostatic_balanced_subsets_v1/`; both cover all 85
+fold-train elements and contain 200/800 unique reduced formulas. Structural
+pretraining uses all 3,951 fold-train structures, independently of the smaller
+response-supervised panel, and excludes every development formula.
+
+The fresh frozen protocol is
+`outputs/vnext_stage3_guardrailed_adjudication_v3/`. Structural pretraining
+uses physical batch 4 with gradient accumulation to logical batch 32; every
+exposure epoch records 3,951 structures, zero response labels, 124 AdamW
+updates (123 batches of 32 plus a 15-material tail), and zero development-
+formula overlap. Response training retains logical batch 32, microbatch 16,
+evaluation batch 32, and `num_workers=0`. A0 uses three independent AdamW optimizers and
+advances its parameter-disjoint towers in common-update blocks, with only one
+tower and optimizer state CUDA-resident. Every tower receives the identical
+deterministic material schedule and selection occurs only at common update
+numbers; a CPU regression test also compares sequential backward with the
+summed objective within floating-point tolerance. A1/A1.5 persist exact
+run-local model/AdamW/schedule/provenance checkpoints at every full-development
+evaluation, together with complete train/development metrics. Microbatching preserves the same material-mean objective but is not
+claimed to be bitwise AdamW-identical to a larger forward. Every run binds the
+code commit, canonical-data hash, fold/subset hashes, graph-cache schema 5, and
+`electrostatic_stabilized_v2` metric version. The three stabilized errors rank
+only checkpoints with positive active electronic cosine, positive nonzero-BEC
+cosine, and active electronic amplitude ratio at least 0.05; a failed
+guardrail cannot be hidden by a low summed score. Exact-zero BEC prediction
+norm remains a separate absolute leakage field. Reports include parameter
+count, counted FLOPs per logical update, optimizer GPU seconds, and peak CUDA
+allocation.
+
+Execution remains paused. The fixed order is fresh 3,951-structure pretraining,
+corrected N=200 A1, matched N=800 A0/A1/A1.5, and only then the top two at the
+full 3,951 response-label fold. If all N=800 candidates fit train but fail
+development, the next intervention is BEC-first response-aware pretraining;
+scale--shape output is considered only for persistent directional improvement
+with amplitude collapse. An A0 parameter-matched control is required only if
+A0-full wins the N=800 model-class comparison. Corrected N=200 and N=800
+predictive adjudication is not yet complete. The earlier N=100
+plan at `outputs/electromechanical_jet_fold_adjudication_v2/` remains a
+non-executed protocol record. The frozen v3 protocol will bind every selected
+checkpoint to the complete code/data/graph provenance. The similarly named
 plan under `electromechanical_jet_fold_adjudication/` is a superseded A0--A3
 historical plan and is not executable by the maintained runner.
 

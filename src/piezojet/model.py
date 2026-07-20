@@ -1295,7 +1295,7 @@ class ElectromechanicalJetHead(nn.Module):
         represents the complete identifiable displacement--strain part of the
         local polarization-response jet
 
-    ``Delta P = c_e/Omega sum_k Z_k^T u_k + e_el : eta``.
+    ``Delta P = c_e/Omega sum_k Z_k^T u_k + e_el : eta + chi_el E``.
 
     Consequently the BEC and electronic piezo tensors are, by construction,
     the displacement and strain Jacobians of one vector-valued map.  A PBC
@@ -1305,6 +1305,7 @@ class ElectromechanicalJetHead(nn.Module):
     """
 
     PIEZO_C_PER_M2 = 16.02176634
+    VACUUM_PERMITTIVITY_C_PER_VM = 8.8541878128e-12
 
     def __init__(
         self,
@@ -1402,29 +1403,40 @@ class ElectromechanicalJetHead(nn.Module):
         )[batch_index]
         return born
 
-    def decode_electronic(
+    def decode_electronic_piezo(
         self,
         graph_features: torch.Tensor,
         context: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         electronic_coordinates = self._gated_blocks(
             self.electronic_irreps(graph_features),
             self.electronic_context_gates(context),
             PIEZO_IRREP_SLICES,
         )
         electronic = piezo_from_irreps(electronic_coordinates)
-        electronic = 0.5 * (electronic + electronic.transpose(-1, -2))
+        return 0.5 * (electronic + electronic.transpose(-1, -2))
+
+    def decode_dielectric(self, graph_features: torch.Tensor) -> torch.Tensor:
         dielectric_root = dielectric_from_irreps(
             self.dielectric_irreps(graph_features)
         )
         identity = torch.eye(
             3, dtype=dielectric_root.dtype, device=dielectric_root.device
         )
-        electronic_dielectric = (
+        return (
             identity
             + dielectric_root @ dielectric_root.transpose(-1, -2)
         )
-        return electronic, electronic_dielectric
+
+    def decode_electronic(
+        self,
+        graph_features: torch.Tensor,
+        context: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            self.decode_electronic_piezo(graph_features, context),
+            self.decode_dielectric(graph_features),
+        )
 
     def coefficients(self, batch) -> ElectromechanicalJetPrediction:
         node_features, graph_features, context = self.encode_response_features(batch)
@@ -1443,6 +1455,7 @@ class ElectromechanicalJetHead(nn.Module):
         displacement: torch.Tensor,
         strain: torch.Tensor,
         batch,
+        electric_field_v_per_m: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if displacement.shape != (batch.num_nodes, 3):
             raise ValueError("Displacement probe must have shape [num_nodes,3]")
@@ -1451,6 +1464,10 @@ class ElectromechanicalJetHead(nn.Module):
             raise ValueError("Strain probe must have shape [graphs,3,3]")
         if not torch.allclose(strain, strain.transpose(-1, -2), atol=1e-7, rtol=1e-7):
             raise ValueError("Electromechanical-jet strain probe must be symmetric")
+        if electric_field_v_per_m is None:
+            electric_field_v_per_m = strain.new_zeros((graphs, 3))
+        if electric_field_v_per_m.shape != (graphs, 3):
+            raise ValueError("Electric-field probe must have shape [graphs,3]")
         cells = batch.cell.reshape(graphs, 3, 3)
         volume = torch.linalg.det(cells).abs().clamp_min(
             torch.finfo(cells.dtype).eps
@@ -1466,16 +1483,28 @@ class ElectromechanicalJetHead(nn.Module):
         electronic = torch.einsum(
             "gijk,gjk->gi", prediction.electronic_piezo, strain
         )
-        return ionic + electronic
+        identity = torch.eye(
+            3,
+            dtype=prediction.electronic_dielectric.dtype,
+            device=prediction.electronic_dielectric.device,
+        )
+        field = cls.VACUUM_PERMITTIVITY_C_PER_VM * torch.einsum(
+            "gij,gj->gi",
+            prediction.electronic_dielectric - identity,
+            electric_field_v_per_m,
+        )
+        return ionic + electronic + field
 
     def forward(
         self,
         batch,
         displacement: torch.Tensor,
         strain: torch.Tensor,
+        electric_field_v_per_m: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.polarization_increment_from_coefficients(
-            self.coefficients(batch), displacement, strain, batch
+            self.coefficients(batch), displacement, strain, batch,
+            electric_field_v_per_m,
         )
 
 
@@ -1497,6 +1526,9 @@ class SoftSharedElectromechanicalJetHead(ElectromechanicalJetHead):
         self.electronic_adapter = EquivariantResponseAdapter(
             self.encoder.hidden_irreps, self.global_context.context_dim
         )
+        self.dielectric_adapter = EquivariantResponseAdapter(
+            self.encoder.hidden_irreps, self.global_context.context_dim
+        )
 
     def coefficients(self, batch) -> ElectromechanicalJetPrediction:
         node_features, _, context = self.encode_response_features(batch)
@@ -1504,12 +1536,21 @@ class SoftSharedElectromechanicalJetHead(ElectromechanicalJetHead):
         electronic_features = self.electronic_adapter(
             node_features, context, batch.batch
         )
+        dielectric_features = self.dielectric_adapter(
+            node_features, context, batch.batch
+        )
         graphs = context.shape[0]
-        graph_features = scatter(
+        electronic_graph_features = scatter(
             electronic_features, batch.batch, dim=0, dim_size=graphs, reduce="mean"
         )
+        dielectric_graph_features = scatter(
+            dielectric_features, batch.batch, dim=0, dim_size=graphs, reduce="mean"
+        )
         born = self.decode_born(born_features, context, batch.batch)
-        electronic, dielectric = self.decode_electronic(graph_features, context)
+        electronic = self.decode_electronic_piezo(
+            electronic_graph_features, context
+        )
+        dielectric = self.decode_dielectric(dielectric_graph_features)
         return ElectromechanicalJetPrediction(born, electronic, dielectric)
 
 
@@ -1520,7 +1561,15 @@ class IndependentElectrostaticHeads(nn.Module):
         super().__init__()
         self.born_generator = ElectromechanicalJetHead(**kwargs)
         self.piezo_generator = ElectromechanicalJetHead(**kwargs)
-        # A0 has two independent backbones but no dead task heads.  Removing
+        self.dielectric_generator = ElectromechanicalJetHead(**kwargs)
+        # A0 changes parameter sharing, not the initial response function.
+        # Clone values before pruning so every independent task starts from
+        # exactly the same random trunk/decoder state as A1 under the same
+        # seed, while retaining distinct Parameter objects and optimizer state.
+        initial_state = self.born_generator.state_dict()
+        self.piezo_generator.load_state_dict(initial_state, strict=True)
+        self.dielectric_generator.load_state_dict(initial_state, strict=True)
+        # A0 has three independent backbones but no dead task heads.  Removing
         # the unused decoders keeps its parameter count and optimizer state
         # faithful to the actual control rather than silently carrying half of
         # two A1 models.
@@ -1529,6 +1578,11 @@ class IndependentElectrostaticHeads(nn.Module):
         del self.born_generator.electronic_context_gates
         del self.piezo_generator.born_irreps
         del self.piezo_generator.born_context_gates
+        del self.piezo_generator.dielectric_irreps
+        del self.dielectric_generator.born_irreps
+        del self.dielectric_generator.born_context_gates
+        del self.dielectric_generator.electronic_irreps
+        del self.dielectric_generator.electronic_context_gates
 
     def born_charges(self, batch) -> torch.Tensor:
         born_features, _, born_context = (
@@ -1540,17 +1594,24 @@ class IndependentElectrostaticHeads(nn.Module):
 
     def electronic_response(
         self, batch
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         _, piezo_features, piezo_context = (
             self.piezo_generator.encode_response_features(batch)
         )
-        return self.piezo_generator.decode_electronic(
+        return self.piezo_generator.decode_electronic_piezo(
             piezo_features, piezo_context
         )
 
+    def dielectric_response(self, batch) -> torch.Tensor:
+        _, dielectric_features, _ = (
+            self.dielectric_generator.encode_response_features(batch)
+        )
+        return self.dielectric_generator.decode_dielectric(dielectric_features)
+
     def coefficients(self, batch) -> ElectromechanicalJetPrediction:
         born = self.born_charges(batch)
-        electronic, dielectric = self.electronic_response(batch)
+        electronic = self.electronic_response(batch)
+        dielectric = self.dielectric_response(batch)
         return ElectromechanicalJetPrediction(
             born, electronic, dielectric,
         )
