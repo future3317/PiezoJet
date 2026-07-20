@@ -17,6 +17,7 @@ from piezojet.train import (
     macroscopic_piezo_loss,
     response_active_internal_strain_loss,
 )
+from tests.data_paths import gmtnet_root
 
 
 def _payload(record):
@@ -78,7 +79,7 @@ def test_outcar_numeric_overflow_is_quarantined_without_discarding_other_dfpt(mo
 
 
 def test_dfpt_cache_attaches_node_bec_and_ragged_mode_metadata(tmp_path):
-    records = load_gmtnet_records("data/raw/gmtnet")[:2]
+    records = load_gmtnet_records(gmtnet_root())[:2]
     cache = JarvisDFPTCache(tmp_path / "dfpt")
     for record in records:
         cache.save(_payload(record))
@@ -103,7 +104,7 @@ def test_dfpt_cache_attaches_node_bec_and_ragged_mode_metadata(tmp_path):
 
 
 def test_electrostatic_profile_keeps_identical_required_labels_without_ragged_arrays(tmp_path):
-    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    record = load_gmtnet_records(gmtnet_root())[0]
     cache = JarvisDFPTCache(tmp_path / "dfpt")
     cache.save(_payload(record))
     material_id = str(record["JARVIS_ID"])
@@ -130,7 +131,7 @@ def test_electrostatic_profile_keeps_identical_required_labels_without_ragged_ar
 
 
 def test_projected_outcar_branch_labels_close_in_one_target_space(tmp_path):
-    record = load_gmtnet_records("data/raw/gmtnet")[5]
+    record = load_gmtnet_records(gmtnet_root())[5]
     payload = _payload(record)
     payload["ionic_piezo_source"] = torch.tensor(
         [[0.11, -0.23, 0.37, 0.19, -0.41, 0.29],
@@ -186,7 +187,7 @@ def test_auxiliary_tensor_losses_are_invariant_under_common_rotation():
 
 
 def test_dfpt_branch_losses_are_masked_when_projected_total_conflicts_with_outcar(tmp_path):
-    record = load_gmtnet_records("data/raw/gmtnet")[5]
+    record = load_gmtnet_records(gmtnet_root())[5]
     payload = _payload(record)
     # This deliberately disagrees with the GMTNet total by much more than both
     # registered tolerances; it must not receive simultaneous total/branch
@@ -219,7 +220,7 @@ def test_born_loss_respects_missing_label_mask():
 
 
 def test_variable_atom_count_dfpt_path_has_no_mode_padding_and_finite_gradients(tmp_path):
-    records = load_gmtnet_records("data/raw/gmtnet")
+    records = load_gmtnet_records(gmtnet_root())
     first = records[0]
     second = next(record for record in records[1:] if len(record["atoms"]["elements"]) != len(first["atoms"]["elements"]))
     selected = [first, second]
@@ -251,7 +252,7 @@ def test_variable_atom_count_dfpt_path_has_no_mode_padding_and_finite_gradients(
 
 
 def test_direct_factor_path_matches_full_response_components(tmp_path):
-    records = load_gmtnet_records("data/raw/gmtnet")[:2]
+    records = load_gmtnet_records(gmtnet_root())[:2]
     cache = JarvisDFPTCache(tmp_path / "dfpt")
     for record in records:
         cache.save(_payload(record))
@@ -314,7 +315,7 @@ def test_response_active_lambda_loss_is_zero_for_the_true_observable_response():
 
 
 def test_independent_displacement_response_has_no_pinv_chart_or_ghost_gradient(tmp_path):
-    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    record = load_gmtnet_records(gmtnet_root())[0]
     cache = JarvisDFPTCache(tmp_path / "dfpt")
     cache.save(_payload(record))
     dataset = PiezoDataset(

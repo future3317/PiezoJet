@@ -3,6 +3,7 @@ import torch
 from piezojet.data import load_gmtnet_records
 from piezojet.dfpt_label_coverage import high_quality_partial_audit, summary
 from piezojet.jarvis_dfpt import DFPT_CACHE_SCHEMA
+from tests.data_paths import gmtnet_root
 
 
 def _payload(record):
@@ -27,7 +28,7 @@ def _payload(record):
 
 
 def test_high_quality_partial_is_not_a_strict_completion():
-    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    record = load_gmtnet_records(gmtnet_root())[0]
     audit = high_quality_partial_audit(record, _payload(record))
     assert audit["partial_qualified"]
     assert audit["observed_internal_strain_blocks"] == 1
@@ -36,7 +37,7 @@ def test_high_quality_partial_is_not_a_strict_completion():
 
 
 def test_partial_audit_rejects_nonfinite_observed_source_arrays():
-    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    record = load_gmtnet_records(gmtnet_root())[0]
     payload = _payload(record)
     payload["born_charges"][0, 0, 0] = float("nan")
     audit = high_quality_partial_audit(record, payload)
@@ -45,7 +46,7 @@ def test_partial_audit_rejects_nonfinite_observed_source_arrays():
 
 
 def test_unrecoverable_lambda_block_does_not_discard_bec_phi_partial():
-    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    record = load_gmtnet_records(gmtnet_root())[0]
     payload = _payload(record)
     payload["internal_strain_tensors"] = torch.empty(0, 3, 3)
     payload["internal_strain_ions"] = torch.empty(0, dtype=torch.long)

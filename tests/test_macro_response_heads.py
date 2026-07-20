@@ -12,6 +12,7 @@ from piezojet.model import (
     CartesianNodeFeatures,
     PiezoJet,
 )
+from tests.data_paths import gmtnet_root
 
 
 def _rotation(dtype):
@@ -55,7 +56,7 @@ def test_macro_dielectric_and_elastic_heads_are_spd_and_o3_covariant():
 
 
 def test_macro_response_gradients_do_not_enter_physical_tower():
-    record = load_gmtnet_records("data/raw/gmtnet")[0]
+    record = load_gmtnet_records(gmtnet_root())[0]
     batch = Batch.from_data_list([record_to_graph(record, cutoff=5.0, max_neighbors=16)])
     model = PiezoJet(cutoff=5.0, num_blocks=1, radial_basis=6, radial_hidden=16, cartesian_channels=8)
     piezo, dielectric, elastic = model.predict_macro_responses(batch)

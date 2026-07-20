@@ -9,11 +9,12 @@ from piezojet.tensor_ops import (
     rotate_piezo,
     symmetric_matrix_to_voigt,
 )
+from tests.data_paths import gmtnet_root
 
 
 def _graph(index: int = 10):
     graph = record_to_graph(
-        load_gmtnet_records("data/raw/gmtnet")[index], 5.0, 32
+        load_gmtnet_records(gmtnet_root())[index], 5.0, 32
     )
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     return graph

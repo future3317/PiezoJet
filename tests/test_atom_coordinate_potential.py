@@ -3,6 +3,7 @@ from torch.func import jvp
 
 from piezojet.data import load_gmtnet_records, record_to_graph
 from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
+from tests.data_paths import gmtnet_root
 
 
 def test_independent_phi_lambda_coefficients_share_one_scalar_energy():
@@ -39,7 +40,7 @@ def test_independent_phi_lambda_coefficients_share_one_scalar_energy():
 
 def test_optical_displacement_stationarity_translation_removal_and_response_shapes():
     torch.manual_seed(41)
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[23], 5.0, 32)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[23], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
     field, eta6 = torch.randn(1, 3), torch.randn(1, 6)
@@ -99,7 +100,7 @@ def test_default_optical_policy_is_continuous_regularized_not_predicted_spectrum
 
 
 def test_total_only_macro_tower_has_no_gradient_route_to_physical_factors():
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[5], 5.0, 32)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[5], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = PiezoJet(cutoff=5.0, num_blocks=1)
     model.predict_macro_total(graph).square().mean().backward()
@@ -113,7 +114,7 @@ def test_total_only_macro_tower_has_no_gradient_route_to_physical_factors():
 
 
 def test_direct_u_coordinate_head_has_no_gradient_route_to_factor_or_macro_towers():
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[6], 5.0, 32)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[6], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = PiezoJet(cutoff=5.0, num_blocks=1)
     model.predict_displacement_response(graph).square().mean().backward()
@@ -128,7 +129,7 @@ def test_direct_u_coordinate_head_has_no_gradient_route_to_factor_or_macro_tower
 
 def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatch):
     torch.manual_seed(39)
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[7], 5.0, 32)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[7], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = PiezoJet(cutoff=5.0, num_blocks=1).eval()
     with torch.no_grad():
@@ -164,7 +165,7 @@ def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatc
 
 def test_pruned_strict_objective_keeps_inactive_towers_out_of_autograd():
     torch.manual_seed(40)
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[8], 5.0, 32)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[8], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = PiezoJet(cutoff=5.0, num_blocks=1)
     components = model.predict_components(

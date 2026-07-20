@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from piezojet.data import MAX_POINT_GROUP_OPERATIONS, load_gmtnet_records, record_to_graph
 from piezojet.model import AtomCoordinateResponsePotential, PiezoJet
 from piezojet.tensor_ops import piezo_voigt_to_cartesian, rotate_piezo
+from tests.data_paths import gmtnet_root
 
 
 def _identity_group(dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
@@ -63,7 +64,7 @@ def test_vectorized_direct_u_contraction_matches_loop_output_and_gradients():
 
 def test_atom_coordinate_head_preserves_equivariance_asr_and_translation_nullspace():
     torch.manual_seed(29)
-    record = load_gmtnet_records("data/raw/gmtnet")[13]
+    record = load_gmtnet_records(gmtnet_root())[13]
     graph = record_to_graph(record, 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     graph.point_group_ops, graph.point_group_mask = _identity_group(graph.pos.dtype)
@@ -103,7 +104,7 @@ def test_atom_coordinate_head_preserves_equivariance_asr_and_translation_nullspa
 
 def test_point_group_metadata_does_not_replace_the_atom_coordinate_response():
     torch.manual_seed(31)
-    record = load_gmtnet_records("data/raw/gmtnet")[14]
+    record = load_gmtnet_records(gmtnet_root())[14]
     graph = record_to_graph(record, 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     graph.point_group_ops, graph.point_group_mask = _identity_group(graph.pos.dtype)
@@ -119,7 +120,7 @@ def test_point_group_metadata_does_not_replace_the_atom_coordinate_response():
 
 def test_independent_cross_derivative_head_changes_lambda_without_rewriting_phi():
     torch.manual_seed(47)
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[16], 5.0, 32)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[16], 5.0, 32)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = PiezoJet(
         cutoff=5.0,

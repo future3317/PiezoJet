@@ -26,6 +26,7 @@ from piezojet.electrostatic_a0_fold_adjudication import (
     TASKS,
     _restore_a0_progress,
 )
+from tests.data_paths import gmtnet_root
 from piezojet.electrostatic_protocol import (
     STABILIZED_SELECTION_VERSION,
     development_selection,
@@ -189,7 +190,7 @@ def test_a0_resume_restores_all_towers_and_optimizers_at_common_boundary():
 
 
 def test_independent_control_runs_only_its_declared_decoders():
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[10], 5.0, 12)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = IndependentElectrostaticHeads(
         embedding_dim=4,
@@ -212,7 +213,7 @@ def test_independent_control_runs_only_its_declared_decoders():
 
 
 def test_a0_starts_from_the_same_response_function_as_a1_without_sharing_parameters():
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[10], 5.0, 12)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     kwargs = {
         "embedding_dim": 4,
@@ -250,7 +251,7 @@ def test_a0_starts_from_the_same_response_function_as_a1_without_sharing_paramet
 
 
 def test_independent_control_sequential_backward_matches_joint_objective():
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[10], 5.0, 12)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     graph.y_born = torch.linspace(
         -0.2, 0.3, graph.num_nodes * 9, dtype=torch.float32
@@ -312,7 +313,7 @@ def test_independent_control_sequential_backward_matches_joint_objective():
 
 @pytest.mark.parametrize("architecture", ARCHITECTURES)
 def test_microbatch_gradient_matches_one_logical_material_mean(architecture):
-    records = load_gmtnet_records("data/raw/gmtnet")
+    records = load_gmtnet_records(gmtnet_root())
     graphs = [
         record_to_graph(records[index], 5.0, 12)
         for index in (10, 11)
@@ -680,7 +681,7 @@ def test_stage_a_checkpoint_provenance_binds_fold_ids_and_source(tmp_path):
 
 
 def test_soft_shared_jet_preserves_tensor_shapes_and_has_task_adapters():
-    graph = record_to_graph(load_gmtnet_records("data/raw/gmtnet")[10], 5.0, 12)
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
     graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
     model = SoftSharedElectromechanicalJetHead(
         embedding_dim=4, cutoff=5.0, lmax=3, num_blocks=1, radial_basis=3,

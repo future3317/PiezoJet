@@ -5,6 +5,7 @@ import torch
 from ase.neighborlist import primitive_neighbor_list
 
 from piezojet.data import _periodic_edges, load_gmtnet_records
+from tests.data_paths import gmtnet_root
 
 
 def _our_edge_set(frac: torch.Tensor, cell: torch.Tensor, cutoff: float, max_neighbors: int) -> set[tuple[int, int, int, int, int]]:
@@ -67,7 +68,7 @@ def test_strongly_skew_cell_enumerates_cancelling_large_lattice_shifts():
 
 
 def test_custom_pbc_edges_are_all_valid_ase_neighbors_for_real_nonorthogonal_cells():
-    records = load_gmtnet_records("data/raw/gmtnet")
+    records = load_gmtnet_records(gmtnet_root())
     # Deliberately mix a small, a many-atom, and a non-orthogonal cell rather
     # than relying only on a cubic toy.  The custom graph may truncate to K
     # nearest images, so every retained edge must be an ASE-valid edge.
