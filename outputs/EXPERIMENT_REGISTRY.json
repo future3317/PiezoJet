@@ -8,7 +8,7 @@
     "historical_conventions_must_not_be_pooled": true,
     "artifact_index": "outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl"
   },
-  "cohort_count": 148,
+  "cohort_count": 149,
   "cohorts": [
     {
       "experiment_id": "audit",
@@ -9474,6 +9474,29 @@
           ]
         }
       ]
+    },
+    {
+      "experiment_id": "vnext_stage3_guardrailed_adjudication_v3",
+      "artifact_root": "outputs/vnext_stage3_guardrailed_adjudication_v3",
+      "family": "guardrailed_three_task_electrostatic_formula_disjoint_adjudication",
+      "archival_status": "current",
+      "execution_status": "planned_not_executed",
+      "result_disposition": "frozen_protocol_only",
+      "convention_epoch": "v14_guardrailed_selection_logical_pretraining_batch",
+      "comparability_group": "fold0_nested_n200_n800_then_top2_full",
+      "paper_use": "protocol_only_until_candidates_complete",
+      "interpretation_boundary": "Fresh development-only protocol with code/data/graph/metric provenance, physical-batch-4/logical-batch-32 structural pretraining, non-maskable direction/amplitude checkpoint guardrails, immutable evaluation states, and matched N=800 model-class resources. Frozen validation10/test20 labels remain unread and no training is currently authorized.",
+      "split": "electrostatic_development_folds_v2 fold0; frozen validation/test unread",
+      "artifact_summary": {
+        "file_count": 2,
+        "bytes": 13878,
+        "last_modified_utc": "2026-07-20T08:22:26.273070Z",
+        "run_records": 0,
+        "completed_run_records": 0,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [],
+      "runs": []
     },
     {
       "experiment_id": "vnext_stage3_throughput_smoke_v1",
