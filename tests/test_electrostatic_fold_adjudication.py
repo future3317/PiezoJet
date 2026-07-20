@@ -17,6 +17,7 @@ from piezojet.data import (
 )
 from piezojet.electrostatic_fold_adjudication import (
     ARCHITECTURES,
+    _evaluate,
     backward_training_objective,
     load_structure_pretraining,
     make_model,
@@ -24,6 +25,7 @@ from piezojet.electrostatic_fold_adjudication import (
 )
 from piezojet.electrostatic_a0_fold_adjudication import (
     TASKS,
+    _evaluate_task,
     _restore_a0_progress,
 )
 from tests.data_paths import gmtnet_root
@@ -311,6 +313,38 @@ def test_independent_control_sequential_backward_matches_joint_objective():
         assert torch.allclose(
             parameter.grad, reference_parameter.grad, rtol=2e-5, atol=2e-7
         ), name
+
+
+def test_evaluation_preserves_version_counters_required_by_geometry_cache():
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
+    graph.y_born = torch.zeros(graph.num_nodes, 3, 3)
+    graph.y_electronic_piezo = torch.zeros(1, 3, 3, 3)
+    graph.y_dfpt_electronic_dielectric = (2.0 * torch.eye(3)).unsqueeze(0)
+    graph.dfpt_electronic_dielectric_mask = torch.tensor(True)
+    batch = Batch.from_data_list([graph])
+    config = {
+        "embedding_dim": 4,
+        "cutoff": 5.0,
+        "lmax": 3,
+        "num_blocks": 1,
+        "radial_basis": 3,
+        "radial_hidden": 8,
+        "global_context_dim": 8,
+        "spectral_channels": 2,
+        "spectral_shells": 2,
+        "polar_fluctuation_shells": 2,
+        "reciprocal_cutoff": 3.0,
+        "global_attention_dim": 4,
+    }
+    shared = make_model("a1_electromechanical_jet", config)
+    metrics = _evaluate(shared, [batch], "a1_electromechanical_jet")
+    assert set(metrics) == {"electronic", "born", "dielectric_audit"}
+
+    independent = make_model("a0_independent_irreps", config)
+    electronic = _evaluate_task(
+        independent.piezo_generator, [batch], "electronic"
+    )
+    assert electronic["materials"] == 1
 
 
 @pytest.mark.parametrize("architecture", ARCHITECTURES)

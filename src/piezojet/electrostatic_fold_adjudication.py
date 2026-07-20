@@ -381,7 +381,9 @@ def _evaluate(model, loader, architecture: str):
     offset = 0
     device = next(model.parameters()).device
     model.eval()
-    with torch.inference_mode():
+    # The reciprocal-geometry cache keys tensors by their version counters;
+    # inference tensors intentionally have no version counter.
+    with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
             prediction = _coefficients(model, batch, architecture, create_graph=False)

@@ -124,7 +124,9 @@ def _evaluate_task(tower: nn.Module, loader, task: str) -> dict[str, object]:
     batch_indices: list[torch.Tensor] = []
     offset = 0
     tower.eval()
-    with torch.inference_mode():
+    # The reciprocal-geometry cache keys tensors by their version counters;
+    # inference tensors intentionally have no version counter.
+    with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
             predictions.append(_prediction(tower, batch, task).detach().cpu())
