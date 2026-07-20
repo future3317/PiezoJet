@@ -319,6 +319,19 @@ retained and update 125 cannot be reconstructed. The corrected metric uses the
 same `0.1 e/component` floor for BEC training, reporting, and selection, while
 retaining raw relative error only for audit.
 
+The corrected fold-0/seed-42 N=200 A1 run under
+`outputs/vnext_stage3_guardrailed_adjudication_v3/` retains complete
+development evaluations at updates 100, 200, 300, and 400. The stabilized
+selection score is `2.19007/2.15504/2.20411/2.28188`; update 200 is selected.
+At that checkpoint, electronic active relative error/cosine/amplitude are
+`0.97990/0.21018/0.32571`, nonzero-BEC cosine and stabilized relative error are
+`0.43899/0.93105`, and dielectric stabilized relative error is `0.65432`.
+Training loss continued to fall while the development score worsened at 300
+and 400, so the user-stopped update-400 state is preserved as single-seed
+development-overfitting/multitask-tradeoff evidence. It is neither a completed
+500-update result nor a production promotion, and frozen validation10/test20
+remain unread.
+
 The first replacement protocol under
 `outputs/vnext_stage3_corrected_adjudication_v2/` is now immutable interrupted
 evidence: its physical-batch-16 structural pretraining was stopped before the
@@ -332,10 +345,23 @@ response-supervised panel, and excludes every development formula.
 
 The fresh frozen protocol is
 `outputs/vnext_stage3_guardrailed_adjudication_v3/`. Structural pretraining
-uses physical batch 4 with gradient accumulation to logical batch 32; every
+uses gradient accumulation to logical batch 32; every
 exposure epoch records 3,951 structures, zero response labels, 124 AdamW
 updates (123 batches of 32 plus a 15-material tail), and zero development-
-formula overlap. Response training retains logical batch 32, microbatch 16,
+formula overlap. A current-commit physical-batch-4 resource attempt was stopped
+before its first epoch checkpoint after observed device use reached
+21,993/24,564 MiB. It has no performance result and cannot initialize a model.
+The physical-batch-2 replacement
+`stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2` kept the identical
+logical-batch objective and reached four complete epochs before it was stopped
+as a redundant recomputation. The earlier complete 20-epoch checkpoint
+`stage_a_full_fold0_seed42_pretrain/best_encoder.pt` uses the same 3,951 IDs,
+data hashes, graph/encoder configuration, objective, seed, and logical batch;
+its source commit is `27d5617473d6f94858faee93afd503b07e62cad3`.
+Cross-commit pretraining reuse is accepted only after those semantic checks and
+strict state-dict loading; the pretraining-source and downstream-response
+commits are recorded separately rather than relabeling checkpoint provenance.
+Response training retains logical batch 32, microbatch 16,
 evaluation batch 32, and `num_workers=0`. A0 uses three independent AdamW optimizers and
 advances its parameter-disjoint towers in common-update blocks, with only one
 tower and optimizer state CUDA-resident. Every tower receives the identical
@@ -354,14 +380,18 @@ norm remains a separate absolute leakage field. Reports include parameter
 count, counted FLOPs per logical update, optimizer GPU seconds, and peak CUDA
 allocation.
 
-Execution remains paused. The fixed order is fresh 3,951-structure pretraining,
-corrected N=200 A1, matched N=800 A0/A1/A1.5, and only then the top two at the
-full 3,951 response-label fold. If all N=800 candidates fit train but fail
+Execution was explicitly resumed on 2026-07-21. No directory is overwritten or
+resumed after a resource interruption or redundant recomputation. The remaining
+fixed order is matched N=800 A0/A1/A1.5 initialized from the audited complete
+fold-only pretrain, and only then the top two at the full 3,951 response-label
+fold. N=800 response runs evaluate every 50 updates and use guardrail-aware
+early stopping with four eligible evaluations of patience; a run with no
+eligible checkpoint never early-stops into a fallback. If all N=800 candidates fit train but fail
 development, the next intervention is BEC-first response-aware pretraining;
 scale--shape output is considered only for persistent directional improvement
 with amplitude collapse. An A0 parameter-matched control is required only if
-A0-full wins the N=800 model-class comparison. Corrected N=200 and N=800
-predictive adjudication is not yet complete. The earlier N=100
+A0-full wins the N=800 model-class comparison. N=800 predictive adjudication
+is not yet complete. The earlier N=100
 plan at `outputs/electromechanical_jet_fold_adjudication_v2/` remains a
 non-executed protocol record. The frozen v3 protocol will bind every selected
 checkpoint to the complete code/data/graph provenance. The similarly named

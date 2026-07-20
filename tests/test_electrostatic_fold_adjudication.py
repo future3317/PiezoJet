@@ -672,7 +672,7 @@ def test_fold_pretraining_checkpoint_rejects_development_structure_provenance(tm
         )
 
 
-def test_fold_pretraining_checkpoint_rejects_unpinned_code_commit(tmp_path):
+def test_fold_pretraining_checkpoint_records_audited_cross_commit_reuse(tmp_path):
     config = {
         "embedding_dim": 4,
         "cutoff": 3.0,
@@ -694,13 +694,61 @@ def test_fold_pretraining_checkpoint_rejects_unpinned_code_commit(tmp_path):
     split_source = tmp_path / "folds.json"
     split_source.write_text("{}", encoding="utf-8")
     checkpoint = tmp_path / "encoder.pt"
+    source_config = dict(config)
+    source_config["code_commit"] = "a" * 40
     torch.save({
         "architecture": "e3nn_periodic_v1",
         "encoder": source.encoder.state_dict(),
         "pretraining_provenance": provenance(["train-id"], split_source, "train"),
         "code_commit": "a" * 40,
+        "config": source_config,
+        "pretraining_contract": {
+            "objective": "masked_species_plus_translation_free_coordinate_denoising",
+            "response_label_count": 0,
+        },
     }, checkpoint)
-    with pytest.raises(ValueError, match="code commit"):
+    audit = load_structure_pretraining(
+        make_model("a1_electromechanical_jet", config),
+        "a1_electromechanical_jet",
+        checkpoint,
+        torch.device("cpu"),
+        ["train-id"],
+        ["development-id"],
+        config,
+    )
+    assert audit["pretraining_source_code_commit"] == "a" * 40
+    assert audit["downstream_code_commit"] == "b" * 40
+    assert audit["cross_commit_reuse"] is True
+
+
+def test_fold_pretraining_checkpoint_rejects_encoder_config_drift(tmp_path):
+    config = {
+        "embedding_dim": 4, "cutoff": 3.0, "lmax": 3, "num_blocks": 1,
+        "radial_basis": 3, "radial_hidden": 8, "global_context_dim": 8,
+        "spectral_channels": 2, "spectral_shells": 2,
+        "polar_fluctuation_shells": 2, "reciprocal_cutoff": 3.0,
+        "global_attention_dim": 4, "code_commit": "b" * 40,
+    }
+    from piezojet.baselines import e3nn_direct_baseline_from_config
+
+    source = e3nn_direct_baseline_from_config(config)
+    split_source = tmp_path / "folds.json"
+    split_source.write_text("{}", encoding="utf-8")
+    checkpoint = tmp_path / "encoder.pt"
+    saved_config = dict(config)
+    saved_config["cutoff"] = 4.0
+    torch.save({
+        "architecture": "e3nn_periodic_v1",
+        "encoder": source.encoder.state_dict(),
+        "pretraining_provenance": provenance(["train-id"], split_source, "train"),
+        "code_commit": "a" * 40,
+        "config": saved_config,
+        "pretraining_contract": {
+            "objective": "masked_species_plus_translation_free_coordinate_denoising",
+            "response_label_count": 0,
+        },
+    }, checkpoint)
+    with pytest.raises(ValueError, match="encoder configuration differs"):
         load_structure_pretraining(
             make_model("a1_electromechanical_jet", config),
             "a1_electromechanical_jet",

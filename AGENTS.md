@@ -314,15 +314,34 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - The current frozen protocol is
   `outputs/vnext_stage3_guardrailed_adjudication_v3/`. The execution order is
   fresh full-fold structure pretraining, corrected A1 N=200, matched
-  A0/A1/A1.5 N=800, then only the N=800 top two at full fold. Training remains
-  paused until explicitly resumed.
+  A0/A1/A1.5 N=800, then only the N=800 top two at full fold. Execution was
+  explicitly resumed on 2026-07-21; consult run-local status artifacts rather
+  than inferring completion from this guide.
   Structure pretraining uses the complete 3,951-material fold-train structure
   universe, while response labels remain restricted to the fixed manifest.
-  It uses physical batch 4 accumulated to logical batch 32 and records 3,951
-  structure exposures, zero response labels, 124 AdamW updates per epoch, and
-  zero development-formula overlap. Response training uses logical batch 32,
+  The current-commit physical-batch-4 attempt was stopped before epoch one at
+  21,993/24,564 MiB observed device use and has no checkpoint or performance
+  result. Its physical-batch-2 replacement
+  `stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2` was stopped after four
+  complete epochs as a redundant recomputation. The maintained initializer is
+  the earlier complete 20-epoch
+  `stage_a_full_fold0_seed42_pretrain/best_encoder.pt`, sourced from commit
+  `27d5617473d6f94858faee93afd503b07e62cad3`. It has the same 3,951 train-only
+  IDs, data hashes, graph/encoder configuration, objective, seed, logical batch
+  32, 124 AdamW updates per epoch, and zero development-formula overlap.
+  Pretraining-source and downstream-response commits are recorded separately;
+  cross-commit reuse never bypasses semantic compatibility or strict state-dict
+  checks. Response training uses logical batch 32,
   microbatch 16, evaluation batch 32, and `num_workers=0`; frozen
   validation10/test20 remain unread.
+- The corrected N=200 A1 run is immutable user-stopped evidence with complete
+  evaluations at updates 100/200/300/400. Stabilized development scores are
+  2.19007/2.15504/2.20411/2.28188, selecting update 200. Its electronic active
+  relative error/cosine/amplitude are 0.97990/0.21018/0.32571; nonzero-BEC
+  cosine/stabilized relative error are 0.43899/0.93105; dielectric stabilized
+  relative error is 0.65432. Falling train loss with worsening development at
+  300/400 is single-seed overfitting/multitask-tradeoff evidence, not a
+  completed 500-update result or production promotion.
 - Development selection is `electrostatic_stabilized_v2`: the sum of the three
   stabilized material-relative errors ranks only checkpoints with positive
   active electronic cosine, positive nonzero-BEC cosine, and active electronic
@@ -348,6 +367,11 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   scale--shape outputs only when direction improves but amplitude stays
   collapsed. Add A0-matched only if A0-full wins and capacity fairness becomes
   necessary for the paper.
+- N=800 evaluates every 50 updates with four eligible evaluations of
+  guardrail-aware early-stopping patience. Patience starts only after an
+  eligible checkpoint exists; failed guardrails never select or trigger a
+  fallback. Compact `training_curve.json` records train/development scores,
+  guardrails, generalization gap, timing, and the early-stop counter.
 - `piezojet.prepare_electrostatic_adjudication` only writes an auditable command
   plan and can never launch training. The current Stage-A plan is
   `outputs/electromechanical_jet_fold_adjudication_v2/stage_a_n100_fold0_seed42_plan.json`.

@@ -51,6 +51,17 @@ from .pretraining_protocol import validate_inductive_checkpoint
 from .train import _data_commit, _git_commit, seed_everything
 
 
+_PRETRAINING_COMPATIBILITY_KEYS = (
+    "embedding_dim",
+    "cutoff",
+    "max_neighbors",
+    "lmax",
+    "num_blocks",
+    "radial_basis",
+    "radial_hidden",
+)
+
+
 def _model_kwargs(config: dict[str, object]) -> dict[str, object]:
     return {
         "embedding_dim": int(config["embedding_dim"]),
@@ -326,14 +337,36 @@ def load_structure_pretraining(
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     if payload.get("architecture") != "e3nn_periodic_v1":
         raise ValueError("Structure checkpoint is not a PeriodicCrystalEncoder pretrain")
-    expected_code_commit = None if config is None else config.get("code_commit")
-    if (
-        expected_code_commit is not None
-        and payload.get("code_commit") != expected_code_commit
-    ):
-        raise ValueError(
-            "Structure checkpoint code commit differs from the pinned Stage-A commit"
-        )
+    source_code_commit = payload.get("code_commit")
+    downstream_code_commit = None if config is None else config.get("code_commit")
+    if config is not None:
+        if (
+            not isinstance(source_code_commit, str)
+            or len(source_code_commit) != 40
+            or any(character not in "0123456789abcdefABCDEF" for character in source_code_commit)
+        ):
+            raise ValueError("Structure checkpoint has no valid source code commit")
+        saved_config = payload.get("config")
+        if not isinstance(saved_config, dict):
+            raise ValueError("Structure checkpoint has no saved encoder configuration")
+        mismatches = {
+            key: {"checkpoint": saved_config.get(key), "downstream": config.get(key)}
+            for key in _PRETRAINING_COMPATIBILITY_KEYS
+            if key in config and saved_config.get(key) != config.get(key)
+        }
+        if mismatches:
+            raise ValueError(
+                f"Structure checkpoint encoder configuration differs: {mismatches}"
+            )
+        contract = payload.get("pretraining_contract")
+        if not isinstance(contract, dict):
+            raise ValueError("Structure checkpoint has no pretraining contract")
+        if (
+            contract.get("objective")
+            != "masked_species_plus_translation_free_coordinate_denoising"
+            or contract.get("response_label_count") != 0
+        ):
+            raise ValueError("Structure checkpoint pretraining objective differs")
     pretraining_provenance = validate_inductive_checkpoint(
         payload, train_ids, development_ids, config
     )
@@ -355,6 +388,13 @@ def load_structure_pretraining(
         "pretraining_provenance": pretraining_provenance,
         "pretraining_epoch": payload.get("epoch"),
         "pretraining_loss": payload.get("loss"),
+        "pretraining_source_code_commit": source_code_commit,
+        "downstream_code_commit": downstream_code_commit,
+        "cross_commit_reuse": (
+            source_code_commit is not None
+            and downstream_code_commit is not None
+            and source_code_commit != downstream_code_commit
+        ),
         "encoder_copies_initialized": encoder_copies,
     }
 

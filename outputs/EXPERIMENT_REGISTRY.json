@@ -9488,15 +9488,54 @@
       "interpretation_boundary": "Fresh development-only protocol with code/data/graph/metric provenance, physical-batch-4/logical-batch-32 structural pretraining, non-maskable direction/amplitude checkpoint guardrails, immutable evaluation states, and matched N=800 model-class resources. Frozen validation10/test20 labels remain unread and no training is currently authorized.",
       "split": "electrostatic_development_folds_v2 fold0; frozen validation/test unread",
       "artifact_summary": {
-        "file_count": 2,
-        "bytes": 13878,
-        "last_modified_utc": "2026-07-20T08:22:26.273070Z",
-        "run_records": 0,
+        "file_count": 7,
+        "bytes": 18425,
+        "last_modified_utc": "2026-07-20T19:26:30.123183Z",
+        "run_records": 3,
         "completed_run_records": 0,
-        "partial_or_blocked_run_records": 0
+        "partial_or_blocked_run_records": 3
       },
-      "key_artifacts": [],
-      "runs": []
+      "key_artifacts": [
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1/INTERRUPTED.md",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1/failure.json",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2/failure.json",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/INTERRUPTED.md",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/failure.json"
+      ],
+      "runs": [
+        {
+          "path": "stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "INTERRUPTED.md",
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2",
+          "execution_status": "failed_or_has_failure_record",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_n200_fold0_a1_electromechanical_jet_seed42",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "INTERRUPTED.md",
+            "failure.json"
+          ],
+          "checkpoint_files": []
+        }
+      ]
     },
     {
       "experiment_id": "vnext_stage3_throughput_smoke_v1",

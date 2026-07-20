@@ -183,15 +183,15 @@ the old roughly 5,700-fold ratio is not global loss-scale evidence. The matched 
 the user's request before producing a checkpoint; its `failure.json` is kept
 and it has no performance result.
 
-Training was then explicitly paused. No replacement process is running. Before
-the next authorized run, A0 was changed to evaluate and backpropagate its two
+Training was then explicitly paused. Before the next authorized run, A0 was
+changed to evaluate and backpropagate its three
 parameter-disjoint towers sequentially inside the same optimizer update. A
 parameter-by-parameter CPU regression test confirms equality with backward on
 the summed objective, including matching unused-parameter masks. This reduces
 peak activation residency from two tower graphs to one without changing the
 loss, update count, batching, or comparison contract.
 
-The future matched Stage-A commands are recorded, not executed, in
+The historical matched Stage-A commands were recorded, but not executed, in
 `outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`.
 The plan fixes fold0, seed42, train/development limits 100/100, one shared
 fold-train-only structure checkpoint, random response heads, fresh output
@@ -202,6 +202,58 @@ schema-drift bug in `pretrain_e3nn`: schema-2 fold manifests intentionally omit
 duplicated train lists. The pretrainer now derives the formula-safe train panel
 from the global population minus the development subset and has a regression
 test for that path.
+
+## 2026-07-21 corrected N=200 and resumed protocol
+
+The stabilized BEC metric was applied consistently to training, reporting, and
+selection in the corrected fold-0/seed-42 N=200 A1 run. Four complete
+development evaluations are retained:
+
+| update | selection | electronic cosine | electronic amplitude | electronic relative error | BEC cosine | BEC relative error | dielectric relative error |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 2.190065 | 0.120911 | 0.121086 | 1.005560 | 0.179049 | 0.984477 | 0.654994 |
+| 200 | **2.155039** | 0.210184 | 0.325705 | **0.979902** | 0.438994 | 0.931054 | **0.654315** |
+| 300 | 2.204108 | 0.241909 | 0.532308 | 1.027085 | 0.515650 | **0.921804** | 0.669061 |
+| 400 | 2.281876 | 0.262935 | 0.597799 | 1.062868 | 0.536327 | 0.976481 | 0.671151 |
+
+Update 200 is selected. Training loss continued to fall while the summed
+development score worsened at updates 300 and 400. The user therefore stopped
+the run after the complete update-400 evaluation. This is evidence for
+development overfitting and a changing three-task tradeoff, not a completed
+500-update result, an architecture rejection, or a production promotion.
+
+The trainer now evaluates every 50 updates for the N=800 comparison and uses
+guardrail-aware early stopping with four eligible evaluations of patience.
+Patience starts only after an eligible checkpoint exists; failed guardrails do
+not select a fallback. Every evaluation persists the complete model, AdamW and
+schedule state and emits a compact curve containing train/development scores,
+generalization gap, physical guardrails, timing, and early-stop state.
+
+Execution was explicitly resumed on 2026-07-21 using code commit
+`cc13d5119b62dbbac5c5a27c361cd39d86fb633a`. A physical-batch-4 structural
+pretraining attempt was stopped before epoch one when observed CUDA use reached
+21,993/24,564 MiB. It wrote no checkpoint and is retained as
+`interrupted_resource_guardrail`. A physical-batch-2 replacement kept logical
+batch 32 and the same material-mean objective in
+`stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2`, but was stopped after four
+complete epochs once an audit established that it duplicated the earlier
+complete 20-epoch fold-only checkpoint. The reused checkpoint has the same
+3,951 IDs, data hashes, graph/encoder configuration, objective, seed, and
+logical batch; its source commit is
+`27d5617473d6f94858faee93afd503b07e62cad3`. The loader records that source
+commit separately from the downstream response-run commit and still rejects
+semantic configuration drift, leakage, or a non-strict state-dict load. Frozen
+validation10/test20 remain unread.
+
+The literature-linked decision boundary is deliberately conditional. The
+near-zero shared electronic/BEC gradient cosine and comparable norms do not
+justify PCGrad or GradNorm before A0/A1/A1.5 is adjudicated. If all N=800
+models fit training but fail development, the next minimal candidate is
+BEC-first response-aware pretraining with replay of the other valid tasks.
+Higher-body-order or stronger reciprocal message passing is considered only if
+the learning curve or stratified residuals locate a representation/long-range
+floor. Scale--shape output is considered only after direction improves while
+amplitude remains collapsed.
 
 ## Artifacts
 
@@ -218,6 +270,9 @@ test for that path.
 - `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a1_seed42_retry1/active_gradient_audit.json`
 - `outputs/electromechanical_jet_fold_adjudication/pilot_n100_fold0_a0_seed42/failure.json`
 - `outputs/electromechanical_jet_fold_adjudication/stage_a_n100_fold0_seed42_plan.json`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1/`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2/`
 
 The historical directory name `p1_differential_capacity` predates the current
 terminology. Its stored bytes remain immutable, but the maintained code calls
