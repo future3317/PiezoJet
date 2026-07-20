@@ -9,6 +9,7 @@ def test_repository_config_uses_one_canonical_role_map(monkeypatch):
     monkeypatch.delenv("PIEZOJET_DATA_ROOT", raising=False)
     config = load_project_config(Path("config.yaml"))
     assert config["data_root"] == r"E:\DATA\PiezoJet\raw\gmtnet"
+    assert config["processed_dir"] == r"E:\DATA\PiezoJet\processed"
     assert config["jarvis_dfpt_dir"].endswith("jarvis_dfpt_v9_full_public")
     assert config["jarvis_strain_completion_dir"].endswith(
         "jarvis_strain_completion_v10_zero_dimensional_fix"
@@ -27,6 +28,7 @@ def test_physical_data_root_can_be_rebased_outside_the_repository(
     monkeypatch.setenv("PIEZOJET_DATA_ROOT", str(external_root))
     config = load_project_config(Path("config.yaml"))
     assert Path(config["data_root"]) == external_root / "raw" / "gmtnet"
+    assert Path(config["processed_dir"]) == external_root / "processed"
     assert Path(config["jarvis_dfpt_dir"]) == (
         external_root / "processed" / "jarvis_dfpt_v9_full_public"
     )

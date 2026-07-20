@@ -130,9 +130,9 @@ On Linux or another host, set the absolute `PIEZOJET_DATA_ROOT` environment
 variable (for example `/home/workspace/lrh/DATA/PiezoJet`). The strict loader
 then rebases only physical roles beneath the manifest's declared data root;
 repository-local split and manifest paths remain in the checkout. This keeps
-all dataset payloads in the shared DATA tree without symlinks or copies inside
-the repository, while the resolved run configuration still records the exact
-external paths.
+all dataset payloads and regenerable graph/symmetry caches in the shared DATA
+tree without symlinks or copies inside the repository, while the resolved run
+configuration still records the exact external paths.
 
 `config.yaml` names only that manifest. All maintained config consumers call
 one strict loader, which rejects a simultaneous version-specific dataset path.

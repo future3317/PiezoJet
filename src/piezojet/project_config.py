@@ -12,6 +12,7 @@ import yaml
 
 _ROLE_TO_CONFIG = {
     "gmtnet_source": "data_root",
+    "processed_store": "processed_dir",
     "jarvis_dfpt": "jarvis_dfpt_dir",
     "strict_internal_strain": "jarvis_strain_completion_dir",
     "strict_split": "strict_completion_split_file",

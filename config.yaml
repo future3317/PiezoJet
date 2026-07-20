@@ -1,7 +1,6 @@
 seed: 42
 multistream_training: true
 canonical_data_manifest: data/processed/canonical_datasets.json
-processed_dir: data/processed
 # The direct-U parameterization writes to a fresh cohort and never overwrites
 # historical pInv/ridge diagnostics.
 output_dir: outputs/direct_u_multistream_v1/finetune_seed42

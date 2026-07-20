@@ -4,6 +4,7 @@
   "physical_data_root": "E:\\DATA\\PiezoJet",
   "roles": {
     "gmtnet_source": "E:\\DATA\\PiezoJet\\raw\\gmtnet",
+    "processed_store": "E:\\DATA\\PiezoJet\\processed",
     "jarvis_dfpt": "E:\\DATA\\PiezoJet\\processed\\jarvis_dfpt_v9_full_public",
     "jarvis_raw_index": "E:\\DATA\\PiezoJet\\jarvis_raw_index",
     "jarvis_dft3d_index": "E:\\DATA\\PiezoJet\\jarvis_dft3d_index",
