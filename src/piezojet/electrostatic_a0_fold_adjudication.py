@@ -43,7 +43,10 @@ from .electrostatic_fold_adjudication import (
     response_active_diagnostic_indices,
 )
 from .electrostatic_protocol import (
+    DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
     STABILIZED_SELECTION_VERSION,
+    compact_training_curve_row,
+    development_early_stopping,
     development_selection,
     matched_material_schedule,
 )
@@ -121,7 +124,7 @@ def _evaluate_task(tower: nn.Module, loader, task: str) -> dict[str, object]:
     batch_indices: list[torch.Tensor] = []
     offset = 0
     tower.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in loader:
             batch = batch.to(device)
             predictions.append(_prediction(tower, batch, task).detach().cpu())
@@ -205,6 +208,21 @@ def main() -> None:
     parser.add_argument("--eval-batch-size", type=int, default=2)
     parser.add_argument("--diagnostic-batch-size", type=int, default=2)
     parser.add_argument("--eval-interval", type=int, default=25)
+    parser.add_argument(
+        "--early-stopping-patience-evaluations",
+        type=int,
+        default=DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
+        help=(
+            "Stop after this many full-development evaluations without an eligible "
+            "score improvement; 0 disables early stopping"
+        ),
+    )
+    parser.add_argument(
+        "--early-stopping-minimum-improvement",
+        type=float,
+        default=0.0,
+        help="Minimum stabilized-score decrease counted as an improvement",
+    )
     parser.add_argument("--train-limit", type=int, default=0)
     parser.add_argument(
         "--train-ids-file", type=Path,
@@ -233,6 +251,15 @@ def main() -> None:
             raise FileNotFoundError(f"A0 resume directory is absent: {args.output_dir}")
     if min(args.updates, args.batch_size, args.microbatch_size, args.eval_interval) < 1:
         raise ValueError("Update and batch arguments must be positive")
+    if args.early_stopping_patience_evaluations < 0:
+        raise ValueError("Early-stopping patience cannot be negative")
+    if (
+        args.early_stopping_minimum_improvement < 0.0
+        or not math.isfinite(args.early_stopping_minimum_improvement)
+    ):
+        raise ValueError(
+            "Early-stopping minimum improvement must be finite and nonnegative"
+        )
     if args.batch_size % args.microbatch_size:
         raise ValueError("Logical batch size must be divisible by microbatch size")
 
@@ -287,6 +314,12 @@ def main() -> None:
         "logical_batch_size": args.batch_size,
         "microbatch_size": args.microbatch_size,
         "eval_interval": args.eval_interval,
+        "early_stopping_patience_evaluations": (
+            args.early_stopping_patience_evaluations
+        ),
+        "early_stopping_minimum_improvement": (
+            args.early_stopping_minimum_improvement
+        ),
         "learning_rate": args.learning_rate,
         "train_ids": train_ids,
         "full_fold_structure_pretraining_ids": full_fold_train_ids,
@@ -327,6 +360,7 @@ def main() -> None:
     best_update = 0
     best_states: dict[str, dict[str, torch.Tensor]] | None = None
     best_metrics: dict[str, dict[str, object]] | None = None
+    non_improving_evaluations = 0
     saved_initial_gradients = None
     if args.resume is not None:
         payload = torch.load(args.resume, map_location="cpu", weights_only=False)
@@ -340,6 +374,9 @@ def main() -> None:
         best_states = restored["best_states"]
         best_metrics = restored["best_metrics"]
         saved_initial_gradients = restored["initial_gradients"]
+        non_improving_evaluations = int(
+            payload.get("non_improving_evaluations", 0)
+        )
     diagnostic_indices, diagnostic_materials = response_active_diagnostic_indices(
         train_set, min(args.diagnostic_batch_size, len(train_set))
     )
@@ -378,13 +415,18 @@ def main() -> None:
         str, list[tuple[torch.cuda.Event, torch.cuda.Event]]
     ] = {task: [] for task in TASKS}
 
+    stopped_early = False
+    completed_update = start_block
     for block_start in range(start_block, args.updates, args.eval_interval):
         block_end = min(block_start + args.eval_interval, args.updates)
+        completed_update = block_end
+        block_started = time.perf_counter()
         block_indices = schedule[
             block_start * args.batch_size : block_end * args.batch_size
         ]
         block_metrics: dict[str, dict[str, object]] = {}
         train_block_metrics: dict[str, dict[str, object]] = {}
+        evaluation_seconds: dict[str, dict[str, float]] = {}
         for task in TASKS:
             tower = _tower(control, task).to(device)
             optimizer = optimizers[task]
@@ -429,16 +471,26 @@ def main() -> None:
                     end_event.record()
                     cuda_update_events[task].append((start_event, end_event))
                 train_losses[task][update] = logical_loss
+            development_evaluation_started = time.perf_counter()
             block_metrics[task] = _evaluate_task(tower, dev_loader, task)
+            development_evaluation_seconds = (
+                time.perf_counter() - development_evaluation_started
+            )
+            train_evaluation_started = time.perf_counter()
             train_block_metrics[task] = _evaluate_task(
                 tower, train_eval_loader, task
             )
+            evaluation_seconds[task] = {
+                "development_seconds": development_evaluation_seconds,
+                "train_seconds": time.perf_counter() - train_evaluation_started,
+            }
             tower.to("cpu")
             _optimizer_to(optimizer, torch.device("cpu"))
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
         selection = development_selection(block_metrics)
+        train_selection = development_selection(train_block_metrics)
         score = float(selection["raw_score"])
         row = {
             "update": block_end,
@@ -449,9 +501,31 @@ def main() -> None:
             "train_dielectric_loss": train_losses["dielectric"][block_end - 1],
             "metrics": block_metrics,
             "train_metrics": train_block_metrics,
+            "train_selection": train_selection,
+            "generalization_score_gap": score - float(train_selection["raw_score"]),
+            "evaluation_runtime": {
+                "per_task": evaluation_seconds,
+                "total_seconds": sum(
+                    sum(task_seconds.values())
+                    for task_seconds in evaluation_seconds.values()
+                ),
+                "block_wall_seconds": time.perf_counter() - block_started,
+            },
         }
+        early_stopping = development_early_stopping(
+            score=score,
+            eligible=bool(selection["eligible"]),
+            best_score=best_score,
+            non_improving_evaluations=non_improving_evaluations,
+            patience_evaluations=args.early_stopping_patience_evaluations,
+            minimum_improvement=args.early_stopping_minimum_improvement,
+        )
+        non_improving_evaluations = int(
+            early_stopping["non_improving_evaluations"]
+        )
+        row["early_stopping"] = early_stopping
         history.append(row)
-        if bool(selection["eligible"]) and score < best_score:
+        if bool(early_stopping["improved"]):
             best_score = score
             best_update = block_end
             best_metrics = copy.deepcopy(block_metrics)
@@ -478,6 +552,7 @@ def main() -> None:
                 "best_score": best_score,
                 "best_model": best_states,
                 "best_metrics": best_metrics,
+                "non_improving_evaluations": non_improving_evaluations,
                 "history": history,
                 "initial_gradients": initial_gradients,
                 "checkpoint_provenance": checkpoint_provenance,
@@ -498,7 +573,22 @@ def main() -> None:
             + "\n",
             encoding="utf-8",
         )
+        (args.output_dir / "training_curve.json").write_text(
+            json.dumps(
+                [
+                    compact
+                    for history_row in history
+                    if (compact := compact_training_curve_row(history_row)) is not None
+                ],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         print(json.dumps(row), flush=True)
+        if bool(early_stopping["should_stop"]):
+            stopped_early = True
+            break
 
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -546,7 +636,7 @@ def main() -> None:
             json.dumps({
                 "schema": 1,
                 "status": "completed_no_eligible_checkpoint",
-                "completed_update": args.updates,
+                "completed_update": completed_update,
                 "selected_update": None,
                 "frozen_validation_test_labels_read": False,
             }, indent=2) + "\n",
@@ -576,6 +666,7 @@ def main() -> None:
     torch.save(selected_payload, args.output_dir / "selected.pt")
     summary = {
         "schema": 2,
+        "status": "complete_early_stopped" if stopped_early else "complete",
         "protocol": "resource-bounded disjoint-tower A0 Stage-A adjudication",
         "architecture": "a0_independent_irreps",
         "execution": (
@@ -593,9 +684,12 @@ def main() -> None:
             str(args.train_ids_file.resolve()) if args.train_ids_file else None
         ),
         "structure_pretraining_universe_materials": len(full_fold_train_ids),
-        "optimizer_updates_per_task": args.updates,
-        "material_exposures_per_task": args.updates * args.batch_size,
-        "effective_train_passes_per_task": args.updates * args.batch_size / len(train_set),
+        "requested_optimizer_updates_per_task": args.updates,
+        "optimizer_updates_per_task": completed_update,
+        "material_exposures_per_task": completed_update * args.batch_size,
+        "effective_train_passes_per_task": (
+            completed_update * args.batch_size / len(train_set)
+        ),
         "logical_batch_size": args.batch_size,
         "microbatch_size": args.microbatch_size,
         "evaluation_batch_size": args.eval_batch_size,
@@ -605,6 +699,13 @@ def main() -> None:
             "BEC-stabilized-relative plus electronic-dielectric-stabilized-relative score"
         ),
         "selection_version": STABILIZED_SELECTION_VERSION,
+        "early_stopping": {
+            "enabled": args.early_stopping_patience_evaluations > 0,
+            "patience_evaluations": args.early_stopping_patience_evaluations,
+            "minimum_improvement": args.early_stopping_minimum_improvement,
+            "stopped_early": stopped_early,
+            "completed_update": completed_update,
+        },
         "selection_weights": {
             "electronic_stabilized_relative": 1.0,
             "born_stabilized_relative": 1.0,
@@ -658,8 +759,8 @@ def main() -> None:
     (args.output_dir / "progress.json").write_text(
         json.dumps({
             "schema": 1,
-            "status": "complete",
-            "completed_update": args.updates,
+            "status": "complete_early_stopped" if stopped_early else "complete",
+            "completed_update": completed_update,
             "selected_update": best_update,
             "frozen_validation_test_labels_read": False,
         }, indent=2) + "\n",

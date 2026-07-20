@@ -15,6 +15,90 @@ ARCHITECTURES = (
 
 STABILIZED_SELECTION_VERSION = "electrostatic_stabilized_v2"
 ELECTRONIC_AMPLITUDE_GUARDRAIL = 0.05
+DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS = 2
+
+
+def development_early_stopping(
+    *,
+    score: float,
+    eligible: bool,
+    best_score: float,
+    non_improving_evaluations: int,
+    patience_evaluations: int,
+    minimum_improvement: float,
+) -> dict[str, int | float | bool]:
+    """Advance guardrail-aware development early stopping state.
+
+    Early stopping starts only after an eligible checkpoint exists.  Thus a
+    collapsed initialization cannot terminate a run before it has had a chance
+    to cross the directional and amplitude guardrails.  A patience of zero
+    explicitly disables early stopping.
+    """
+    if patience_evaluations < 0:
+        raise ValueError("Early-stopping patience cannot be negative")
+    if minimum_improvement < 0.0 or not math.isfinite(minimum_improvement):
+        raise ValueError("Early-stopping minimum improvement must be finite and nonnegative")
+    if non_improving_evaluations < 0:
+        raise ValueError("Non-improving evaluation count cannot be negative")
+    improved = bool(
+        eligible
+        and math.isfinite(score)
+        and score < best_score - minimum_improvement
+    )
+    has_eligible_best = math.isfinite(best_score) or improved
+    if improved:
+        next_non_improving = 0
+    elif has_eligible_best:
+        next_non_improving = non_improving_evaluations + 1
+    else:
+        next_non_improving = 0
+    should_stop = bool(
+        patience_evaluations > 0
+        and has_eligible_best
+        and next_non_improving >= patience_evaluations
+    )
+    return {
+        "improved": improved,
+        "non_improving_evaluations": next_non_improving,
+        "patience_evaluations": patience_evaluations,
+        "minimum_improvement": minimum_improvement,
+        "should_stop": should_stop,
+    }
+
+
+def compact_training_curve_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract one plotting-ready row without per-material evaluation payloads."""
+    selection = row.get("development_selection")
+    if not isinstance(selection, dict):
+        return None
+    train_selection = row.get("train_selection")
+    compact = {
+        key: row[key]
+        for key in (
+            "update",
+            "train_loss",
+            "train_electronic_loss",
+            "train_born_loss",
+            "train_dielectric_loss",
+            "development_selection_score",
+            "generalization_score_gap",
+        )
+        if key in row
+    }
+    compact.update({
+        "development_eligible": bool(selection["eligible"]),
+        "development_components": selection["components"],
+        "development_guardrails": selection["guardrails"],
+        "guardrail_failures": selection["guardrail_failures"],
+        "train_selection_score": (
+            float(train_selection["raw_score"])
+            if isinstance(train_selection, dict)
+            else None
+        ),
+        "early_stopping": row.get("early_stopping"),
+        "evaluation_runtime": row.get("evaluation_runtime"),
+    })
+    return compact
 
 
 def development_selection(

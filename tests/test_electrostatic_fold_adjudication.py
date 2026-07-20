@@ -29,6 +29,8 @@ from piezojet.electrostatic_a0_fold_adjudication import (
 from tests.data_paths import gmtnet_root
 from piezojet.electrostatic_protocol import (
     STABILIZED_SELECTION_VERSION,
+    compact_training_curve_row,
+    development_early_stopping,
     development_selection,
     matched_material_schedule,
 )
@@ -464,6 +466,97 @@ def test_stabilized_selection_guardrails_cannot_be_hidden_by_scalar_score():
     assert "electronic_active_amplitude_collapse" in collapsed["guardrail_failures"]
 
 
+def test_early_stopping_waits_for_an_eligible_checkpoint_then_counts_evaluations():
+    collapsed = development_early_stopping(
+        score=1.0,
+        eligible=False,
+        best_score=float("inf"),
+        non_improving_evaluations=0,
+        patience_evaluations=2,
+        minimum_improvement=0.0,
+    )
+    assert collapsed["improved"] is False
+    assert collapsed["non_improving_evaluations"] == 0
+    assert collapsed["should_stop"] is False
+
+    first_eligible = development_early_stopping(
+        score=2.0,
+        eligible=True,
+        best_score=float("inf"),
+        non_improving_evaluations=0,
+        patience_evaluations=2,
+        minimum_improvement=0.0,
+    )
+    assert first_eligible["improved"] is True
+    assert first_eligible["non_improving_evaluations"] == 0
+
+    first_miss = development_early_stopping(
+        score=2.1,
+        eligible=True,
+        best_score=2.0,
+        non_improving_evaluations=0,
+        patience_evaluations=2,
+        minimum_improvement=0.0,
+    )
+    assert first_miss["non_improving_evaluations"] == 1
+    assert first_miss["should_stop"] is False
+    second_miss = development_early_stopping(
+        score=2.2,
+        eligible=True,
+        best_score=2.0,
+        non_improving_evaluations=1,
+        patience_evaluations=2,
+        minimum_improvement=0.0,
+    )
+    assert second_miss["non_improving_evaluations"] == 2
+    assert second_miss["should_stop"] is True
+
+
+def test_early_stopping_minimum_improvement_and_disable_switch():
+    below_delta = development_early_stopping(
+        score=0.95,
+        eligible=True,
+        best_score=1.0,
+        non_improving_evaluations=0,
+        patience_evaluations=2,
+        minimum_improvement=0.1,
+    )
+    assert below_delta["improved"] is False
+    disabled = development_early_stopping(
+        score=2.0,
+        eligible=False,
+        best_score=1.0,
+        non_improving_evaluations=99,
+        patience_evaluations=0,
+        minimum_improvement=0.0,
+    )
+    assert disabled["should_stop"] is False
+
+
+def test_compact_training_curve_row_drops_per_material_payloads():
+    row = {
+        "update": 200,
+        "train_loss": 0.5,
+        "development_selection_score": 2.0,
+        "development_selection": {
+            "eligible": True,
+            "components": {"electronic_stabilized_relative": 0.7},
+            "guardrails": {"electronic_active_cosine": 0.2},
+            "guardrail_failures": [],
+        },
+        "train_selection": {"raw_score": 1.2},
+        "generalization_score_gap": 0.8,
+        "development_metrics": {"electronic": {"per_material": [1, 2, 3]}},
+        "early_stopping": {"should_stop": False},
+    }
+    compact = compact_training_curve_row(row)
+    assert compact is not None
+    assert compact["update"] == 200
+    assert compact["train_selection_score"] == pytest.approx(1.2)
+    assert compact["generalization_score_gap"] == pytest.approx(0.8)
+    assert "development_metrics" not in compact
+
+
 def test_fold_pretraining_checkpoint_strictly_initializes_every_stage_a_encoder(tmp_path):
     """Every maintained candidate rejects encoder-layout drift."""
     config = {
@@ -615,6 +708,8 @@ def test_adjudication_plan_is_nonexecuting_fresh_and_frozen_panel_safe(tmp_path)
         "-m", "piezojet.electrostatic_a0_fold_adjudication"
     ]
     assert "--architecture" not in plan["steps"][1]["argv"]
+    assert "--early-stopping-patience-evaluations" in plan["steps"][1]["argv"]
+    assert plan["comparison_contract"]["early_stopping_patience_updates"] == 50
     assert "--train-limit" not in plan["steps"][0]["argv"]
 
 

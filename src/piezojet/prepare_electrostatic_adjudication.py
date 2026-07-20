@@ -5,10 +5,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from .data import GRAPH_CACHE_SCHEMA
-from .electrostatic_protocol import ARCHITECTURES, STABILIZED_SELECTION_VERSION
+from .electrostatic_protocol import (
+    ARCHITECTURES,
+    DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
+    STABILIZED_SELECTION_VERSION,
+)
 from .project_config import load_project_config
 from .train import _git_commit
 
@@ -34,6 +39,10 @@ def build_plan(
     updates: int,
     batch_size: int,
     eval_interval: int,
+    early_stopping_patience_evaluations: int = (
+        DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS
+    ),
+    early_stopping_minimum_improvement: float = 0.0,
     pretrain_batch_size: int = 0,
     pretrain_logical_batch_size: int = 0,
     microbatch_size: int = 0,
@@ -48,6 +57,15 @@ def build_plan(
         raise ValueError("Epochs, updates, batch size, and eval interval must be positive")
     if train_limit < 0 or development_limit < 0:
         raise ValueError("Material limits cannot be negative")
+    if early_stopping_patience_evaluations < 0:
+        raise ValueError("Early-stopping patience cannot be negative")
+    if (
+        early_stopping_minimum_improvement < 0.0
+        or not math.isfinite(early_stopping_minimum_improvement)
+    ):
+        raise ValueError(
+            "Early-stopping minimum improvement must be finite and nonnegative"
+        )
     if response_subset_file is not None and train_limit:
         raise ValueError("A fixed response subset and train_limit are mutually exclusive")
     if min(
@@ -157,6 +175,10 @@ def build_plan(
                 "--eval-batch-size", str(evaluation_batch_size or effective_microbatch),
                 "--diagnostic-batch-size", str(diagnostic_batch_size or effective_microbatch),
                 "--eval-interval", str(eval_interval),
+                "--early-stopping-patience-evaluations",
+                str(early_stopping_patience_evaluations),
+                "--early-stopping-minimum-improvement",
+                str(early_stopping_minimum_improvement),
                 *response_args,
                 "--development-limit", str(development_limit),
                 "--pretrained-encoder", str(pretrain_dir / "best_encoder.pt"),
@@ -247,6 +269,16 @@ def build_plan(
             "microbatch_size": effective_microbatch,
             "evaluation_batch_size": evaluation_batch_size or effective_microbatch,
             "diagnostic_batch_size": diagnostic_batch_size or effective_microbatch,
+            "evaluation_interval_updates": eval_interval,
+            "early_stopping_patience_evaluations": (
+                early_stopping_patience_evaluations
+            ),
+            "early_stopping_patience_updates": (
+                early_stopping_patience_evaluations * eval_interval
+            ),
+            "early_stopping_minimum_improvement": (
+                early_stopping_minimum_improvement
+            ),
         },
         "steps": [
             {"name": "fold_train_only_structure_pretraining", "argv": pretrain_command},
@@ -288,6 +320,14 @@ def main() -> None:
     parser.add_argument("--diagnostic-batch-size", type=int, default=0)
     parser.add_argument("--eval-interval", type=int, default=25)
     parser.add_argument(
+        "--early-stopping-patience-evaluations",
+        type=int,
+        default=DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
+    )
+    parser.add_argument(
+        "--early-stopping-minimum-improvement", type=float, default=0.0
+    )
+    parser.add_argument(
         "--architectures",
         nargs="+",
         choices=ARCHITECTURES,
@@ -313,6 +353,12 @@ def main() -> None:
         diagnostic_batch_size=args.diagnostic_batch_size,
         response_subset_file=args.response_subset_file,
         eval_interval=args.eval_interval,
+        early_stopping_patience_evaluations=(
+            args.early_stopping_patience_evaluations
+        ),
+        early_stopping_minimum_improvement=(
+            args.early_stopping_minimum_improvement
+        ),
         architectures=tuple(args.architectures),
         code_commit=args.code_commit,
     )

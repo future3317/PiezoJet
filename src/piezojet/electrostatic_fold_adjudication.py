@@ -33,7 +33,10 @@ from .electronic_capacity import (
 )
 from .electrostatic_protocol import (
     ARCHITECTURES,
+    DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
     STABILIZED_SELECTION_VERSION,
+    compact_training_curve_row,
+    development_early_stopping,
     development_selection,
     matched_material_schedule,
 )
@@ -378,7 +381,7 @@ def _evaluate(model, loader, architecture: str):
     offset = 0
     device = next(model.parameters()).device
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in loader:
             batch = batch.to(device)
             prediction = _coefficients(model, batch, architecture, create_graph=False)
@@ -431,6 +434,21 @@ def main() -> None:
         help="Graphs in the fixed gradient diagnostic; 0 uses --microbatch-size",
     )
     parser.add_argument("--eval-interval", type=int, default=25)
+    parser.add_argument(
+        "--early-stopping-patience-evaluations",
+        type=int,
+        default=DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
+        help=(
+            "Stop after this many full-development evaluations without an eligible "
+            "score improvement; 0 disables early stopping"
+        ),
+    )
+    parser.add_argument(
+        "--early-stopping-minimum-improvement",
+        type=float,
+        default=0.0,
+        help="Minimum stabilized-score decrease counted as an improvement",
+    )
     parser.add_argument("--train-limit", type=int, default=0)
     parser.add_argument(
         "--train-ids-file", type=Path,
@@ -455,6 +473,15 @@ def main() -> None:
         raise ValueError("updates, batch size, and eval interval must be positive")
     if args.microbatch_size < 0 or args.eval_batch_size < 0 or args.diagnostic_batch_size < 0:
         raise ValueError("microbatch and evaluation batch sizes cannot be negative")
+    if args.early_stopping_patience_evaluations < 0:
+        raise ValueError("Early-stopping patience cannot be negative")
+    if (
+        args.early_stopping_minimum_improvement < 0.0
+        or not math.isfinite(args.early_stopping_minimum_improvement)
+    ):
+        raise ValueError(
+            "Early-stopping minimum improvement must be finite and nonnegative"
+        )
     microbatch_size = args.microbatch_size or args.batch_size
     evaluation_batch_size = args.eval_batch_size or microbatch_size
     diagnostic_batch_size = args.diagnostic_batch_size or microbatch_size
@@ -551,6 +578,13 @@ def main() -> None:
         "updates": args.updates,
         "logical_batch_size": args.batch_size,
         "microbatch_size": microbatch_size,
+        "eval_interval": args.eval_interval,
+        "early_stopping_patience_evaluations": (
+            args.early_stopping_patience_evaluations
+        ),
+        "early_stopping_minimum_improvement": (
+            args.early_stopping_minimum_improvement
+        ),
         "learning_rate": args.learning_rate,
         "train_ids": train_ids,
         "full_fold_structure_pretraining_ids": full_fold_train_ids,
@@ -561,6 +595,7 @@ def main() -> None:
     best_score = math.inf
     best_state = None
     best_update = None
+    non_improving_evaluations = 0
     saved_initial_gradient = None
     if args.resume is not None:
         payload = torch.load(args.resume, map_location=device, weights_only=False)
@@ -582,6 +617,9 @@ def main() -> None:
             int(saved_best_update) if saved_best_update is not None else None
         )
         saved_initial_gradient = payload["initial_gradient"]
+        non_improving_evaluations = int(
+            payload.get("non_improving_evaluations", 0)
+        )
     scheduled_tail = schedule[(start_update - 1) * args.batch_size :]
     train_loader = DataLoader(
         Subset(train_set, scheduled_tail),
@@ -609,9 +647,11 @@ def main() -> None:
     started = time.perf_counter()
     counted_flops_per_update: int | None = None
     cuda_update_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+    stopped_early = False
+    completed_update = start_update - 1
     for update in range(start_update, args.updates + 1):
+        completed_update = update
         batch = next(iterator)
-        batch = batch.to(device)
         optimizer.zero_grad(set_to_none=True)
         logical_electronic = 0.0
         logical_born = 0.0
@@ -659,15 +699,43 @@ def main() -> None:
             "train_dielectric_loss": logical_dielectric,
         }
         if update % args.eval_interval == 0 or update == args.updates:
+            evaluation_started = time.perf_counter()
             metrics = _evaluate(model, dev_loader, args.architecture)
+            development_evaluation_seconds = time.perf_counter() - evaluation_started
+            train_evaluation_started = time.perf_counter()
             train_metrics = _evaluate(model, train_eval_loader, args.architecture)
+            train_evaluation_seconds = time.perf_counter() - train_evaluation_started
             selection = development_selection(metrics)
+            train_selection = development_selection(train_metrics)
             score = float(selection["raw_score"])
             row["development_selection_score"] = score
             row["development_selection"] = selection
             row["development_metrics"] = metrics
             row["train_metrics"] = train_metrics
-            if bool(selection["eligible"]) and score < best_score:
+            row["train_selection"] = train_selection
+            row["generalization_score_gap"] = score - float(
+                train_selection["raw_score"]
+            )
+            row["evaluation_runtime"] = {
+                "development_seconds": development_evaluation_seconds,
+                "train_seconds": train_evaluation_seconds,
+                "total_seconds": (
+                    development_evaluation_seconds + train_evaluation_seconds
+                ),
+            }
+            early_stopping = development_early_stopping(
+                score=score,
+                eligible=bool(selection["eligible"]),
+                best_score=best_score,
+                non_improving_evaluations=non_improving_evaluations,
+                patience_evaluations=args.early_stopping_patience_evaluations,
+                minimum_improvement=args.early_stopping_minimum_improvement,
+            )
+            non_improving_evaluations = int(
+                early_stopping["non_improving_evaluations"]
+            )
+            row["early_stopping"] = early_stopping
+            if bool(early_stopping["improved"]):
                 best_score, best_update = score, update
                 best_state = {
                     name: value.detach().cpu().clone()
@@ -688,6 +756,7 @@ def main() -> None:
                 "best_score": best_score,
                 "best_update": best_update,
                 "best_model": best_state,
+                "non_improving_evaluations": non_improving_evaluations,
                 "initial_gradient": initial_gradient,
                 "development_metrics": metrics,
                 "train_metrics": train_metrics,
@@ -708,14 +777,32 @@ def main() -> None:
                     "completed_update": update,
                     "best_update": best_update,
                     "best_score": best_score,
+                    "early_stopping": early_stopping,
                     "selection_version": STABILIZED_SELECTION_VERSION,
                     "frozen_validation_test_labels_read": False,
                 }, indent=2) + "\n",
                 encoding="utf-8",
             )
+            curve_history = [*history, row]
+            (args.output_dir / "training_curve.json").write_text(
+                json.dumps(
+                    [
+                        compact
+                        for history_row in curve_history
+                        if (compact := compact_training_curve_row(history_row))
+                        is not None
+                    ],
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         history.append(row)
         if update == 1 or update % args.eval_interval == 0:
             print(json.dumps(row))
+        if row.get("early_stopping", {}).get("should_stop", False):
+            stopped_early = True
+            break
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     seconds = time.perf_counter() - started
@@ -759,7 +846,7 @@ def main() -> None:
             json.dumps({
                 "schema": 1,
                 "status": "completed_no_eligible_checkpoint",
-                "completed_update": args.updates,
+                "completed_update": completed_update,
                 "selected_update": None,
                 "frozen_validation_test_labels_read": False,
             }, indent=2) + "\n",
@@ -781,6 +868,7 @@ def main() -> None:
     }, args.output_dir / "selected.pt")
     summary = {
         "schema": 2,
+        "status": "complete_early_stopped" if stopped_early else "complete",
         "protocol": (
             "formula-disjoint three-task first-order electrostatic-jet "
             "development adjudication"
@@ -805,9 +893,10 @@ def main() -> None:
             else "random response parameters; no samples32 checkpoint"
         ),
         "structure_pretraining": pretraining,
-        "optimizer_updates": args.updates,
-        "material_exposures": args.updates * args.batch_size,
-        "effective_train_passes": args.updates * args.batch_size / len(train_set),
+        "requested_optimizer_updates": args.updates,
+        "optimizer_updates": completed_update,
+        "material_exposures": completed_update * args.batch_size,
+        "effective_train_passes": completed_update * args.batch_size / len(train_set),
         "logical_batch_size": args.batch_size,
         "microbatch_size": microbatch_size,
         "microbatches_per_update": args.batch_size // microbatch_size,
@@ -820,6 +909,13 @@ def main() -> None:
             "electronic-dielectric-relative score"
         ),
         "selection_version": STABILIZED_SELECTION_VERSION,
+        "early_stopping": {
+            "enabled": args.early_stopping_patience_evaluations > 0,
+            "patience_evaluations": args.early_stopping_patience_evaluations,
+            "minimum_improvement": args.early_stopping_minimum_improvement,
+            "stopped_early": stopped_early,
+            "completed_update": completed_update,
+        },
         "selection_weights": {
             "electronic_stabilized_relative": 1.0,
             "born_stabilized_relative": 1.0,
@@ -840,7 +936,7 @@ def main() -> None:
                 "torch-dispatch-supported forward, backward, and AdamW operations "
                 "for one measured logical update"
             ),
-            "updates_per_second": args.updates / seconds,
+            "updates_per_second": completed_update / seconds,
             "cuda_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
             "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else None,
             "jacobian_execution": "direct first-order coefficient forward",
@@ -865,8 +961,8 @@ def main() -> None:
     (args.output_dir / "progress.json").write_text(
         json.dumps({
             "schema": 1,
-            "status": "complete",
-            "completed_update": args.updates,
+            "status": "complete_early_stopped" if stopped_early else "complete",
+            "completed_update": completed_update,
             "selected_update": best_update,
             "frozen_validation_test_labels_read": False,
         }, indent=2) + "\n",
