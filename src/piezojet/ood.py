@@ -7,10 +7,10 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-import spglib
 from pymatgen.core import Element
 
 from .data import formula as reduced_formula, load_gmtnet_records
+from .spglib_compat import symmetry_dataset_or_none
 
 
 def chemical_system(record) -> str:
@@ -20,8 +20,8 @@ def chemical_system(record) -> str:
 def prototype_key(record) -> str:
     atoms = record["atoms"]
     cell = (atoms["lattice_mat"], atoms["coords"], [Element(item).Z for item in atoms["elements"]])
-    symmetry = spglib.get_symmetry_dataset(cell, symprec=1e-5)
-    number = int(symmetry["number"]) if symmetry is not None else 0
+    symmetry = symmetry_dataset_or_none(cell, symprec=1e-5)
+    number = int(symmetry.number) if symmetry is not None else 0
     return f"{reduced_formula(record)}|sg{number}|n{len(atoms['elements'])}"
 
 

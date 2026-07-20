@@ -12,7 +12,6 @@ from typing import Any
 import numpy as np
 from pymatgen.core import Composition, Element
 from scipy.stats import ks_2samp
-import spglib
 import torch
 
 from .build_electrostatic_development_folds import electrostatic_fold_train_ids
@@ -20,6 +19,7 @@ from .checkpoint_provenance import file_sha256
 from .data import PiezoDataset, deterministic_subset, graph_cache_key, load_gmtnet_records
 from .electrostatic_subset import SUBSET_SCHEMA, material_id_sha256
 from .project_config import load_project_config
+from .spglib_compat import symmetry_dataset_or_none
 
 
 def _crystal_system(space_group: int) -> str:
@@ -40,7 +40,7 @@ def _structure_metadata(record: dict[str, Any]) -> tuple[str, str, tuple[str, ..
     elements = tuple(sorted(set(map(str, atoms["elements"]))))
     reduced_formula = Composition(Counter(map(str, atoms["elements"]))).reduced_formula
     numbers = [Element(symbol).Z for symbol in atoms["elements"]]
-    dataset = spglib.get_symmetry_dataset(
+    dataset = symmetry_dataset_or_none(
         (np.asarray(atoms["lattice_mat"]), np.asarray(atoms["coords"]), numbers),
         symprec=1e-3,
     )

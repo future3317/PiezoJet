@@ -15,11 +15,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
-import spglib
-
 from .data import load_gmtnet_records
 from .ood import reduced_formula
 from .project_config import load_project_config
+from .spglib_compat import symmetry_dataset_or_none
 
 
 def _sha256(path: Path) -> str:
@@ -32,7 +31,7 @@ def _sha256(path: Path) -> str:
 
 def _crystal_system(record: dict[str, object]) -> str:
     atoms = record["atoms"]
-    dataset = spglib.get_symmetry_dataset(
+    dataset = symmetry_dataset_or_none(
         (atoms["lattice_mat"], atoms["coords"], [
             # Atomic numbers are needed only to distinguish species orbits;
             # stable enumeration by element symbol is sufficient here.

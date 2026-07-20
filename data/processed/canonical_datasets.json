@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "policy": "One canonical role per maintained workflow. Versioned directories are immutable provenance, not runtime fallbacks.",
+  "physical_data_root": "E:\\DATA\\PiezoJet",
   "roles": {
     "gmtnet_source": "E:\\DATA\\PiezoJet\\raw\\gmtnet",
     "jarvis_dfpt": "E:\\DATA\\PiezoJet\\processed\\jarvis_dfpt_v9_full_public",

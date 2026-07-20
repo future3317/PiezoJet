@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
 
 import yaml
@@ -18,6 +19,8 @@ _ROLE_TO_CONFIG = {
     "elastic_auxiliary": "elastic_targets_path",
 }
 
+_DATA_ROOT_ENV = "PIEZOJET_DATA_ROOT"
+
 
 def _manifest_path(value: str | Path, config_path: Path) -> Path:
     candidate = Path(value)
@@ -27,6 +30,39 @@ def _manifest_path(value: str | Path, config_path: Path) -> Path:
     if project_relative.is_file():
         return project_relative
     return config_path.parent / candidate
+
+
+def _rebase_physical_roles(
+    roles: Mapping[str, Any], payload: Mapping[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    """Rebase physical data roles without changing repository-local roles."""
+
+    override = os.environ.get(_DATA_ROOT_ENV)
+    if override is None:
+        return dict(roles), None
+    override_path = Path(override).expanduser()
+    if not override_path.is_absolute():
+        raise ValueError(f"{_DATA_ROOT_ENV} must be an absolute path: {override}")
+    source_root_value = payload.get("physical_data_root")
+    if not isinstance(source_root_value, str):
+        raise ValueError(
+            "Canonical data manifest must declare physical_data_root before "
+            f"{_DATA_ROOT_ENV} can be used"
+        )
+    path_type = PureWindowsPath if PureWindowsPath(source_root_value).drive else PurePosixPath
+    source_root = path_type(source_root_value)
+    rebased = dict(roles)
+    for role, value in roles.items():
+        if not isinstance(value, str):
+            continue
+        candidate = path_type(value)
+        try:
+            relative = candidate.relative_to(source_root)
+        except ValueError:
+            # Repository-local split/manifests remain relative to the checkout.
+            continue
+        rebased[role] = str(override_path.joinpath(*relative.parts))
+    return rebased, str(override_path)
 
 
 def apply_canonical_data_roles(
@@ -56,6 +92,7 @@ def apply_canonical_data_roles(
         raise ValueError(
             f"Canonical data manifest lacks required roles: {', '.join(missing)}"
         )
+    roles, data_root_override = _rebase_physical_roles(roles, payload)
     for role, key in _ROLE_TO_CONFIG.items():
         resolved[key] = str(roles[role])
     # Resolved run configs contain explicit, auditable paths and must remain
@@ -64,6 +101,8 @@ def apply_canonical_data_roles(
     resolved["canonical_data_manifest_path"] = str(path)
     resolved["canonical_data_schema"] = int(payload["schema"])
     resolved["canonical_data_coverage"] = payload.get("coverage", {})
+    if data_root_override is not None:
+        resolved["canonical_data_root_override"] = data_root_override
     return resolved
 
 

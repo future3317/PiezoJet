@@ -126,6 +126,14 @@ strictly source-tagged Materials Project auxiliary table.
 is the single machine-readable role map. Versioned directories are immutable
 provenance and are never searched as fallbacks.
 
+On Linux or another host, set the absolute `PIEZOJET_DATA_ROOT` environment
+variable (for example `/home/workspace/lrh/DATA/PiezoJet`). The strict loader
+then rebases only physical roles beneath the manifest's declared data root;
+repository-local split and manifest paths remain in the checkout. This keeps
+all dataset payloads in the shared DATA tree without symlinks or copies inside
+the repository, while the resolved run configuration still records the exact
+external paths.
+
 `config.yaml` names only that manifest. All maintained config consumers call
 one strict loader, which rejects a simultaneous version-specific dataset path.
 The production factor architecture likewise has one accepted identifier,
