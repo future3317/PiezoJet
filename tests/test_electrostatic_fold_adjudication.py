@@ -826,6 +826,36 @@ def test_stage_a_plan_separates_full_fold_pretraining_from_fixed_response_subset
     )
 
 
+def test_stage_a_plan_reuses_audited_pretrain_without_planning_recompute(tmp_path):
+    folds = tmp_path / "folds.json"
+    folds.write_text(json.dumps({
+        "frozen_validation_test_labels_read": False,
+        "folds": [{"fold": 0, "development": ["dev"]}],
+    }), encoding="utf-8")
+    checkpoint = tmp_path / "best_encoder.pt"
+    checkpoint.write_bytes(b"audited-checkpoint-placeholder")
+    plan = build_plan(
+        folds_path=folds,
+        config_path=tmp_path / "config.yaml",
+        cohort_root=tmp_path / "cohort",
+        fold_index=0,
+        seed=42,
+        train_limit=100,
+        development_limit=100,
+        pretrain_epochs=20,
+        updates=100,
+        batch_size=4,
+        eval_interval=25,
+        pretrained_encoder=checkpoint,
+    )
+    assert len(plan["steps"]) == 4
+    assert all(step.get("name") != "fold_train_only_structure_pretraining" for step in plan["steps"])
+    assert plan["data_boundary"]["structure_pretraining_reused"] is True
+    for step in plan["steps"][:3]:
+        argv = step["argv"]
+        assert argv[argv.index("--pretrained-encoder") + 1] == str(checkpoint)
+
+
 def test_stage_a_checkpoint_provenance_binds_fold_ids_and_source(tmp_path):
     source = tmp_path / "folds.json"
     source.write_text("{}", encoding="utf-8")

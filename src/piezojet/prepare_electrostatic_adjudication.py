@@ -49,6 +49,7 @@ def build_plan(
     evaluation_batch_size: int = 0,
     diagnostic_batch_size: int = 0,
     response_subset_file: Path | None = None,
+    pretrained_encoder: Path | None = None,
     architectures: tuple[str, ...] = ARCHITECTURES,
     code_commit: str | None = None,
 ) -> dict[str, object]:
@@ -116,12 +117,24 @@ def build_plan(
         subset = json.loads(response_subset_file.read_text(encoding="utf-8-sig"))
         response_size = int(subset["materials"])
     pretrain_dir = cohort_root / f"stage_a_full_fold{fold_index}_seed{seed}_pretrain"
+    if pretrained_encoder is not None and not pretrained_encoder.is_file():
+        raise FileNotFoundError(
+            f"Reused structure-pretraining checkpoint is absent: {pretrained_encoder}"
+        )
+    pretrain_checkpoint = (
+        pretrained_encoder
+        if pretrained_encoder is not None
+        else pretrain_dir / "best_encoder.pt"
+    )
     candidate_dirs = {
         architecture: cohort_root
         / f"stage_a_n{response_size}_fold{fold_index}_{architecture}_seed{seed}"
         for architecture in architectures
     }
-    all_output_dirs = [pretrain_dir, *candidate_dirs.values()]
+    all_output_dirs = [
+        *([] if pretrained_encoder is not None else [pretrain_dir]),
+        *candidate_dirs.values(),
+    ]
     existing = [str(path) for path in all_output_dirs if path.exists()]
     if existing:
         raise FileExistsError(
@@ -181,7 +194,7 @@ def build_plan(
                 str(early_stopping_minimum_improvement),
                 *response_args,
                 "--development-limit", str(development_limit),
-                "--pretrained-encoder", str(pretrain_dir / "best_encoder.pt"),
+                "--pretrained-encoder", str(pretrain_checkpoint),
                 "--seed", str(seed),
                 "--device", "cuda",
                 "--code-commit", pinned_code_commit,
@@ -222,6 +235,8 @@ def build_plan(
             "frozen_validation_test_labels_read": False,
             "samples32_checkpoint_used": False,
             "structure_pretraining_scope": "complete fold-train structure universe",
+            "structure_pretraining_checkpoint": str(pretrain_checkpoint.resolve()),
+            "structure_pretraining_reused": pretrained_encoder is not None,
             "structure_pretraining_materials": fold.get("train_materials"),
             "structure_pretraining_response_labels": 0,
             "development_formula_overlap": 0,
@@ -281,7 +296,11 @@ def build_plan(
             ),
         },
         "steps": [
-            {"name": "fold_train_only_structure_pretraining", "argv": pretrain_command},
+            *(
+                []
+                if pretrained_encoder is not None
+                else [{"name": "fold_train_only_structure_pretraining", "argv": pretrain_command}]
+            ),
             *candidate_commands,
             {
                 "name": "register_and_compare_after_all_candidates_finish",
@@ -309,6 +328,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-limit", type=int, default=100)
     parser.add_argument("--response-subset-file", type=Path)
+    parser.add_argument(
+        "--pretrained-encoder",
+        type=Path,
+        help="Audited existing fold-only checkpoint; omits redundant pretraining",
+    )
     parser.add_argument("--development-limit", type=int, default=100)
     parser.add_argument("--pretrain-epochs", type=int, default=20)
     parser.add_argument("--updates", type=int, default=100)
@@ -352,6 +376,7 @@ def main() -> None:
         evaluation_batch_size=args.evaluation_batch_size,
         diagnostic_batch_size=args.diagnostic_batch_size,
         response_subset_file=args.response_subset_file,
+        pretrained_encoder=args.pretrained_encoder,
         eval_interval=args.eval_interval,
         early_stopping_patience_evaluations=(
             args.early_stopping_patience_evaluations
