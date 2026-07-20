@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Mapping, NamedTuple
 
-import math
-
 import torch
 from e3nn import o3
 from e3nn.nn import Gate
@@ -926,6 +924,23 @@ class _CrystalGeometryCache(NamedTuple):
     local_kernel_sum: torch.Tensor
 
 
+def _batch_graph_count(batch, batch_index: torch.Tensor) -> int:
+    """Read the PyG batch size without synchronizing a CUDA index tensor."""
+    try:
+        graphs = batch.num_graphs
+    except AttributeError:
+        graphs = None
+    if graphs is not None:
+        return int(graphs)
+    ptr = getattr(batch, "ptr", None)
+    if isinstance(ptr, torch.Tensor):
+        return int(ptr.shape[0] - 1)
+    cell = getattr(batch, "cell", None)
+    if isinstance(cell, torch.Tensor) and cell.ndim == 3:
+        return int(cell.shape[0])
+    return int(batch_index.max()) + 1
+
+
 class CrystalGlobalContext(nn.Module):
     """Invariant context plus a cell-basis-invariant tensorial response operator.
 
@@ -990,19 +1005,13 @@ class CrystalGlobalContext(nn.Module):
             raise ValueError(f"Expected graph cells [{graphs},3,3], got {tuple(cell.shape)}")
         return cell
 
-    def _physical_shell(self, cell: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Enumerate every reciprocal vector inside the scaled physical cutoff.
-
-        For ``B=2πL^{-T}V^(1/3)``, ``|hB| >= sigma_min(B)|h|`` supplies a
-        finite, representation-independent integer bound.  Filtering by the
-        physical norm then makes the returned shell exactly invariant under
-        any unimodular integer change of lattice basis (up to roundoff).
-        """
-        dtype, device = cell.dtype, cell.device
-        volume = torch.linalg.det(cell).abs().clamp_min(torch.finfo(dtype).eps)
-        reciprocal_basis = 2.0 * torch.pi * torch.linalg.inv(cell).transpose(-1, -2) * volume.pow(1.0 / 3.0)
-        smallest = torch.linalg.svdvals(reciprocal_basis).amin().clamp_min(torch.finfo(dtype).eps)
-        limit = max(1, int(math.ceil(self.reciprocal_cutoff / float(smallest.detach().cpu()))))
+    def _physical_shell_from_basis(
+        self,
+        reciprocal_basis: torch.Tensor,
+        limit: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Filter one precomputed reciprocal basis by the physical cutoff."""
+        dtype, device = reciprocal_basis.dtype, reciprocal_basis.device
         values = torch.arange(-limit, limit + 1, dtype=dtype, device=device)
         integer_indices = torch.stack(torch.meshgrid(values, values, values, indexing="ij"), dim=-1).reshape(-1, 3)
         scaled_reciprocal = integer_indices @ reciprocal_basis
@@ -1056,24 +1065,50 @@ class CrystalGlobalContext(nn.Module):
         ):
             return self._geometry_cache
 
-        graphs = int(batch_index.max()) + 1
+        graphs = _batch_graph_count(batch, batch_index)
         dtype, device = batch.pos.dtype, batch.pos.device
-        counts = torch.bincount(batch_index, minlength=graphs).to(dtype)
+        node_counts = torch.bincount(batch_index, minlength=graphs)
+        counts = node_counts.to(dtype)
         cell = self._as_cells(getattr(batch, "cell", None), graphs)
         frac = getattr(batch, "frac", None)
         lattice = torch.zeros(graphs, 2, dtype=dtype, device=device)
         shells: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
         max_shell = 0
+        reciprocal_basis = None
+        limits = None
         if cell is not None:
             volume = torch.linalg.det(cell).abs().clamp_min(torch.finfo(dtype).eps)
             lattice = torch.stack((volume.log(), (counts / volume).log()), dim=-1)
             if frac is not None:
-                for graph_index in range(graphs):
-                    shell = self._physical_shell(cell[graph_index])
-                    shells.append(shell)
-                    max_shell = max(max_shell, int(shell[0].shape[0]))
+                reciprocal_basis = (
+                    2.0
+                    * torch.pi
+                    * torch.linalg.inv(cell).transpose(-1, -2)
+                    * volume.pow(1.0 / 3.0)[:, None, None]
+                )
+                smallest = torch.linalg.svdvals(reciprocal_basis).amin(dim=-1)
+                smallest = smallest.clamp_min(torch.finfo(dtype).eps)
+                limits = torch.ceil(self.reciprocal_cutoff / smallest)
+                limits = limits.clamp_min(1).to(dtype=torch.long)
 
-        max_nodes = int(torch.bincount(batch_index, minlength=graphs).max())
+        # Transfer all ragged integer metadata once.  Per-graph ``int(tensor)``
+        # conversions serialize CUDA execution and dominated small-batch runs.
+        metadata = (
+            node_counts[:, None]
+            if limits is None
+            else torch.stack((node_counts, limits), dim=-1)
+        )
+        metadata_rows = metadata.detach().cpu().tolist()
+        node_count_values = [int(row[0]) for row in metadata_rows]
+        if reciprocal_basis is not None:
+            for graph_index, row in enumerate(metadata_rows):
+                shell = self._physical_shell_from_basis(
+                    reciprocal_basis[graph_index], int(row[1])
+                )
+                shells.append(shell)
+                max_shell = max(max_shell, int(shell[0].shape[0]))
+
+        max_nodes = max(node_count_values)
         cosine = torch.zeros(graphs, max_nodes, max_shell, dtype=dtype, device=device)
         sine = torch.zeros_like(cosine)
         radial = torch.zeros(
@@ -1087,7 +1122,7 @@ class CrystalGlobalContext(nn.Module):
                 if shell_size == 0:
                     continue
                 node_mask = batch_index == graph_index
-                node_count = int(node_mask.sum())
+                node_count = node_count_values[graph_index]
                 phase = 2.0 * torch.pi * (frac[node_mask] @ indices.transpose(0, 1))
                 cosine[graph_index, :node_count, :shell_size] = torch.cos(phase)
                 sine[graph_index, :node_count, :shell_size] = torch.sin(phase)
@@ -1128,7 +1163,7 @@ class CrystalGlobalContext(nn.Module):
         *,
         return_operator: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        graphs = int(batch_index.max()) + 1
+        graphs = _batch_graph_count(batch, batch_index)
         dtype, device = batch.pos.dtype, batch.pos.device
         geometry = self._fixed_geometry(batch, batch_index)
         counts = geometry.counts
@@ -1232,8 +1267,13 @@ class EquivariantGlobalAttention(nn.Module):
         self.scale = attention_dim**-0.5
         self.residual_gate = nn.Parameter(torch.tensor(0.1))
 
-    def forward(self, node_features: torch.Tensor, batch_index: torch.Tensor) -> torch.Tensor:
-        graphs = int(batch_index.max()) + 1
+    def forward(
+        self,
+        node_features: torch.Tensor,
+        batch_index: torch.Tensor,
+        graphs: int | None = None,
+    ) -> torch.Tensor:
+        graphs = int(graphs) if graphs is not None else int(batch_index.max()) + 1
         queries, mask = to_dense_batch(
             self.query(node_features), batch_index, batch_size=graphs
         )
@@ -1375,7 +1415,8 @@ class ElectromechanicalJetHead(nn.Module):
         self, batch
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         node_features = self.encoder(batch)
-        node_features = self.global_attention(node_features, batch.batch)
+        graphs = _batch_graph_count(batch, batch.batch)
+        node_features = self.global_attention(node_features, batch.batch, graphs)
         local_polar = self.local_polar(node_features)
         context = self.global_context(batch, batch.batch, local_polar)
         graphs = context.shape[0]
@@ -1671,7 +1712,8 @@ class PolarizationStateNetwork(nn.Module):
 
     def forward(self, batch) -> torch.Tensor:
         node_features = self.encoder(batch)
-        node_features = self.global_attention(node_features, batch.batch)
+        graphs = _batch_graph_count(batch, batch.batch)
+        node_features = self.global_attention(node_features, batch.batch, graphs)
         local_polar = self.local_polar(node_features)
         context = self.global_context(batch, batch.batch, local_polar)
         graphs = context.shape[0]

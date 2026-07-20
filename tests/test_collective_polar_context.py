@@ -1,9 +1,11 @@
+import math
+
 import pytest
 import torch
 from torch_geometric.loader import DataLoader
 
 from piezojet.data import load_gmtnet_records, record_to_graph
-from piezojet.model import PiezoJet
+from piezojet.model import CrystalGlobalContext, PiezoJet
 from piezojet.tensor_ops import rotate_piezo
 from tests.data_paths import gmtnet_root
 
@@ -30,6 +32,58 @@ def _unimodular_cell_representation(graph, transform: torch.Tensor):
     # Cartesian positions and PBC edge shifts describe the same infinite
     # structure and therefore intentionally remain unchanged.
     return transformed
+
+
+def _scalar_physical_shell(cell: torch.Tensor, cutoff: float):
+    volume = torch.linalg.det(cell).abs().clamp_min(torch.finfo(cell.dtype).eps)
+    basis = (
+        2.0
+        * torch.pi
+        * torch.linalg.inv(cell).transpose(-1, -2)
+        * volume.pow(1.0 / 3.0)
+    )
+    smallest = torch.linalg.svdvals(basis).amin().clamp_min(
+        torch.finfo(cell.dtype).eps
+    )
+    limit = max(1, math.ceil(cutoff / float(smallest)))
+    values = torch.arange(-limit, limit + 1, dtype=cell.dtype)
+    indices = torch.stack(
+        torch.meshgrid(values, values, values, indexing="ij"), dim=-1
+    ).reshape(-1, 3)
+    reciprocal = indices @ basis
+    norm = torch.linalg.vector_norm(reciprocal, dim=-1)
+    keep = (norm > torch.finfo(cell.dtype).eps) & (norm <= cutoff)
+    return indices[keep], reciprocal[keep] / norm[keep, None], norm[keep]
+
+
+def test_batched_reciprocal_bounds_match_scalar_physical_shell_reference():
+    cells = torch.tensor([
+        [[3.1, 0.2, 0.0], [0.0, 4.2, 0.3], [0.1, 0.0, 5.3]],
+        [[4.0, 1.1, 0.2], [0.0, 3.4, 0.5], [0.0, 0.0, 6.2]],
+    ])
+    cutoff = 4.0
+    context = CrystalGlobalContext(
+        context_dim=8,
+        spectral_channels=2,
+        spectral_shells=2,
+        polar_fluctuation_shells=2,
+        reciprocal_cutoff=cutoff,
+    )
+    volume = torch.linalg.det(cells).abs()
+    basis = (
+        2.0
+        * torch.pi
+        * torch.linalg.inv(cells).transpose(-1, -2)
+        * volume.pow(1.0 / 3.0)[:, None, None]
+    )
+    smallest = torch.linalg.svdvals(basis).amin(dim=-1)
+    limits = torch.ceil(cutoff / smallest).clamp_min(1).to(torch.long)
+    for index, limit in enumerate(limits.tolist()):
+        observed = context._physical_shell_from_basis(basis[index], limit)
+        expected = _scalar_physical_shell(cells[index], cutoff)
+        assert torch.equal(observed[0], expected[0])
+        assert torch.allclose(observed[1], expected[1], atol=1e-7, rtol=1e-7)
+        assert torch.allclose(observed[2], expected[2], atol=1e-7, rtol=1e-7)
 
 
 def test_tensorial_collective_operator_preserves_rotation_equivariance():
