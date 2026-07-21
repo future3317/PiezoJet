@@ -276,6 +276,25 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             ),
             split="electrostatic_development_folds_v2 fold0; frozen val10/test20 unread",
         )
+    elif name == "vnext_stage_a_hierarchical_fairness_v1":
+        policy.update(
+            family="electrostatic_generator_formula_disjoint_adjudication",
+            archival_status="current",
+            execution_status="planned_not_executed",
+            result_disposition="no_performance_result",
+            convention_epoch="v12_electrostatic_a0pm_a16",
+            comparability_group="fold0_n800_development988_hierarchical_fairness_plan",
+            paper_use="protocol_only",
+            interpretation_boundary=(
+                "Non-executing A0-full/A0-PM/A1/A1.6 capacity-and-sharing plan. "
+                "A1.5 is retained but not rerun; frozen val10/test20 are unread "
+                "and no performance result or production promotion exists."
+            ),
+            split=(
+                "electrostatic_development_folds_v2 fold0; fixed balanced N=800 "
+                "response train panel; full development988; frozen val10/test20 unread"
+            ),
+        )
     elif name == "global_l3_joint_optimizer_adjudication_v1":
         policy.update(
             family="global_l3_joint_gradient_adjudication",

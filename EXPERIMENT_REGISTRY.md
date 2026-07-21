@@ -4,7 +4,7 @@ This is the human-readable index of every top-level cohort under `outputs/`. The
 
 Negative, failed, interrupted, partial, running, and historical runs are intentionally retained. A directory's existence never implies a valid performance result.
 
-Registered top-level cohorts: **149**.
+Registered top-level cohorts: **150**.
 
 | Cohort | Family | Execution | Result | Convention | Paper use | Runs (complete/partial) |
 |---|---|---|---|---|---|---:|
@@ -157,6 +157,7 @@ Registered top-level cohorts: **149**.
 | `vnext_stage3_electrostatic_adjudication_v1` | three_task_electrostatic_jet_formula_disjoint_adjudication | partial_with_invalid_checkpoint_selection | retained_execution_evidence_not_architecture_result | v12_a0_a1_a15_bec_piezo_dielectric | appendix_after_registered_candidates_complete | 3 (2/1) |
 | `vnext_stage3_guardrailed_adjudication_v3` | guardrailed_three_task_electrostatic_formula_disjoint_adjudication | planned_not_executed | frozen_protocol_only | v14_guardrailed_selection_logical_pretraining_batch | protocol_only_until_candidates_complete | 6 (2/4) |
 | `vnext_stage3_throughput_smoke_v1` | corrected_electrostatic_runner_smoke | completed | support_smoke_not_performance | v13_stabilized_bec_full_fold_pretraining | project_ledger_only | 3 (3/0) |
+| `vnext_stage_a_hierarchical_fairness_v1` | electrostatic_generator_formula_disjoint_adjudication | planned_not_executed | no_performance_result | v12_electrostatic_a0pm_a16 | protocol_only | 0 (0/0) |
 
 ## Non-comparable families
 

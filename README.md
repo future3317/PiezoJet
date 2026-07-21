@@ -429,6 +429,10 @@ fixed while comparing A0-full, A0-PM, A1, and A1.6. Cartesian many-body/MACE,
 scale--shape losses, BEC-first curriculum, long-range electrostatics, and
 Gaunt kernels are separate later hypotheses; combining them before this
 sharing/capacity adjudication would make the result uninterpretable.
+The nonexecuting command contract is
+`outputs/vnext_stage_a_hierarchical_fairness_v1/plan.json`: fixed N=800,
+fold0/seed42, all 988 development materials, 1,500 updates, logical batch 16,
+and no early-stop fallback. It does not authorize or launch training.
 
 The data interface is not the leading explanation: all three models see the
 same balanced 800 unique formulas, same-archive labels, fold-train-only

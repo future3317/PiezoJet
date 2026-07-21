@@ -406,10 +406,14 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   update 500. Run the implemented A0-PM/A1.6 fairness control before
   considering a full-fold promotion.
 - `piezojet.prepare_electrostatic_adjudication` only writes an auditable command
-  plan and can never launch training. The current Stage-A plan is
-  `outputs/electromechanical_jet_fold_adjudication_v2/stage_a_n100_fold0_seed42_plan.json`.
-  The vNext Stage-A execution was explicitly authorized on 2026-07-18; the
-  older N=100 plan remains non-executed. The fold-only
+  plan and can never launch training. The current nonexecuted fairness plan is
+  `outputs/vnext_stage_a_hierarchical_fairness_v1/plan.json`: fold0/seed42,
+  fixed N=800 response labels, full 988-material development fold, 1,500
+  updates at logical batch 16, and A0-full/A0-PM/A1/A1.6. It requires fresh
+  width-matched pretraining where a compatible checkpoint is unavailable and
+  has no execution authorization. The older N=100 plan under
+  `outputs/electromechanical_jet_fold_adjudication_v2/` remains non-executed.
+  The fold-only
   pretrainer derives schema-2 train IDs from the global population minus the
   development subset; it must not expect a duplicated `fold["train"]` field.
 - The older plan under `outputs/electromechanical_jet_fold_adjudication/`
