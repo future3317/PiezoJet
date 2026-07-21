@@ -8,7 +8,7 @@
     "historical_conventions_must_not_be_pooled": true,
     "artifact_index": "outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl"
   },
-  "cohort_count": 150,
+  "cohort_count": 155,
   "cohorts": [
     {
       "experiment_id": "audit",
@@ -9631,6 +9631,204 @@
           ],
           "checkpoint_files": [
             "selected.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "vnext_stage_a_hierarchical_fairness_n200_quick_v1",
+      "artifact_root": "outputs/vnext_stage_a_hierarchical_fairness_n200_quick_v1",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 2,
+        "bytes": 58056,
+        "last_modified_utc": "2026-07-21T14:48:09.488243Z",
+        "run_records": 0,
+        "completed_run_records": 0,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [],
+      "runs": []
+    },
+    {
+      "experiment_id": "vnext_stage_a_hierarchical_fairness_n200_quick_v2",
+      "artifact_root": "outputs/vnext_stage_a_hierarchical_fairness_n200_quick_v2",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 10,
+        "bytes": 206503313,
+        "last_modified_utc": "2026-07-21T15:00:58.002137Z",
+        "run_records": 2,
+        "completed_run_records": 2,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [],
+      "runs": [
+        {
+          "path": "stage_a_full_fold0_seed42_pretrain",
+          "execution_status": "completed_training_or_pretraining",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "history.json"
+          ],
+          "checkpoint_files": [
+            "best_encoder.pt",
+            "last_encoder.pt"
+          ]
+        },
+        {
+          "path": "stage_a_full_fold0_seed42_pretrain_a0_parameter_matched",
+          "execution_status": "completed_training_or_pretraining",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "history.json"
+          ],
+          "checkpoint_files": [
+            "best_encoder.pt",
+            "last_encoder.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "vnext_stage_a_hierarchical_fairness_n200_quick_v3",
+      "artifact_root": "outputs/vnext_stage_a_hierarchical_fairness_n200_quick_v3",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 2,
+        "bytes": 7776825,
+        "last_modified_utc": "2026-07-21T15:14:12.587188Z",
+        "run_records": 0,
+        "completed_run_records": 0,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [],
+      "runs": []
+    },
+    {
+      "experiment_id": "vnext_stage_a_hierarchical_fairness_n200_quick_v4",
+      "artifact_root": "outputs/vnext_stage_a_hierarchical_fairness_n200_quick_v4",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 6,
+        "bytes": 471061897,
+        "last_modified_utc": "2026-07-21T15:27:37.957037Z",
+        "run_records": 1,
+        "completed_run_records": 0,
+        "partial_or_blocked_run_records": 1
+      },
+      "key_artifacts": [],
+      "runs": [
+        {
+          "path": "stage_a_n200_fold0_a0_independent_irreps_seed42",
+          "execution_status": "partial_no_evaluation",
+          "seed": 42,
+          "passes": null,
+          "markers": [],
+          "checkpoint_files": [
+            "progress.pt"
+          ]
+        }
+      ]
+    },
+    {
+      "experiment_id": "vnext_stage_a_hierarchical_fairness_n200_quick_v5",
+      "artifact_root": "outputs/vnext_stage_a_hierarchical_fairness_n200_quick_v5",
+      "family": "early_development",
+      "archival_status": "historical",
+      "execution_status": "completed_or_retained_partial",
+      "result_disposition": "diagnostic",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "none_run_local_only",
+      "paper_use": "historical_appendix_only",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 23,
+        "bytes": 646434931,
+        "last_modified_utc": "2026-07-21T15:54:53.278941Z",
+        "run_records": 4,
+        "completed_run_records": 4,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a0_independent_irreps_seed42/summary.json",
+        "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a0_parameter_matched_irreps_seed42/summary.json",
+        "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a16_hierarchical_electromechanical_jet_seed42/summary.json",
+        "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a1_electromechanical_jet_seed42/summary.json"
+      ],
+      "runs": [
+        {
+          "path": "stage_a_n200_fold0_a0_independent_irreps_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_n200_fold0_a0_parameter_matched_irreps_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_n200_fold0_a16_hierarchical_electromechanical_jet_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "progress.pt"
+          ]
+        },
+        {
+          "path": "stage_a_n200_fold0_a1_electromechanical_jet_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": [
+            "progress.pt"
           ]
         }
       ]

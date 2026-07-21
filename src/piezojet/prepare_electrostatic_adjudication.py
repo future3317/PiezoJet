@@ -37,6 +37,7 @@ def build_plan(
     seed: int,
     train_limit: int,
     development_limit: int,
+    pretrain_train_limit: int = 0,
     pretrain_epochs: int,
     updates: int,
     batch_size: int,
@@ -59,7 +60,7 @@ def build_plan(
     """Return a leak-safe argv plan whose commands require later execution."""
     if min(pretrain_epochs, updates, batch_size, eval_interval) < 1:
         raise ValueError("Epochs, updates, batch size, and eval interval must be positive")
-    if train_limit < 0 or development_limit < 0:
+    if train_limit < 0 or pretrain_train_limit < 0 or development_limit < 0:
         raise ValueError("Material limits cannot be negative")
     if early_stopping_patience_evaluations < 0:
         raise ValueError("Early-stopping patience cannot be negative")
@@ -195,6 +196,7 @@ def build_plan(
         "--epochs", str(pretrain_epochs),
         "--batch-size", str(effective_pretrain_batch),
         "--logical-batch-size", str(effective_pretrain_logical),
+        *(["--train-limit", str(pretrain_train_limit)] if pretrain_train_limit else []),
         "--code-commit", pinned_code_commit,
     ]
     parameter_matched_pretrain_command = [
@@ -203,6 +205,7 @@ def build_plan(
         "--epochs", str(pretrain_epochs),
         "--batch-size", str(effective_pretrain_batch),
         "--logical-batch-size", str(effective_pretrain_logical),
+        *(["--train-limit", str(pretrain_train_limit)] if pretrain_train_limit else []),
         "--encoder-width-multiplier", str(parameter_matched_width),
         "--code-commit", pinned_code_commit,
     ]
@@ -289,7 +292,11 @@ def build_plan(
             "development_limit": development_limit,
             "frozen_validation_test_labels_read": False,
             "samples32_checkpoint_used": False,
-            "structure_pretraining_scope": "complete fold-train structure universe",
+            "structure_pretraining_scope": (
+                "complete fold-train structure universe"
+                if not pretrain_train_limit
+                else "deterministic fold-train subset (preliminary screen)"
+            ),
             "structure_pretraining_checkpoint": str(pretrain_checkpoint.resolve()),
             "structure_pretraining_reused": pretrained_encoder is not None,
             "parameter_matched_structure_pretraining_checkpoint": str(
@@ -301,7 +308,9 @@ def build_plan(
             "parameter_matched_encoder_width_multiplier": (
                 parameter_matched_width if needs_parameter_matched_pretrain else None
             ),
-            "structure_pretraining_materials": fold.get("train_materials"),
+            "structure_pretraining_materials": (
+                pretrain_train_limit or fold.get("train_materials")
+            ),
             "structure_pretraining_response_labels": 0,
             "development_formula_overlap": 0,
             "response_subset_sha256": (
@@ -345,7 +354,7 @@ def build_plan(
             "logical_batch_size": batch_size,
             "pretrain_physical_batch_size": effective_pretrain_batch,
             "pretrain_logical_batch_size": effective_pretrain_logical,
-            "structure_pretraining_train_limit": 0,
+            "structure_pretraining_train_limit": pretrain_train_limit,
             "microbatch_size": effective_microbatch,
             "evaluation_batch_size": evaluation_batch_size or effective_microbatch,
             "diagnostic_batch_size": diagnostic_batch_size or effective_microbatch,
@@ -401,6 +410,15 @@ def main() -> None:
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-limit", type=int, default=100)
+    parser.add_argument(
+        "--pretrain-train-limit",
+        type=int,
+        default=0,
+        help=(
+            "Optional deterministic fold-train structure subset for a preliminary "
+            "screen; zero keeps the complete fold-train pretraining universe"
+        ),
+    )
     parser.add_argument("--response-subset-file", type=Path)
     parser.add_argument(
         "--pretrained-encoder",
@@ -448,6 +466,7 @@ def main() -> None:
         seed=args.seed,
         train_limit=args.train_limit,
         development_limit=args.development_limit,
+        pretrain_train_limit=args.pretrain_train_limit,
         pretrain_epochs=args.pretrain_epochs,
         updates=args.updates,
         batch_size=args.batch_size,
