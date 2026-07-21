@@ -10,7 +10,9 @@ from pathlib import Path
 
 from .data import GRAPH_CACHE_SCHEMA
 from .electrostatic_protocol import (
+    A0_ARCHITECTURES,
     ARCHITECTURES,
+    CURRENT_ADJUDICATION_ARCHITECTURES,
     DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
     STABILIZED_SELECTION_VERSION,
 )
@@ -50,7 +52,8 @@ def build_plan(
     diagnostic_batch_size: int = 0,
     response_subset_file: Path | None = None,
     pretrained_encoder: Path | None = None,
-    architectures: tuple[str, ...] = ARCHITECTURES,
+    parameter_matched_pretrained_encoder: Path | None = None,
+    architectures: tuple[str, ...] = CURRENT_ADJUDICATION_ARCHITECTURES,
     code_commit: str | None = None,
 ) -> dict[str, object]:
     """Return a leak-safe argv plan whose commands require later execution."""
@@ -117,6 +120,15 @@ def build_plan(
         subset = json.loads(response_subset_file.read_text(encoding="utf-8-sig"))
         response_size = int(subset["materials"])
     pretrain_dir = cohort_root / f"stage_a_full_fold{fold_index}_seed{seed}_pretrain"
+    parameter_matched_width = float(
+        config.get("a0_parameter_matched_width_multiplier", 0.56)
+        if config_path.is_file()
+        else 0.56
+    )
+    parameter_matched_pretrain_dir = (
+        cohort_root
+        / f"stage_a_full_fold{fold_index}_seed{seed}_pretrain_a0_parameter_matched"
+    )
     if pretrained_encoder is not None and not pretrained_encoder.is_file():
         raise FileNotFoundError(
             f"Reused structure-pretraining checkpoint is absent: {pretrained_encoder}"
@@ -126,13 +138,43 @@ def build_plan(
         if pretrained_encoder is not None
         else pretrain_dir / "best_encoder.pt"
     )
+    if (
+        parameter_matched_pretrained_encoder is not None
+        and not parameter_matched_pretrained_encoder.is_file()
+    ):
+        raise FileNotFoundError(
+            "Reused parameter-matched structure-pretraining checkpoint is absent: "
+            f"{parameter_matched_pretrained_encoder}"
+        )
+    parameter_matched_pretrain_checkpoint = (
+        parameter_matched_pretrained_encoder
+        if parameter_matched_pretrained_encoder is not None
+        else parameter_matched_pretrain_dir / "best_encoder.pt"
+    )
+    needs_parameter_matched_pretrain = (
+        "a0_parameter_matched_irreps" in architectures
+    )
+    needs_full_width_pretrain = any(
+        architecture != "a0_parameter_matched_irreps"
+        for architecture in architectures
+    )
     candidate_dirs = {
         architecture: cohort_root
         / f"stage_a_n{response_size}_fold{fold_index}_{architecture}_seed{seed}"
         for architecture in architectures
     }
     all_output_dirs = [
-        *([] if pretrained_encoder is not None else [pretrain_dir]),
+        *(
+            []
+            if not needs_full_width_pretrain or pretrained_encoder is not None
+            else [pretrain_dir]
+        ),
+        *(
+            []
+            if not needs_parameter_matched_pretrain
+            or parameter_matched_pretrained_encoder is not None
+            else [parameter_matched_pretrain_dir]
+        ),
         *candidate_dirs.values(),
     ]
     existing = [str(path) for path in all_output_dirs if path.exists()]
@@ -155,6 +197,15 @@ def build_plan(
         "--logical-batch-size", str(effective_pretrain_logical),
         "--code-commit", pinned_code_commit,
     ]
+    parameter_matched_pretrain_command = [
+        python, "-m", "piezojet.pretrain_e3nn", *common,
+        "--output-dir", str(parameter_matched_pretrain_dir),
+        "--epochs", str(pretrain_epochs),
+        "--batch-size", str(effective_pretrain_batch),
+        "--logical-batch-size", str(effective_pretrain_logical),
+        "--encoder-width-multiplier", str(parameter_matched_width),
+        "--code-commit", pinned_code_commit,
+    ]
     response_args = (
         ["--train-ids-file", str(response_subset_file)]
         if response_subset_file is not None
@@ -164,13 +215,14 @@ def build_plan(
     for architecture in architectures:
         module = (
             "piezojet.electrostatic_a0_fold_adjudication"
-            if architecture == "a0_independent_irreps"
+            if architecture in A0_ARCHITECTURES
             else "piezojet.electrostatic_fold_adjudication"
         )
-        architecture_args = (
-            []
-            if architecture == "a0_independent_irreps"
-            else ["--architecture", architecture]
+        architecture_args = ["--architecture", architecture]
+        architecture_pretrain_checkpoint = (
+            parameter_matched_pretrain_checkpoint
+            if architecture == "a0_parameter_matched_irreps"
+            else pretrain_checkpoint
         )
         candidate_commands.append({
             "architecture": architecture,
@@ -194,7 +246,7 @@ def build_plan(
                 str(early_stopping_minimum_improvement),
                 *response_args,
                 "--development-limit", str(development_limit),
-                "--pretrained-encoder", str(pretrain_checkpoint),
+                "--pretrained-encoder", str(architecture_pretrain_checkpoint),
                 "--seed", str(seed),
                 "--device", "cuda",
                 "--code-commit", pinned_code_commit,
@@ -204,7 +256,10 @@ def build_plan(
     return {
         "schema": 2,
         "status": "planned_not_executed",
-        "purpose": "matched formula-disjoint A0/A1/A1.5 first-order jet adjudication",
+        "purpose": (
+            "matched formula-disjoint A0-full/A0-PM/A1/A1.6 first-order jet "
+            "adjudication; retained A1.5 zero-gate control is not rerun"
+        ),
         "execution_authorization": "requires a later explicit user request to resume training",
         "environment": {
             "python": python,
@@ -237,6 +292,15 @@ def build_plan(
             "structure_pretraining_scope": "complete fold-train structure universe",
             "structure_pretraining_checkpoint": str(pretrain_checkpoint.resolve()),
             "structure_pretraining_reused": pretrained_encoder is not None,
+            "parameter_matched_structure_pretraining_checkpoint": str(
+                parameter_matched_pretrain_checkpoint.resolve()
+            ) if needs_parameter_matched_pretrain else None,
+            "parameter_matched_structure_pretraining_reused": (
+                parameter_matched_pretrained_encoder is not None
+            ),
+            "parameter_matched_encoder_width_multiplier": (
+                parameter_matched_width if needs_parameter_matched_pretrain else None
+            ),
             "structure_pretraining_materials": fold.get("train_materials"),
             "structure_pretraining_response_labels": 0,
             "development_formula_overlap": 0,
@@ -248,7 +312,8 @@ def build_plan(
             "same_fold": True,
             "same_seed": True,
             "same_train_and_development_subsets": True,
-            "same_structure_pretraining_state": True,
+            "same_structure_pretraining_panel_objective_and_seed": True,
+            "same_structure_pretraining_state_within_encoder_layout": True,
             "random_response_heads": True,
             "same_updates_and_batches": True,
             "same_logical_batch_and_microbatch_schedule": True,
@@ -298,8 +363,17 @@ def build_plan(
         "steps": [
             *(
                 []
-                if pretrained_encoder is not None
+                if not needs_full_width_pretrain or pretrained_encoder is not None
                 else [{"name": "fold_train_only_structure_pretraining", "argv": pretrain_command}]
+            ),
+            *(
+                []
+                if not needs_parameter_matched_pretrain
+                or parameter_matched_pretrained_encoder is not None
+                else [{
+                    "name": "fold_train_only_structure_pretraining_a0_parameter_matched",
+                    "argv": parameter_matched_pretrain_command,
+                }]
             ),
             *candidate_commands,
             {
@@ -333,6 +407,13 @@ def main() -> None:
         type=Path,
         help="Audited existing fold-only checkpoint; omits redundant pretraining",
     )
+    parser.add_argument(
+        "--parameter-matched-pretrained-encoder",
+        type=Path,
+        help=(
+            "Audited fold-only checkpoint whose hidden width exactly matches A0-PM"
+        ),
+    )
     parser.add_argument("--development-limit", type=int, default=100)
     parser.add_argument("--pretrain-epochs", type=int, default=20)
     parser.add_argument("--updates", type=int, default=100)
@@ -355,7 +436,7 @@ def main() -> None:
         "--architectures",
         nargs="+",
         choices=ARCHITECTURES,
-        default=list(ARCHITECTURES),
+        default=list(CURRENT_ADJUDICATION_ARCHITECTURES),
     )
     parser.add_argument("--code-commit")
     args = parser.parse_args()
@@ -377,6 +458,9 @@ def main() -> None:
         diagnostic_batch_size=args.diagnostic_batch_size,
         response_subset_file=args.response_subset_file,
         pretrained_encoder=args.pretrained_encoder,
+        parameter_matched_pretrained_encoder=(
+            args.parameter_matched_pretrained_encoder
+        ),
         eval_interval=args.eval_interval,
         early_stopping_patience_evaluations=(
             args.early_stopping_patience_evaluations

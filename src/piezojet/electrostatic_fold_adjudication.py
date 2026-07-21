@@ -32,6 +32,7 @@ from .electronic_capacity import (
     irrep_balanced_capacity_loss,
 )
 from .electrostatic_protocol import (
+    A0_ARCHITECTURES,
     ARCHITECTURES,
     DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
     STABILIZED_SELECTION_VERSION,
@@ -43,6 +44,7 @@ from .electrostatic_protocol import (
 from .electrostatic_subset import load_response_subset
 from .model import (
     ElectromechanicalJetHead,
+    HierarchicalElectromechanicalJetHead,
     IndependentElectrostaticHeads,
     SoftSharedElectromechanicalJetHead,
 )
@@ -59,10 +61,22 @@ _PRETRAINING_COMPATIBILITY_KEYS = (
     "num_blocks",
     "radial_basis",
     "radial_hidden",
+    "electrostatic_encoder_width_multiplier",
 )
 
 
-def _model_kwargs(config: dict[str, object]) -> dict[str, object]:
+def encoder_width_multiplier_for_architecture(
+    architecture: str, config: dict[str, object]
+) -> float:
+    """Resolve an explicit architecture-bound e3nn encoder width."""
+    if architecture == "a0_parameter_matched_irreps":
+        return float(config.get("a0_parameter_matched_width_multiplier", 0.56))
+    return float(config.get("electrostatic_encoder_width_multiplier", 1.0))
+
+
+def _model_kwargs(
+    config: dict[str, object], architecture: str
+) -> dict[str, object]:
     return {
         "embedding_dim": int(config["embedding_dim"]),
         "cutoff": float(config["cutoff"]),
@@ -76,17 +90,22 @@ def _model_kwargs(config: dict[str, object]) -> dict[str, object]:
         "polar_fluctuation_shells": int(config["polar_fluctuation_shells"]),
         "reciprocal_cutoff": float(config["reciprocal_cutoff"]),
         "attention_dim": int(config.get("global_attention_dim", 64)),
+        "encoder_width_multiplier": encoder_width_multiplier_for_architecture(
+            architecture, config
+        ),
     }
 
 
 def make_model(architecture: str, config: dict[str, object]) -> nn.Module:
-    kwargs = _model_kwargs(config)
-    if architecture == "a0_independent_irreps":
+    kwargs = _model_kwargs(config, architecture)
+    if architecture in A0_ARCHITECTURES:
         return IndependentElectrostaticHeads(**kwargs)
     if architecture == "a1_electromechanical_jet":
         return ElectromechanicalJetHead(**kwargs)
     if architecture == "a15_soft_shared_electromechanical_jet":
         return SoftSharedElectromechanicalJetHead(**kwargs)
+    if architecture == "a16_hierarchical_electromechanical_jet":
+        return HierarchicalElectromechanicalJetHead(**kwargs)
     raise ValueError(f"Unknown architecture: {architecture}")
 
 
@@ -122,7 +141,7 @@ def backward_training_objective(
     """
     if gradient_scale <= 0.0:
         raise ValueError("gradient_scale must be positive")
-    if architecture != "a0_independent_irreps":
+    if architecture not in A0_ARCHITECTURES:
         electronic, born, dielectric = _losses(
             model, batch, architecture, create_graph=True
         )
@@ -167,7 +186,7 @@ def task_gradient_geometry(
 ) -> dict[str, float | int | None]:
     model.train()
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    if architecture == "a0_independent_irreps":
+    if architecture in A0_ARCHITECTURES:
         electronic_prediction = model.electronic_response(batch)
         electronic = irrep_balanced_capacity_loss(
             electronic_prediction, batch.y_electronic_piezo
@@ -349,10 +368,27 @@ def load_structure_pretraining(
         saved_config = payload.get("config")
         if not isinstance(saved_config, dict):
             raise ValueError("Structure checkpoint has no saved encoder configuration")
+        expected_config = dict(config)
+        expected_config["electrostatic_encoder_width_multiplier"] = (
+            encoder_width_multiplier_for_architecture(architecture, config)
+        )
         mismatches = {
-            key: {"checkpoint": saved_config.get(key), "downstream": config.get(key)}
+            key: {
+                "checkpoint": saved_config.get(key, 1.0)
+                if key == "electrostatic_encoder_width_multiplier"
+                else saved_config.get(key),
+                "downstream": expected_config.get(key, 1.0)
+                if key == "electrostatic_encoder_width_multiplier"
+                else expected_config.get(key),
+            }
             for key in _PRETRAINING_COMPATIBILITY_KEYS
-            if key in config and saved_config.get(key) != config.get(key)
+            if key in expected_config
+            and (
+                saved_config.get(key, 1.0)
+                if key == "electrostatic_encoder_width_multiplier"
+                else saved_config.get(key)
+            )
+            != expected_config.get(key)
         }
         if mismatches:
             raise ValueError(
@@ -371,13 +407,15 @@ def load_structure_pretraining(
         payload, train_ids, development_ids, config
     )
     state = payload["encoder"]
-    if architecture == "a0_independent_irreps":
+    if architecture in A0_ARCHITECTURES:
         model.born_generator.encoder.load_state_dict(state, strict=True)
         model.piezo_generator.encoder.load_state_dict(state, strict=True)
         model.dielectric_generator.encoder.load_state_dict(state, strict=True)
         encoder_copies = 3
     elif architecture in {
-        "a1_electromechanical_jet", "a15_soft_shared_electromechanical_jet"
+        "a1_electromechanical_jet",
+        "a15_soft_shared_electromechanical_jet",
+        "a16_hierarchical_electromechanical_jet",
     }:
         model.encoder.load_state_dict(state, strict=True)
         encoder_copies = 1
@@ -459,7 +497,15 @@ def main() -> None:
         default=Path("data/processed/electrostatic_development_folds_v2.json"),
     )
     parser.add_argument("--fold", type=int, required=True)
-    parser.add_argument("--architecture", choices=ARCHITECTURES, required=True)
+    parser.add_argument(
+        "--architecture",
+        choices=tuple(
+            architecture
+            for architecture in ARCHITECTURES
+            if architecture not in A0_ARCHITECTURES
+        ),
+        required=True,
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--updates", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -628,6 +674,12 @@ def main() -> None:
             args.early_stopping_minimum_improvement
         ),
         "learning_rate": args.learning_rate,
+        "encoder_width_multiplier": encoder_width_multiplier_for_architecture(
+            args.architecture, config
+        ),
+        "parameter_count": sum(
+            parameter.numel() for parameter in model.parameters()
+        ),
         "train_ids": train_ids,
         "full_fold_structure_pretraining_ids": full_fold_train_ids,
         "development_ids": dev_ids,
@@ -984,7 +1036,7 @@ def main() -> None:
             "jacobian_execution": "direct first-order coefficient forward",
             "a0_backward_execution": (
                 "sequential exact three-disjoint-task backward; one tower graph resident"
-                if args.architecture == "a0_independent_irreps" else None
+                if args.architecture in A0_ARCHITECTURES else None
             ),
         },
         "gradient_geometry": {

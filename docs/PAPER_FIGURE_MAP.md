@@ -13,7 +13,7 @@ as standalone images.
 | Data | How selection-biased is strict-Lambda completion? | `strict_completion_selection_bias.pdf` | v10 full-public label-coverage manifest | Current |
 | Results | Does direct-U have same-ID capacity, and does that imply total-response advantage? | `direct_u_mechanism_boundary.pdf` | Registered samples32 capacity and three-seed val10 control | Current |
 | Results | Was electronic failure a model-class floor, and which irrep dominated it? | `electronic_model_class_capacity.pdf` | Registered samples32 same-ID capacity summaries | Current |
-| Results | How do A0, A1, and A1.5 generalize as N increases? | not generated | N=200 single-seed partial curve plus complete matched N=800/full Stage-3 summaries | N=200 may be tabulated as overfitting evidence; defer the comparison figure until matched N=800/full results exist |
+| Results | How do independent, hard-shared, and zero-gated adapter electrostatic generators compare? | `stage_a_n800_adjudication.pdf` | Complete matched N=800 A0/A1 summaries and the explicitly interrupted A1.5 curve | Current single-fold/seed development diagnostic; hatched A1.5 bars are partial and no frozen validation/test labels are read |
 
 The strict-completion and identifiability figures are deliberately separate:
 completion is a source-label acceptance process, while identifiability is a

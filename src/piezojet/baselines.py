@@ -73,4 +73,7 @@ def e3nn_direct_baseline_from_config(config: dict[str, object]) -> E3nnDirectPie
         num_blocks=int(config["num_blocks"]),
         radial_basis=int(config["radial_basis"]),
         radial_hidden=int(config["radial_hidden"]),
+        width_multiplier=float(
+            config.get("electrostatic_encoder_width_multiplier", 1.0)
+        ),
     )

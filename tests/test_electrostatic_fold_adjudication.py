@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 import torch
+from e3nn import o3
 from torch_geometric.data import Batch, Data
 
 from piezojet.audit_dft3d_release import _fractional
@@ -30,6 +31,7 @@ from piezojet.electrostatic_a0_fold_adjudication import (
 )
 from tests.data_paths import gmtnet_root
 from piezojet.electrostatic_protocol import (
+    A0_ARCHITECTURES,
     STABILIZED_SELECTION_VERSION,
     compact_training_curve_row,
     development_early_stopping,
@@ -44,8 +46,10 @@ from piezojet.electronic_capacity import (
     irrep_balanced_capacity_loss,
 )
 from piezojet.model import (
+    HierarchicalElectromechanicalJetHead,
     IndependentElectrostaticHeads,
     SoftSharedElectromechanicalJetHead,
+    TrainableIrrepAdapter,
 )
 from piezojet.pretrain_e3nn import (
     electrostatic_pretraining_ids,
@@ -98,6 +102,63 @@ def test_independent_control_has_no_shared_task_parameters():
     assert not piezo_ids & dielectric_ids
     assert not hasattr(model.born_generator, "electronic_irreps")
     assert not hasattr(model.piezo_generator, "born_irreps")
+
+
+def test_parameter_matched_a0_is_close_to_shared_candidate_capacity():
+    config = {
+        "embedding_dim": 32,
+        "cutoff": 5.0,
+        "lmax": 3,
+        "num_blocks": 3,
+        "radial_basis": 12,
+        "radial_hidden": 64,
+        "global_context_dim": 128,
+        "spectral_channels": 16,
+        "spectral_shells": 8,
+        "polar_fluctuation_shells": 8,
+        "reciprocal_cutoff": 7.0,
+        "global_attention_dim": 64,
+        "a0_parameter_matched_width_multiplier": 0.56,
+    }
+    independent = make_model("a0_parameter_matched_irreps", config)
+    shared = make_model("a1_electromechanical_jet", config)
+    hierarchical = make_model("a16_hierarchical_electromechanical_jet", config)
+    counts = {
+        "a0_pm": sum(parameter.numel() for parameter in independent.parameters()),
+        "a1": sum(parameter.numel() for parameter in shared.parameters()),
+        "a16": sum(parameter.numel() for parameter in hierarchical.parameters()),
+    }
+    assert counts == {"a0_pm": 6_358_299, "a1": 6_454_490, "a16": 6_673_790}
+    assert abs(counts["a0_pm"] / counts["a1"] - 1.0) < 0.02
+    assert abs(counts["a0_pm"] / counts["a16"] - 1.0) < 0.05
+
+
+def test_trainable_irrep_adapter_is_equivariant_and_live_on_first_backward():
+    irreps = o3.Irreps(
+        "2x0e + 1x0o + 2x1e + 1x1o + 1x2e + 1x2o + 1x3e + 1x3o"
+    )
+    torch.manual_seed(7)
+    adapter = TrainableIrrepAdapter(irreps, context_dim=5)
+    features = torch.randn(4, irreps.dim, requires_grad=True)
+    context = torch.randn(2, 5)
+    batch_index = torch.tensor([0, 0, 1, 1])
+    rotation = o3.rand_matrix()
+    representation = irreps.D_from_matrix(rotation)
+    rotated = adapter(features @ representation.T, context, batch_index)
+    expected = adapter(features, context, batch_index) @ representation.T
+    assert torch.allclose(rotated, expected, rtol=2e-4, atol=2e-5)
+
+    adapter(features, context, batch_index).square().mean().backward()
+    assert adapter.scale_logits.grad is not None
+    assert torch.linalg.vector_norm(adapter.scale_logits.grad) > 0
+    assert adapter.mix.weight.grad is not None
+    assert torch.linalg.vector_norm(adapter.mix.weight.grad) > 0
+    assert adapter.context_gates[-1].weight.grad is not None
+    assert torch.linalg.vector_norm(adapter.context_gates[-1].weight.grad) > 0
+    assert torch.allclose(
+        torch.nn.functional.softplus(adapter.scale_logits.detach()),
+        torch.full_like(adapter.scale_logits, 0.075),
+    )
 
 
 def test_a0_matched_schedule_reuses_identical_complete_microbatch_passes():
@@ -620,14 +681,18 @@ def test_fold_pretraining_checkpoint_strictly_initializes_every_stage_a_encoder(
         "epoch": 1,
         "loss": 0.5,
     }, checkpoint)
-    for architecture in ARCHITECTURES:
+    for architecture in (
+        architecture
+        for architecture in ARCHITECTURES
+        if architecture != "a0_parameter_matched_irreps"
+    ):
         model = make_model(architecture, config)
         loaded_provenance = load_structure_pretraining(
             model, architecture, checkpoint, torch.device("cpu"),
             ["train-id"], ["development-id"],
         )
         assert loaded_provenance["encoder_copies_initialized"] == (
-            3 if architecture == "a0_independent_irreps" else 1
+            3 if architecture in A0_ARCHITECTURES else 1
         )
         encoders = (
             [
@@ -635,12 +700,58 @@ def test_fold_pretraining_checkpoint_strictly_initializes_every_stage_a_encoder(
                 model.piezo_generator.encoder,
                 model.dielectric_generator.encoder,
             ]
-            if architecture == "a0_independent_irreps"
+            if architecture in A0_ARCHITECTURES
             else [model.encoder]
         )
         for encoder in encoders:
             for name, value in source.encoder.state_dict().items():
                 assert torch.equal(encoder.state_dict()[name], value), name
+
+
+def test_full_width_pretraining_cannot_initialize_parameter_matched_a0(tmp_path):
+    config = {
+        "embedding_dim": 4,
+        "cutoff": 3.0,
+        "lmax": 3,
+        "num_blocks": 1,
+        "radial_basis": 3,
+        "radial_hidden": 8,
+        "global_context_dim": 8,
+        "spectral_channels": 2,
+        "spectral_shells": 2,
+        "polar_fluctuation_shells": 2,
+        "reciprocal_cutoff": 3.0,
+        "global_attention_dim": 4,
+        "a0_parameter_matched_width_multiplier": 0.56,
+        "code_commit": "b" * 40,
+    }
+    from piezojet.baselines import e3nn_direct_baseline_from_config
+
+    source = e3nn_direct_baseline_from_config(config)
+    split_source = tmp_path / "folds.json"
+    split_source.write_text("{}", encoding="utf-8")
+    checkpoint = tmp_path / "full_width_encoder.pt"
+    torch.save({
+        "architecture": "e3nn_periodic_v1",
+        "encoder": source.encoder.state_dict(),
+        "pretraining_provenance": provenance(["train-id"], split_source, "train"),
+        "code_commit": "a" * 40,
+        "config": dict(config),
+        "pretraining_contract": {
+            "objective": "masked_species_plus_translation_free_coordinate_denoising",
+            "response_label_count": 0,
+        },
+    }, checkpoint)
+    with pytest.raises(ValueError, match="encoder configuration differs"):
+        load_structure_pretraining(
+            make_model("a0_parameter_matched_irreps", config),
+            "a0_parameter_matched_irreps",
+            checkpoint,
+            torch.device("cpu"),
+            ["train-id"],
+            ["development-id"],
+            config,
+        )
 
 
 def test_fold_pretraining_checkpoint_rejects_development_structure_provenance(tmp_path):
@@ -781,16 +892,23 @@ def test_adjudication_plan_is_nonexecuting_fresh_and_frozen_panel_safe(tmp_path)
     )
     assert plan["status"] == "planned_not_executed"
     assert plan["data_boundary"]["frozen_validation_test_labels_read"] is False
-    assert len(plan["steps"]) == 5
-    assert all(
-        step.get("architecture") in ARCHITECTURES
-        for step in plan["steps"][1:4]
-    )
-    assert plan["steps"][1]["argv"][1:3] == [
+    assert len(plan["steps"]) == 7
+    candidate_steps = [
+        step for step in plan["steps"] if step.get("architecture") is not None
+    ]
+    assert [step["architecture"] for step in candidate_steps] == [
+        "a0_independent_irreps",
+        "a0_parameter_matched_irreps",
+        "a1_electromechanical_jet",
+        "a16_hierarchical_electromechanical_jet",
+    ]
+    assert candidate_steps[0]["argv"][1:3] == [
         "-m", "piezojet.electrostatic_a0_fold_adjudication"
     ]
-    assert "--architecture" not in plan["steps"][1]["argv"]
-    assert "--early-stopping-patience-evaluations" in plan["steps"][1]["argv"]
+    assert candidate_steps[0]["argv"][
+        candidate_steps[0]["argv"].index("--architecture") + 1
+    ] == "a0_independent_irreps"
+    assert "--early-stopping-patience-evaluations" in candidate_steps[0]["argv"]
     assert plan["comparison_contract"]["early_stopping_patience_updates"] == 50
     assert "--train-limit" not in plan["steps"][0]["argv"]
 
@@ -819,7 +937,9 @@ def test_stage_a_plan_separates_full_fold_pretraining_from_fixed_response_subset
     )
     pretrain_argv = plan["steps"][0]["argv"]
     assert "--train-limit" not in pretrain_argv
-    for step in plan["steps"][1:4]:
+    for step in (
+        value for value in plan["steps"] if value.get("architecture") is not None
+    ):
         assert step["argv"][step["argv"].index("--train-ids-file") + 1] == str(subset)
     assert plan["data_boundary"]["structure_pretraining_scope"] == (
         "complete fold-train structure universe"
@@ -847,11 +967,18 @@ def test_stage_a_plan_reuses_audited_pretrain_without_planning_recompute(tmp_pat
         batch_size=4,
         eval_interval=25,
         pretrained_encoder=checkpoint,
+        architectures=(
+            "a0_independent_irreps",
+            "a1_electromechanical_jet",
+            "a16_hierarchical_electromechanical_jet",
+        ),
     )
     assert len(plan["steps"]) == 4
     assert all(step.get("name") != "fold_train_only_structure_pretraining" for step in plan["steps"])
     assert plan["data_boundary"]["structure_pretraining_reused"] is True
-    for step in plan["steps"][:3]:
+    for step in (
+        value for value in plan["steps"] if value.get("architecture") is not None
+    ):
         argv = step["argv"]
         assert argv[argv.index("--pretrained-encoder") + 1] == str(checkpoint)
 
@@ -902,6 +1029,40 @@ def test_soft_shared_jet_preserves_tensor_shapes_and_has_task_adapters():
     assert model.born_adapter is not model.electronic_adapter
     assert model.dielectric_adapter is not model.electronic_adapter
     assert float(model.born_adapter.residual_scale.detach()) == 0.0
+
+
+def test_hierarchical_jet_preserves_shapes_and_bec_acoustic_sum_rule():
+    graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
+    graph.batch = torch.zeros(graph.num_nodes, dtype=torch.long)
+    model = HierarchicalElectromechanicalJetHead(
+        embedding_dim=4,
+        cutoff=5.0,
+        lmax=3,
+        num_blocks=1,
+        radial_basis=3,
+        radial_hidden=8,
+        global_context_dim=8,
+        spectral_channels=2,
+        spectral_shells=2,
+        polar_fluctuation_shells=2,
+        reciprocal_cutoff=3.0,
+        attention_dim=4,
+    ).eval()
+    prediction = model.coefficients(graph)
+    assert prediction.born_charges.shape == (graph.num_nodes, 3, 3)
+    assert prediction.electronic_piezo.shape == (1, 3, 3, 3)
+    assert prediction.electronic_dielectric.shape == (1, 3, 3)
+    assert torch.allclose(
+        prediction.born_charges.mean(dim=0),
+        torch.zeros(3, 3),
+        atol=2e-6,
+    )
+    dielectric_eigenvalues = torch.linalg.eigvalsh(
+        prediction.electronic_dielectric
+    )
+    assert torch.all(dielectric_eigenvalues >= 1.0 - 1e-6)
+    assert model.born_adapter is not model.dielectric_adapter
+    assert model.charge_screening_trunk is not model.polar_strain_trunk
 
 
 def test_dielectric_audit_is_availability_masked_without_zero_fill_bias():

@@ -13,6 +13,12 @@ lmax: 3
 num_blocks: 3
 radial_basis: 12
 radial_hidden: 64
+# Stage-A e3nn electrostatic candidates retain the audited full-width encoder
+# unless an architecture explicitly declares another width.  A0-PM uses 0.56:
+# its three independent towers total 6,358,299 parameters versus 6,454,490 for
+# A1 and 6,673,790 for A1.6 under this configuration.
+electrostatic_encoder_width_multiplier: 1.0
+a0_parameter_matched_width_multiplier: 0.56
 cartesian_channels: 48
 # Phi and Lambda are independent coefficients of one explicit signed quadratic
 # scalar energy. Integrability is enforced by scalar assembly, not by the

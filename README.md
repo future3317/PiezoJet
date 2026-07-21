@@ -292,14 +292,18 @@ electrostatic adjudication uses the 4,939-material five-fold map
 `data/processed/electrostatic_development_folds_v2.json`; the corrected
 strict1595 folds are used for tasks that require complete `Lambda`. Every development
 fold contains some samples32 capacity IDs, so a fitted same-ID checkpoint is
-forbidden as a fold initializer. The maintained Stage-A comparison covers
-A0, A1, and A1.5 and uses one
-fold-train-only structure checkpoint for every encoder copy, random response
+forbidden as a fold initializer. The completed Stage-A comparison covered
+A0, A1, and the retained zero-gated A1.5 control. The next controlled
+comparison adds A0-PM and A1.6 without changing the tensor loss or backbone.
+Every encoder uses a fold-train-only structure checkpoint, random response
 heads, identical stochastic updates, and a fixed response-active gradient
-audit batch. It now supervises the complete available first-order electrostatic
+audit batch. It supervises the complete available first-order electrostatic
 coefficient set: BEC, electronic piezo, and electronic dielectric. A0 has three
-independent towers, A1 hard-shares the response trunk, and A1.5 has three
-task-specific equivariant adapters. A random-initialized N=100 A1 pilot selected update 25 but
+independent towers, A1 hard-shares the response trunk, and historical A1.5 has
+three exactly-zero-gated task adapters. A0-PM narrows all three independent
+e3nn encoders to a measured capacity match; A1.6 shares the chemistry/geometry
+encoder but splits into charge--screening and polar--strain response trunks,
+followed by nonzero per-irrep task adapters. A random-initialized N=100 A1 pilot selected update 25 but
 collapsed across formulas (electronic active relative error `0.99826`, cosine
 `0.06239`, amplitude `0.00406`; BEC relative error about `0.99616`). This is a
 negative pilot, not the structure-pretrained adjudication. A read-only audit on
@@ -361,13 +365,13 @@ its source commit is `27d5617473d6f94858faee93afd503b07e62cad3`.
 Cross-commit pretraining reuse is accepted only after those semantic checks and
 strict state-dict loading; the pretraining-source and downstream-response
 commits are recorded separately rather than relabeling checkpoint provenance.
-Response training retains logical batch 32, microbatch 16,
+The completed historical response training retained logical batch 32, microbatch 16,
 evaluation batch 32, and `num_workers=0`. A0 uses three independent AdamW optimizers and
 advances its parameter-disjoint towers in common-update blocks, with only one
 tower and optimizer state CUDA-resident. Every tower receives the identical
 deterministic material schedule and selection occurs only at common update
 numbers; a CPU regression test also compares sequential backward with the
-summed objective within floating-point tolerance. A1/A1.5 persist exact
+summed objective within floating-point tolerance. Shared candidates persist exact
 run-local model/AdamW/schedule/provenance checkpoints at every full-development
 evaluation, together with complete train/development metrics. Microbatching preserves the same material-mean objective but is not
 claimed to be bitwise AdamW-identical to a larger forward. Every run binds the
@@ -380,18 +384,63 @@ norm remains a separate absolute leakage field. Reports include parameter
 count, counted FLOPs per logical update, optimizer GPU seconds, and peak CUDA
 allocation.
 
-Execution was explicitly resumed on 2026-07-21. No directory is overwritten or
-resumed after a resource interruption or redundant recomputation. The remaining
-fixed order is matched N=800 A0/A1/A1.5 initialized from the audited complete
-fold-only pretrain, and only then the top two at the full 3,951 response-label
-fold. N=800 response runs evaluate every 50 updates and use guardrail-aware
-early stopping with four eligible evaluations of patience; a run with no
-eligible checkpoint never early-stops into a fallback. If all N=800 candidates fit train but fail
-development, the next intervention is BEC-first response-aware pretraining;
-scale--shape output is considered only for persistent directional improvement
-with amplitude collapse. An A0 parameter-matched control is required only if
-A0-full wins the N=800 model-class comparison. N=800 predictive adjudication
-is not yet complete. The earlier N=100
+Execution was explicitly resumed on 2026-07-21. No directory was overwritten or
+resumed after a resource interruption or redundant recomputation. The matched
+N=800/fold-0/seed-42 development comparison is now informative. Complete A0
+and A1 runs both select update 500: their stabilized three-task scores are
+`1.66731` and `1.77987`, respectively. A0 improves electronic/BEC stabilized
+errors (`0.48502/0.69716` versus `0.50951/0.80633`) and their directional
+metrics, while A1 is slightly better on electronic dielectric (`0.46403`
+versus `0.48514`). A1.5 tracks A1 through update 350 (`1.89298` versus A1
+`1.88757` at the same update) and was explicitly stopped as sufficient partial
+negative evidence; it is not reported as a complete 500-update result. Frozen
+validation10/test20 remain unread.
+
+This comparison diagnoses a real sharing/optimization problem but is not a
+capacity-matched final ranking: A0 has `19,295,132` parameters and A1 has
+`6,454,490`. At A1 initialization, shared electronic--BEC,
+electronic--dielectric, and BEC--dielectric gradient cosines are
+`-0.0272/-0.5822/+0.2167`; at the selected checkpoint they are near zero.
+A1.5 also has a specific optimization confound: its scalar residual gates start
+at exactly zero, which initially blocks gradients to the adapter internals. At
+update 350, `tanh(scale)` is only `0.00607/-0.00113` for the electronic and
+dielectric adapters and `-0.10505` for BEC. The partial result therefore rejects
+this zero-gated A1.5 implementation under the fixed budget, not all soft-sharing
+architectures.
+
+The implemented fairness repair is explicit rather than heuristic. With the
+registered full configuration, width multiplier `0.56` gives A0-PM
+`6,358,299` trainable parameters, versus `6,454,490` for A1 and `6,673,790`
+for A1.6. A0-PM cannot load the old full-width initializer: the planner creates
+or requires a separate checkpoint with the same fold-train IDs, objective,
+seed, and provenance but the exact narrow encoder layout. A1.6 uses the full
+hidden O(3) representation in both response trunks; it does not discard odd
+covariants merely because BEC and dielectric outputs are inversion-even.
+Its `TrainableIrrepAdapter` applies per-irrep-block RMS normalization and one
+positive invariant amplitude per multiplicity channel, initialized at `0.075`,
+with small nonzero equivariant mixing. Regression tests verify O(3)
+equivariance and nonzero first-step gradients for the amplitude, mixing, and
+context routes. A1.5 remains byte-for-byte behaviorally available as the
+zero-gate negative control and is excluded from the default next comparison.
+
+This is a preregistered model-class upgrade, not a performance claim. The next
+minimal experiment keeps the present e3nn `l<=3` backbone and three-task loss
+fixed while comparing A0-full, A0-PM, A1, and A1.6. Cartesian many-body/MACE,
+scale--shape losses, BEC-first curriculum, long-range electrostatics, and
+Gaunt kernels are separate later hypotheses; combining them before this
+sharing/capacity adjudication would make the result uninterpretable.
+
+The data interface is not the leading explanation: all three models see the
+same balanced 800 unique formulas, same-archive labels, fold-train-only
+initializer, deterministic schedule, and stabilized metric. Exact-clone,
+microbatch-gradient, tensor, and provenance checks pass. Data scale and
+formula extrapolation nevertheless remain important: A0's selected train/dev
+scores are `1.20774/1.66731`, its development score is still improving at
+update 500, and even its train active electronic relative error is `0.88098`.
+Thus the current evidence is best described as task-interference plus
+undertraining/sample-efficiency and OOD generalization, not corrupted DFPT
+labels or a confirmed tensor-convention bug. A parameter-matched A0 control is
+the next fairness check before a full-fold promotion; the earlier N=100
 plan at `outputs/electromechanical_jet_fold_adjudication_v2/` remains a
 non-executed protocol record. The frozen v3 protocol will bind every selected
 checkpoint to the complete code/data/graph provenance. The similarly named

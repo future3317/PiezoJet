@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Mapping, NamedTuple
 
 import torch
@@ -57,14 +58,44 @@ class _MessageBlock(nn.Module):
         return self.gate(self.residual(features) + aggregate)
 
 
+_E3NN_HIDDEN_LAYOUT = (
+    (64, "0e"),
+    (16, "0o"),
+    (24, "1e"),
+    (24, "1o"),
+    (12, "2e"),
+    (12, "2o"),
+    (6, "3e"),
+    (6, "3o"),
+)
+
+
+def _scaled_hidden_irreps(width_multiplier: float) -> o3.Irreps:
+    """Return the deterministic width-scaled electrostatic hidden layout."""
+    if not math.isfinite(width_multiplier) or width_multiplier <= 0.0:
+        raise ValueError("encoder width multiplier must be finite and positive")
+    terms = [
+        (max(1, math.floor(base * width_multiplier + 0.5)), irrep)
+        for base, irrep in _E3NN_HIDDEN_LAYOUT
+    ]
+    return o3.Irreps(terms)
+
+
 def _gate_for(irreps_out: o3.Irreps) -> Gate:
-    """Create the specified scalar-plus-gated non-scalar e3nn activation."""
-    scalars = o3.Irreps("64x0e + 16x0o")
-    gated = o3.Irreps("24x1e + 24x1o + 12x2e + 12x2o + 6x3e + 6x3o")
-    if irreps_out != scalars + gated:
-        raise ValueError("PiezoJet gate layout must match the fixed hidden irreps")
-    gates = o3.Irreps("84x0e")
-    gate = Gate(scalars, [torch.nn.functional.silu, torch.tanh], gates, [torch.sigmoid], gated)
+    """Create a scalar-plus-gated non-scalar e3nn activation."""
+    scalars = o3.Irreps([(mul, ir) for mul, ir in irreps_out if ir.l == 0])
+    gated = o3.Irreps([(mul, ir) for mul, ir in irreps_out if ir.l > 0])
+    if not scalars or not gated or irreps_out != scalars + gated:
+        raise ValueError("PiezoJet hidden irreps must list scalars before tensors")
+    gates = o3.Irreps(f"{gated.num_irreps}x0e")
+    scalar_activations = [F.silu if ir.p == 1 else torch.tanh for _, ir in scalars]
+    gate = Gate(
+        scalars,
+        scalar_activations,
+        gates,
+        [torch.sigmoid],
+        gated,
+    )
     if gate.irreps_out != irreps_out:
         raise RuntimeError(f"Gate output mismatch: {gate.irreps_out} != {irreps_out}")
     return gate
@@ -81,13 +112,15 @@ class PeriodicCrystalEncoder(nn.Module):
         num_blocks: int = 3,
         radial_basis: int = 12,
         radial_hidden: int = 64,
+        width_multiplier: float = 1.0,
     ):
         super().__init__()
         self.cutoff, self.radial_basis = cutoff, radial_basis
+        self.width_multiplier = float(width_multiplier)
         self.register_buffer("radial_centers", torch.linspace(0, cutoff, radial_basis), persistent=False)
         self.embedding = nn.Embedding(119, embedding_dim)
         self.input_irreps = o3.Irreps(f"{embedding_dim}x0e")
-        self.hidden_irreps = o3.Irreps("64x0e + 16x0o + 24x1e + 24x1o + 12x2e + 12x2o + 6x3e + 6x3o")
+        self.hidden_irreps = _scaled_hidden_irreps(self.width_multiplier)
         self.sh_irreps = o3.Irreps.spherical_harmonics(lmax)
         self.initial_gate = _gate_for(self.hidden_irreps)
         self.initial_tp = o3.FullyConnectedTensorProduct(
@@ -1328,6 +1361,117 @@ class EquivariantResponseAdapter(nn.Module):
         return node_features + torch.tanh(self.residual_scale) * adapted
 
 
+class IrrepRMSNorm(nn.Module):
+    """RMS-normalize each irrep multiplicity without mixing tensor components."""
+
+    def __init__(self, irreps: o3.Irreps, epsilon: float = 1e-8):
+        super().__init__()
+        if epsilon <= 0.0:
+            raise ValueError("Irrep RMS epsilon must be positive")
+        self.irreps = o3.Irreps(irreps)
+        self.epsilon = float(epsilon)
+        self.gain = nn.Parameter(torch.ones(self.irreps.num_irreps))
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.shape[-1] != self.irreps.dim:
+            raise ValueError("Irrep RMS input dimension mismatch")
+        pieces: list[torch.Tensor] = []
+        offset = 0
+        gain_offset = 0
+        for (multiplicity, irrep), block in zip(
+            self.irreps, self.irreps.slices(), strict=True
+        ):
+            values = features[..., block].reshape(
+                *features.shape[:-1], multiplicity, irrep.dim
+            )
+            # Normalize one complete multiplicity block.  In particular, do
+            # not normalize each l=0 channel independently: that would reduce
+            # every nonzero scalar to its sign and erase response amplitude.
+            # Summing squared tensor components and channels is O(3)-invariant
+            # while preserving their relative magnitudes.
+            rms = values.square().mean(dim=(-2, -1), keepdim=True).add(
+                self.epsilon
+            ).sqrt()
+            gain = self.gain[
+                gain_offset : gain_offset + multiplicity
+            ].reshape(*([1] * (values.ndim - 2)), multiplicity, 1)
+            pieces.append((values / rms * gain).reshape(*features.shape[:-1], -1))
+            offset += multiplicity * irrep.dim
+            gain_offset += multiplicity
+        if offset != features.shape[-1] or gain_offset != self.irreps.num_irreps:
+            raise RuntimeError("Irrep RMS layout accounting mismatch")
+        return torch.cat(pieces, dim=-1)
+
+
+class TrainableIrrepAdapter(nn.Module):
+    """Nonzero, channel-gated equivariant residual adapter.
+
+    The residual amplitude and the crystal-context gate are invariant scalars
+    defined separately for every irrep multiplicity.  Unlike the retained
+    A1.5 zero-gate control, both the equivariant mixing weights and the context
+    route receive gradients on the first optimization step.
+    """
+
+    def __init__(
+        self,
+        irreps: o3.Irreps,
+        context_dim: int,
+        initial_scale: float = 0.075,
+        mixing_std: float = 1e-3,
+    ):
+        super().__init__()
+        if initial_scale <= 0.0 or not math.isfinite(initial_scale):
+            raise ValueError("Adapter initial scale must be finite and positive")
+        if mixing_std <= 0.0 or not math.isfinite(mixing_std):
+            raise ValueError("Adapter mixing std must be finite and positive")
+        self.irreps = o3.Irreps(irreps)
+        self.normalization = IrrepRMSNorm(self.irreps)
+        self.mix = o3.Linear(self.irreps, self.irreps)
+        self.context_gates = nn.Sequential(
+            nn.Linear(context_dim, context_dim),
+            nn.SiLU(),
+            nn.Linear(context_dim, self.irreps.num_irreps),
+        )
+        inverse_softplus = math.log(math.expm1(initial_scale))
+        self.scale_logits = nn.Parameter(
+            torch.full((self.irreps.num_irreps,), inverse_softplus)
+        )
+        nn.init.normal_(self.mix.weight, mean=0.0, std=mixing_std)
+        final_context = self.context_gates[-1]
+        nn.init.normal_(final_context.weight, mean=0.0, std=mixing_std)
+        nn.init.zeros_(final_context.bias)
+
+    def _expand_multiplicity_scalars(self, values: torch.Tensor) -> torch.Tensor:
+        if values.shape[-1] != self.irreps.num_irreps:
+            raise ValueError("Adapter multiplicity-gate dimension mismatch")
+        pieces: list[torch.Tensor] = []
+        offset = 0
+        for multiplicity, irrep in self.irreps:
+            channel = values[..., offset : offset + multiplicity]
+            pieces.append(
+                channel.unsqueeze(-1)
+                .expand(*channel.shape, irrep.dim)
+                .reshape(*channel.shape[:-1], multiplicity * irrep.dim)
+            )
+            offset += multiplicity
+        if offset != self.irreps.num_irreps:
+            raise RuntimeError("Adapter gate layout accounting mismatch")
+        return torch.cat(pieces, dim=-1)
+
+    def forward(
+        self,
+        node_features: torch.Tensor,
+        context: torch.Tensor,
+        batch_index: torch.Tensor,
+    ) -> torch.Tensor:
+        normalized = self.normalization(node_features)
+        mixed = self.mix(normalized)
+        contextual = 1.0 + torch.tanh(self.context_gates(context)[batch_index])
+        amplitude = F.softplus(self.scale_logits) * contextual
+        expanded_amplitude = self._expand_multiplicity_scalars(amplitude)
+        return node_features + expanded_amplitude * mixed
+
+
 class ElectromechanicalJetHead(nn.Module):
     r"""Exact first-order electromechanical jet around a reference crystal.
 
@@ -1361,6 +1505,7 @@ class ElectromechanicalJetHead(nn.Module):
         polar_fluctuation_shells: int = 8,
         reciprocal_cutoff: float = 7.0,
         attention_dim: int = 64,
+        encoder_width_multiplier: float = 1.0,
     ):
         super().__init__()
         if lmax < 3:
@@ -1372,6 +1517,7 @@ class ElectromechanicalJetHead(nn.Module):
             num_blocks=num_blocks,
             radial_basis=radial_basis,
             radial_hidden=radial_hidden,
+            width_multiplier=encoder_width_multiplier,
         )
         irreps = self.encoder.hidden_irreps
         self.global_attention = EquivariantGlobalAttention(irreps, attention_dim)
@@ -1586,6 +1732,72 @@ class SoftSharedElectromechanicalJetHead(ElectromechanicalJetHead):
         )
         dielectric_graph_features = scatter(
             dielectric_features, batch.batch, dim=0, dim_size=graphs, reduce="mean"
+        )
+        born = self.decode_born(born_features, context, batch.batch)
+        electronic = self.decode_electronic_piezo(
+            electronic_graph_features, context
+        )
+        dielectric = self.decode_dielectric(dielectric_graph_features)
+        return ElectromechanicalJetPrediction(born, electronic, dielectric)
+
+
+class HierarchicalElectromechanicalJetHead(ElectromechanicalJetHead):
+    """A1.6: hierarchical sharing for the first-order electrostatic jet.
+
+    A common periodic chemistry/geometry encoder feeds a charge--screening
+    response trunk shared by BEC and dielectric prediction, and an independent
+    polar--strain response trunk for clamped-ion piezoelectricity.  Each task
+    then receives its own nonzero per-irrep adapter.  The split changes neural
+    parameter sharing only; all three tensors remain coefficients of the same
+    declared first-order polarization increment.
+
+    The trunk names intentionally describe response statistics rather than
+    deleting odd-parity hidden covariants: even outputs may depend on even
+    combinations of odd covariants, so both trunks retain the complete O(3)
+    hidden representation.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        irreps = self.encoder.hidden_irreps
+        context_dim = self.global_context.context_dim
+        self.charge_screening_trunk = TrainableIrrepAdapter(irreps, context_dim)
+        self.polar_strain_trunk = TrainableIrrepAdapter(irreps, context_dim)
+        self.born_adapter = TrainableIrrepAdapter(irreps, context_dim)
+        self.dielectric_adapter = TrainableIrrepAdapter(irreps, context_dim)
+        self.electronic_adapter = TrainableIrrepAdapter(irreps, context_dim)
+
+    def coefficients(self, batch) -> ElectromechanicalJetPrediction:
+        node_features, _, context = self.encode_response_features(batch)
+        charge_screening = self.charge_screening_trunk(
+            node_features, context, batch.batch
+        )
+        polar_strain = self.polar_strain_trunk(
+            node_features, context, batch.batch
+        )
+        born_features = self.born_adapter(
+            charge_screening, context, batch.batch
+        )
+        dielectric_features = self.dielectric_adapter(
+            charge_screening, context, batch.batch
+        )
+        electronic_features = self.electronic_adapter(
+            polar_strain, context, batch.batch
+        )
+        graphs = context.shape[0]
+        electronic_graph_features = scatter(
+            electronic_features,
+            batch.batch,
+            dim=0,
+            dim_size=graphs,
+            reduce="mean",
+        )
+        dielectric_graph_features = scatter(
+            dielectric_features,
+            batch.batch,
+            dim=0,
+            dim_size=graphs,
+            reduce="mean",
         )
         born = self.decode_born(born_features, context, batch.batch)
         electronic = self.decode_electronic_piezo(

@@ -38,11 +38,13 @@ from .electronic_capacity import (
 )
 from .electrostatic_fold_adjudication import (
     _dataset,
+    encoder_width_multiplier_for_architecture,
     load_structure_pretraining,
     make_model,
     response_active_diagnostic_indices,
 )
 from .electrostatic_protocol import (
+    A0_ARCHITECTURES,
     DEFAULT_EARLY_STOPPING_PATIENCE_EVALUATIONS,
     STABILIZED_SELECTION_VERSION,
     compact_training_curve_row,
@@ -197,6 +199,11 @@ def _restore_a0_progress(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--architecture",
+        choices=A0_ARCHITECTURES,
+        default="a0_independent_irreps",
+    )
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument(
         "--folds", type=Path,
@@ -309,7 +316,7 @@ def main() -> None:
             subset_manifest["material_id_sha256"]
         )
     training_contract = {
-        "architecture": "a0_independent_irreps",
+        "architecture": args.architecture,
         "fold": args.fold,
         "seed": args.seed,
         "updates": args.updates,
@@ -323,6 +330,9 @@ def main() -> None:
             args.early_stopping_minimum_improvement
         ),
         "learning_rate": args.learning_rate,
+        "encoder_width_multiplier": encoder_width_multiplier_for_architecture(
+            args.architecture, config
+        ),
         "train_ids": train_ids,
         "full_fold_structure_pretraining_ids": full_fold_train_ids,
         "development_ids": dev_ids,
@@ -338,10 +348,13 @@ def main() -> None:
         len(train_set), args.updates, args.batch_size, args.microbatch_size, args.seed
     )
     device = torch.device(args.device)
-    control = make_model("a0_independent_irreps", config)
+    control = make_model(args.architecture, config)
+    training_contract["parameter_count"] = sum(
+        parameter.numel() for parameter in control.parameters()
+    )
     pretraining = load_structure_pretraining(
         control,
-        "a0_independent_irreps",
+        args.architecture,
         args.pretrained_encoder,
         torch.device("cpu"),
         full_fold_train_ids,
@@ -542,7 +555,7 @@ def main() -> None:
                 "schema": 1,
                 "status": "running",
                 "completed_update": block_end,
-                "architecture": "a0_independent_irreps",
+                "architecture": args.architecture,
                 "training_contract": training_contract,
                 "model": {
                     task: _tower(control, task).state_dict() for task in TASKS
@@ -610,7 +623,7 @@ def main() -> None:
             "schema": 2,
             "status": "completed_no_eligible_checkpoint",
             "protocol": "resource-bounded disjoint-tower A0 Stage-A adjudication",
-            "architecture": "a0_independent_irreps",
+            "architecture": args.architecture,
             "fold": args.fold,
             "seed": args.seed,
             "checkpoint_provenance": checkpoint_provenance,
@@ -659,7 +672,7 @@ def main() -> None:
             torch.cuda.empty_cache()
     selected_payload = {
         "model": best_states,
-        "architecture": "a0_independent_irreps",
+        "architecture": args.architecture,
         "fold": args.fold,
         "selected_update": best_update,
         "seed": args.seed,
@@ -670,7 +683,7 @@ def main() -> None:
         "schema": 2,
         "status": "complete_early_stopped" if stopped_early else "complete",
         "protocol": "resource-bounded disjoint-tower A0 Stage-A adjudication",
-        "architecture": "a0_independent_irreps",
+        "architecture": args.architecture,
         "execution": (
             "three disjoint AdamW optimizers advanced in matched update blocks; "
             "one tower and optimizer state resident on CUDA at a time"

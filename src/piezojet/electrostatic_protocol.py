@@ -9,8 +9,22 @@ import torch
 
 ARCHITECTURES = (
     "a0_independent_irreps",
+    "a0_parameter_matched_irreps",
     "a1_electromechanical_jet",
     "a15_soft_shared_electromechanical_jet",
+    "a16_hierarchical_electromechanical_jet",
+)
+
+A0_ARCHITECTURES = (
+    "a0_independent_irreps",
+    "a0_parameter_matched_irreps",
+)
+
+CURRENT_ADJUDICATION_ARCHITECTURES = (
+    "a0_independent_irreps",
+    "a0_parameter_matched_irreps",
+    "a1_electromechanical_jet",
+    "a16_hierarchical_electromechanical_jet",
 )
 
 STABILIZED_SELECTION_VERSION = "electrostatic_stabilized_v2"

@@ -282,7 +282,7 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   optimizer time rises 964 -> 1,018 seconds. Preserve this mixed result, but
   do not add the algebraically redundant probe objective to the maintained
   candidate.
-- The maintained A1/A1.5 formula-disjoint runner is
+- The shared-candidate formula-disjoint runner is
   `piezojet.electrostatic_fold_adjudication`; resource-bounded A0 uses
   `piezojet.electrostatic_a0_fold_adjudication`. Every architecture uses the same
   fold-train-only structure checkpoint, random response heads, stochastic
@@ -294,8 +294,12 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - The vNext Stage-A objective has three availability-valid electrostatic
   tasks: BEC, same-OUTCAR electronic piezo, and electronic dielectric. A0 has
   three parameter-disjoint towers and three independent AdamW optimizers; A1
-  hard-shares the response trunk; A1.5 has separate
-  BEC, piezo, and dielectric equivariant adapters. Development selection sums
+  hard-shares the response trunk; historical A1.5 has separate exactly
+  zero-gated BEC, piezo, and dielectric adapters and remains a negative
+  control. A0-PM uses three independent width-0.56 encoders. A1.6 shares the
+  chemistry/geometry encoder, then separates charge--screening and
+  polar--strain response trunks and applies nonzero per-irrep task adapters.
+  Development selection sums
   the three stabilized normalized relative errors. BEC uses the same
   `0.1 e/component` denominator floor in training, reporting, and checkpoint
   selection; the raw zero-target relative error is audit-only.
@@ -312,11 +316,12 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   `data/processed/electrostatic_balanced_subsets_v1/`: N=200 and N=800 both
   cover all 85 fold-train elements and contain 200/800 unique reduced formulas.
 - The current frozen protocol is
-  `outputs/vnext_stage3_guardrailed_adjudication_v3/`. The execution order is
+  `outputs/vnext_stage3_guardrailed_adjudication_v3/`. Its original order was
   fresh full-fold structure pretraining, corrected A1 N=200, matched
-  A0/A1/A1.5 N=800, then only the N=800 top two at full fold. Execution was
-  explicitly resumed on 2026-07-21; consult run-local status artifacts rather
-  than inferring completion from this guide.
+  A0/A1/A1.5 N=800, then the N=800 top two at full fold. The N=800 comparison
+  has now reached the bounded result recorded below; full-fold promotion is
+  held pending the parameter-matched A0 fairness control. Consult run-local
+  status artifacts rather than inferring completion from this guide.
   Structure pretraining uses the complete 3,951-material fold-train structure
   universe, while response labels remain restricted to the fixed manifest.
   The current-commit physical-batch-4 attempt was stopped before epoch one at
@@ -357,7 +362,7 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   summed-objective gradients is verified parameter by parameter.
   Microbatch accumulation likewise preserves the material-mean objective but
   is not claimed bitwise AdamW-equivalent because reduction order changes.
-- A1/A1.5 persist an immutable checkpoint at every full-development evaluation,
+- Shared candidates persist an immutable checkpoint at every full-development evaluation,
   plus the latest `progress.pt`. Each checkpoint binds the deterministic
   material schedule, model, AdamW state, best state, complete train/development
   metrics, response-subset manifest, structure-pretraining universe, material
@@ -365,13 +370,41 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
 - If all N=800 candidates fit train but fail development, test BEC-first
   response-aware pretraining before expanding lmax or using PCGrad. Consider
   scale--shape outputs only when direction improves but amplitude stays
-  collapsed. Add A0-matched only if A0-full wins and capacity fairness becomes
-  necessary for the paper.
+  collapsed. A0-PM is now implemented because A0-full won while carrying a
+  threefold parameter advantage; it has not yet produced a development result.
 - N=800 evaluates every 50 updates with four eligible evaluations of
   guardrail-aware early-stopping patience. Patience starts only after an
   eligible checkpoint exists; failed guardrails never select or trigger a
   fallback. Compact `training_curve.json` records train/development scores,
   guardrails, generalization gap, timing, and the early-stop counter.
+- The fold-0/seed-42 N=800 A0 and A1 runs are complete. Their selected
+  update-500 stabilized scores are 1.66731 and 1.77987. A0 improves electronic
+  and BEC errors while A1 is slightly better on dielectric, but A0 has 19.30M
+  parameters versus A1's 6.45M; this is a model-class result, not a
+  capacity-matched promotion. A1.5 was explicitly interrupted after the
+  complete update-350 evaluation at score 1.89298 because it tracked A1 and
+  remained behind A0. Preserve it as partial negative evidence.
+- A1.5's exact-zero scalar adapter gates are an optimization confound: they
+  initially block adapter-internal gradients. At update 350 the electronic,
+  dielectric, and BEC effective gates are 0.00607, -0.00113, and -0.10505.
+  Do not generalize this partial result to all soft-sharing architectures.
+- The implemented fairness candidates are `a0_parameter_matched_irreps` and
+  `a16_hierarchical_electromechanical_jet`. Under the registered full config,
+  their parameter counts are 6,358,299 and 6,673,790, versus 6,454,490 for A1.
+  A0-PM requires its own exact-width fold-train-only structure checkpoint;
+  loading a full-width checkpoint is an error, never a fallback. A1.6 keeps
+  the complete O(3) hidden representation in both trunks, uses irrep-wise RMS
+  normalization and positive per-multiplicity gates initialized at 0.075, and
+  has regression tests for equivariance and nonzero first-step gradients.
+  The default next plan compares A0-full/A0-PM/A1/A1.6 and does not rerun A1.5.
+- Do not combine the sharing/capacity adjudication with Cartesian/MACE/Gaunt
+  backbones, scale--shape losses, BEC-first curriculum, or a new long-range
+  module. Those remain separately falsifiable later hypotheses.
+- The current diagnosis is multitask interference plus limited exposures and
+  formula-OOD generalization, not a confirmed DFPT-label or tensor-convention
+  bug. A0's train/dev score is 1.20774/1.66731 and it is still improving at
+  update 500. Run the implemented A0-PM/A1.6 fairness control before
+  considering a full-fold promotion.
 - `piezojet.prepare_electrostatic_adjudication` only writes an auditable command
   plan and can never launch training. The current Stage-A plan is
   `outputs/electromechanical_jet_fold_adjudication_v2/stage_a_n100_fold0_seed42_plan.json`.

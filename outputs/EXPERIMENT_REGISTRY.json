@@ -9488,19 +9488,23 @@
       "interpretation_boundary": "Fresh development-only protocol with code/data/graph/metric provenance, physical-batch-4/logical-batch-32 structural pretraining, non-maskable direction/amplitude checkpoint guardrails, immutable evaluation states, and matched N=800 model-class resources. Frozen validation10/test20 labels remain unread and no training is currently authorized.",
       "split": "electrostatic_development_folds_v2 fold0; frozen validation/test unread",
       "artifact_summary": {
-        "file_count": 7,
-        "bytes": 18425,
-        "last_modified_utc": "2026-07-20T19:26:30.123183Z",
-        "run_records": 3,
-        "completed_run_records": 0,
-        "partial_or_blocked_run_records": 3
+        "file_count": 17,
+        "bytes": 42798050,
+        "last_modified_utc": "2026-07-21T07:52:47.486759Z",
+        "run_records": 6,
+        "completed_run_records": 2,
+        "partial_or_blocked_run_records": 4
       },
       "key_artifacts": [
         "vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1/INTERRUPTED.md",
         "vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1/failure.json",
         "vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2/failure.json",
         "vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/INTERRUPTED.md",
-        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/failure.json"
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/failure.json",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_architecture_adjudication_summary.json",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_fold0_a0_independent_irreps_seed42/summary.json",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_fold0_a15_soft_shared_electromechanical_jet_seed42/INTERRUPTED.md",
+        "vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_fold0_a1_electromechanical_jet_seed42/summary.json"
       ],
       "runs": [
         {
@@ -9532,6 +9536,36 @@
           "markers": [
             "INTERRUPTED.md",
             "failure.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_n800_fold0_a0_independent_irreps_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_n800_fold0_a15_soft_shared_electromechanical_jet_seed42",
+          "execution_status": "interrupted",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "INTERRUPTED.md"
+          ],
+          "checkpoint_files": []
+        },
+        {
+          "path": "stage_a_n800_fold0_a1_electromechanical_jet_seed42",
+          "execution_status": "completed_with_summary",
+          "seed": 42,
+          "passes": null,
+          "markers": [
+            "summary.json"
           ],
           "checkpoint_files": []
         }

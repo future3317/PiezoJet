@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -111,6 +112,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument(
+        "--encoder-width-multiplier",
+        type=float,
+        default=None,
+        help="Explicit hidden-width contract for a parameter-matched response encoder",
+    )
+    parser.add_argument(
         "--code-commit",
         help="Pinned 40-character source commit recorded by the execution plan",
     )
@@ -145,6 +152,14 @@ def main() -> None:
         if args.batch_size < 1:
             raise ValueError("--batch-size must be positive")
         cfg["batch_size"] = args.batch_size
+    if args.encoder_width_multiplier is not None:
+        if args.encoder_width_multiplier <= 0.0 or not math.isfinite(
+            args.encoder_width_multiplier
+        ):
+            raise ValueError("--encoder-width-multiplier must be finite and positive")
+        cfg["electrostatic_encoder_width_multiplier"] = (
+            args.encoder_width_multiplier
+        )
     if args.logical_batch_size < 0:
         raise ValueError("--logical-batch-size cannot be negative")
     if args.accumulate_to_one_update and args.logical_batch_size:
@@ -254,6 +269,9 @@ def main() -> None:
         "logical_batch_size": logical_batch_size,
         "optimizer_updates_per_exposure_epoch": len(logical_update_sizes),
         "optimizer": "AdamW",
+        "electrostatic_encoder_width_multiplier": float(
+            cfg.get("electrostatic_encoder_width_multiplier", 1.0)
+        ),
         "objective": "masked_species_plus_translation_free_coordinate_denoising",
         "code_commit": cfg["code_commit"],
     }

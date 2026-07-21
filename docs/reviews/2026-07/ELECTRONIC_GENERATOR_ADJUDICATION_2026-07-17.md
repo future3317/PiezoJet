@@ -255,6 +255,86 @@ the learning curve or stratified residuals locate a representation/long-range
 floor. Scale--shape output is considered only after direction improves while
 amplitude remains collapsed.
 
+## 2026-07-21 matched N=800 result and diagnosis
+
+The fold-0/seed-42 A0 and A1 runs completed all 500 updates and selected their
+final evaluations. A1.5 was deliberately interrupted after its complete
+update-350 evaluation because it tracked A1 and remained far behind A0. The
+partial state, every prior evaluation checkpoint, curve, and explicit
+`INTERRUPTED.md` marker are retained.
+
+| candidate | status | selected/best update | score | electronic stabilized | BEC stabilized | dielectric stabilized | electronic cosine | amplitude | BEC cosine |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| A0 independent | complete | 500 | **1.66731** | **0.48502** | **0.69716** | 0.48514 | **0.26641** | **0.25523** | **0.71583** |
+| A1 shared | complete | 500 | 1.77987 | 0.50951 | 0.80633 | **0.46403** | 0.20635 | 0.18585 | 0.56425 |
+| A1.5 adapters | interrupted partial | 350 | 1.89298 | 0.51589 | 0.86393 | 0.51315 | 0.15828 | 0.09992 | 0.47800 |
+
+The architecture signal is real but bounded. A1's initial shared-gradient
+cosines are `-0.0272` for electronic--BEC, `-0.5822` for
+electronic--dielectric, and `+0.2167` for BEC--dielectric; the selected values
+are all close to zero. Parameter separation improves electronic and BEC while
+the shared model slightly improves dielectric. This is the expected signature
+of task interference, not a universal advantage for independent towers.
+Moreover, A0 has 19.30M parameters versus A1's 6.45M, so a parameter-matched A0
+control is required before attributing the whole gap to sharing alone.
+
+A1.5 has an additional code-level optimization confound rather than a tensor or
+physics error. `EquivariantResponseAdapter` multiplies the entire adapter by a
+scalar initialized at exactly zero. Adapter-internal gradients are therefore
+zero initially. At update 350 the electronic and dielectric effective gates
+remain only `0.00607` and `-0.00113`, while BEC reaches `-0.10505`. The run
+falsifies this zero-gated implementation under the registered budget; it does
+not establish that trainable soft sharing cannot work.
+
+There is no positive evidence that label corruption or a production-path code
+bug is the principal cause. The balanced N=800 panel contains 800 unique
+reduced formulas and all 85 fold-train elements; target-norm KS distances from
+the full fold-training population are at most 0.0192. Same-archive labels,
+exact-clone trajectories, microbatch-gradient equivalence, tensor tests,
+provenance checks, and frozen-panel guards all pass. Conversely, the learning
+problem is not solved: A0's train/development scores are 1.20774/1.66731, its
+train active-electronic relative error remains 0.88098, and its development
+score improves through update 500. The evidence therefore supports a combined
+diagnosis of multitask interference, too few optimization exposures/sample
+inefficiency, and formula-OOD generalization. The same-ID capacity pass rules
+out a hard model-class floor but cannot guarantee inductive learning.
+
+## 2026-07-21 controlled method upgrade
+
+The feedback is accepted with one representation-theoretic correction. BEC
+and dielectric tensors are inversion-even and electronic piezoelectricity is
+inversion-odd, but an even output can depend on even combinations of odd
+covariants. Therefore A1.6 does not delete odd hidden irreps. It keeps the
+complete `l<=3` O(3) representation after a shared periodic chemistry/geometry
+encoder, then introduces a charge--screening response trunk for BEC and
+dielectric and a polar--strain trunk for electronic piezoelectricity. Each task
+has a final nonzero per-irrep adapter.
+
+The new `TrainableIrrepAdapter` differs deliberately from historical A1.5. It
+uses RMS normalization independently within each irrep block, an
+invariant positive residual amplitude per multiplicity initialized at 0.075,
+small nonzero equivariant mixing, and graph-invariant context gates. Its O(3)
+equivariance and nonzero first-backward gradients for scale, mixing, and
+context routes are regression tested. Historical A1.5 is not modified or
+silently reinterpreted; it remains the preserved zero-gate negative control.
+
+The capacity confound is addressed by A0-PM. Scaling only the e3nn hidden
+multiplicities by 0.56 gives 6,358,299 actual trainable parameters across its
+three independent towers, compared with 6,454,490 for A1 and 6,673,790 for
+A1.6. The count is constructed from the production models, not estimated from
+nominal width. Because the narrow state layout differs, A0-PM requires an
+exact-width structure pretrain on the same 3,951 fold-train structures,
+objective, seed, and logical-batch protocol. Provenance validation rejects a
+full-width checkpoint rather than partially loading it or falling back.
+
+The default nonexecuting plan now contains A0-full, A0-PM, A1, and A1.6; it
+does not rerun A1.5. The e3nn backbone and all three response losses remain
+fixed, so this phase isolates parameter count and sharing topology. The
+proposed Cartesian many-body/MACE backbone, scale--shape output, BEC-first
+curriculum, Gaunt kernel, and long-range module are intentionally deferred to
+separate gates. No development result or production promotion is claimed for
+A0-PM or A1.6 before that controlled run.
+
 ## Artifacts
 
 - `outputs/electronic_generator_adjudication_v1/e0_exact_clone_cpu/summary.json`
@@ -273,6 +353,10 @@ amplitude remains collapsed.
 - `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_n200_fold0_a1_electromechanical_jet_seed42/`
 - `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt1/`
 - `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_full_fold0_seed42_pretrain_cc13d51_attempt2/`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_fold0_a0_independent_irreps_seed42/`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_fold0_a1_electromechanical_jet_seed42/`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_fold0_a15_soft_shared_electromechanical_jet_seed42/`
+- `outputs/vnext_stage3_guardrailed_adjudication_v3/stage_a_n800_architecture_adjudication_summary.json`
 
 The historical directory name `p1_differential_capacity` predates the current
 terminology. Its stored bytes remain immutable, but the maintained code calls
