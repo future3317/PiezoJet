@@ -12,6 +12,7 @@ STRUCTURAL=$ROOT/outputs/vnext_stage_a_hierarchical_fairness_server_v1_correct/s
 BEC=$ROOT/outputs/bec_response_pretraining_a0pm_fold0_seed42_v1/bec_pretrain_full/best_bec_tower.pt
 COMMIT=${PIEZOJET_CODE_COMMIT:?Set PIEZOJET_CODE_COMMIT to the committed source SHA.}
 GPU=${PIEZOJET_GPU:-5}
+GRAPH_CACHE_KEY=${PIEZOJET_GRAPH_CACHE_KEY:-333fe701095f973afbdb}
 
 export PYTHONPATH=$ROOT/src
 export PIEZOJET_DATA_ROOT=$DATA_ROOT
@@ -27,6 +28,7 @@ CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.pretrain_electronic_e3nn \
   --config "$ROOT/config.yaml" --folds "$FOLDS" --fold 0 \
   --output-dir "$COHORT/electronic_pretrain_full" --epochs 20 \
   --train-ids-file "$SUBSET" \
+  --graph-cache-key "$GRAPH_CACHE_KEY" \
   --batch-size 16 --logical-batch-size 32 --learning-rate 1e-3 \
   --seed 42 --device cuda --code-commit "$COMMIT" \
   --num-workers 0 --matmul-precision highest \

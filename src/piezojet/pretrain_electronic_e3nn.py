@@ -85,6 +85,10 @@ def main() -> None:
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
+        "--graph-cache-key",
+        help="Existing canonical graph-cache key; avoids recomputing a corpus hash",
+    )
+    parser.add_argument(
         "--matmul-precision", choices=("highest", "high", "medium"), default="highest"
     )
     args = parser.parse_args()
@@ -161,14 +165,23 @@ def main() -> None:
             "response_subset_manifest": str(args.train_ids_file.resolve()),
             "response_subset_material_id_sha256": subset_manifest["material_id_sha256"],
         })
-    # The response panel is the only graph population used by this executor.
-    # Hashing the complete 4,939-record corpus here needlessly serializes all
-    # structures and can consume GiB before the first update; panel-scoped
-    # caching is deterministic and avoids that startup cost.
-    panel_records = [by_id[value] for value in ids]
-    cache_key = graph_cache_key(
-        panel_records, float(config["cutoff"]), int(config["max_neighbors"])
+    if args.graph_cache_key is not None:
+        cache_key = args.graph_cache_key
+    else:
+        # The response panel is the only graph population used by this
+        # executor. Hashing the complete corpus needlessly serializes all
+        # structures and can consume GiB before the first update.
+        panel_records = [by_id[value] for value in ids]
+        cache_key = graph_cache_key(
+            panel_records, float(config["cutoff"]), int(config["max_neighbors"])
+        )
+    cache_manifest = (
+        Path(config["processed_dir"]) / "pbc_graph_cache" / cache_key / "manifest.json"
     )
+    if args.graph_cache_key is not None and not cache_manifest.is_file():
+        raise FileNotFoundError(
+            f"Requested graph cache key has no manifest: {cache_manifest}"
+        )
     dataset = _dataset(config, records, ids, cache_key)
     logical_sizes = logical_pretraining_batch_sizes(
         len(dataset), args.batch_size, args.logical_batch_size
@@ -184,6 +197,7 @@ def main() -> None:
         "optimizer_updates_per_exposure_epoch": len(logical_sizes),
         "optimizer": "AdamW",
         "code_commit": config["code_commit"],
+        "graph_cache_key": cache_key,
         "response_subset_manifest": (
             str(args.train_ids_file.resolve()) if args.train_ids_file is not None else None
         ),
