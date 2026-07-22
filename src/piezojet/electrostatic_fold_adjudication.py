@@ -51,6 +51,7 @@ from .model import (
 )
 from .project_config import load_project_config
 from .pretraining_protocol import (
+    validate_electronic_response_pretraining_checkpoint,
     validate_bec_response_pretraining_checkpoint,
     validate_inductive_checkpoint,
 )
@@ -500,6 +501,71 @@ def load_bec_response_pretraining(
         "response_pretraining_loss": payload.get("loss"),
         "response_task": "born",
         "initialized_parameter_scope": "born_generator_only",
+        "source_code_commit": payload.get("code_commit"),
+        "downstream_code_commit": config.get("code_commit"),
+    }
+
+
+def load_electronic_response_pretraining(
+    model: nn.Module,
+    architecture: str,
+    checkpoint: Path,
+    device: torch.device,
+    train_ids: list[str],
+    development_ids: list[str],
+    config: dict[str, object],
+) -> dict[str, object]:
+    """Strictly initialize only the independent A0-PM electronic tower."""
+    if architecture != "a0_parameter_matched_irreps":
+        raise ValueError(
+            "Electronic response-aware initialization is only defined for A0-PM"
+        )
+    payload = torch.load(checkpoint, map_location=device, weights_only=False)
+    expected_width = encoder_width_multiplier_for_architecture(architecture, config)
+    entry = validate_electronic_response_pretraining_checkpoint(
+        payload,
+        train_ids,
+        development_ids,
+        config,
+        expected_architecture=architecture,
+        expected_width_multiplier=expected_width,
+        expected_development_ids=development_ids,
+    )
+    expected_fold_identity = config.get("fold_identity")
+    if not isinstance(expected_fold_identity, str) or not expected_fold_identity.startswith(
+        "electrostatic-development-fold-"
+    ):
+        raise ValueError(
+            "Electronic response-aware loading requires an electrostatic fold identity"
+        )
+    expected_fold = int(expected_fold_identity.rsplit("-", maxsplit=1)[1])
+    if entry.get("development_fold") != expected_fold:
+        raise ValueError("Electronic response-pretraining fold differs")
+    saved_config = payload.get("config")
+    if not isinstance(saved_config, dict):
+        raise ValueError(
+            "Electronic response-pretraining checkpoint has no saved configuration"
+        )
+    expected_config = dict(config)
+    expected_config["electrostatic_encoder_width_multiplier"] = expected_width
+    mismatches = {
+        key: {"checkpoint": saved_config.get(key), "downstream": expected_config.get(key)}
+        for key in _PRETRAINING_COMPATIBILITY_KEYS
+        if key in expected_config and saved_config.get(key) != expected_config.get(key)
+    }
+    if mismatches:
+        raise ValueError(
+            "Electronic response-pretraining encoder configuration differs: "
+            f"{mismatches}"
+        )
+    model.piezo_generator.load_state_dict(payload["piezo_tower"], strict=True)
+    return {
+        "checkpoint": str(checkpoint.resolve()),
+        "pretraining_provenance": entry,
+        "response_pretraining_epoch": payload.get("epoch"),
+        "response_pretraining_loss": payload.get("loss"),
+        "response_task": "electronic",
+        "initialized_parameter_scope": "piezo_generator_only",
         "source_code_commit": payload.get("code_commit"),
         "downstream_code_commit": config.get("code_commit"),
     }

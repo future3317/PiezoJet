@@ -19,6 +19,12 @@ from .checkpoint_provenance import file_sha256
 PRETRAINING_PROTOCOL_SCHEMA = 2
 BEC_RESPONSE_PRETRAINING_ARCHITECTURE = "e3nn_periodic_bec_pretraining_v1"
 BEC_RESPONSE_PRETRAINING_OBJECTIVE = "born_charge_response_aware_pretraining"
+ELECTRONIC_RESPONSE_PRETRAINING_ARCHITECTURE = (
+    "e3nn_periodic_electronic_pretraining_v1"
+)
+ELECTRONIC_RESPONSE_PRETRAINING_OBJECTIVE = (
+    "electronic_piezo_response_aware_pretraining"
+)
 
 
 def _normalized_ids(ids: Iterable[str]) -> list[str]:
@@ -150,4 +156,53 @@ def validate_bec_response_pretraining_checkpoint(
         raise ValueError("BEC response-pretraining development-panel hash differs")
     if entry.get("development_formula_overlap_count") != 0:
         raise ValueError("BEC response-pretraining has development-formula overlap")
+    return entry
+
+
+def validate_electronic_response_pretraining_checkpoint(
+    payload: dict[str, Any],
+    train_ids: Iterable[str],
+    held_out_ids: Iterable[str],
+    config: Mapping[str, Any],
+    *,
+    expected_architecture: str,
+    expected_width_multiplier: float,
+    expected_development_ids: Iterable[str],
+) -> dict[str, Any]:
+    """Validate an electronic-piezo-only A0-PM response initializer."""
+    if payload.get("architecture") != ELECTRONIC_RESPONSE_PRETRAINING_ARCHITECTURE:
+        raise ValueError(
+            "Checkpoint is not an electronic response-aware pretraining state"
+        )
+    if payload.get("objective") != ELECTRONIC_RESPONSE_PRETRAINING_OBJECTIVE:
+        raise ValueError("Electronic response-pretraining objective differs")
+    if not isinstance(payload.get("piezo_tower"), dict):
+        raise ValueError(
+            "Electronic response-pretraining checkpoint has no piezo-tower state"
+        )
+    if not isinstance(payload.get("optimizer"), dict):
+        raise ValueError(
+            "Electronic response-pretraining checkpoint has no optimizer state"
+        )
+    entry = validate_inductive_checkpoint(payload, train_ids, held_out_ids, config)
+    contract = payload.get("response_pretraining_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("Electronic response-pretraining checkpoint has no contract")
+    if contract.get("objective") != ELECTRONIC_RESPONSE_PRETRAINING_OBJECTIVE:
+        raise ValueError("Electronic response-pretraining contract objective differs")
+    if contract.get("response_task") != "electronic":
+        raise ValueError("Electronic response-pretraining checkpoint is not electronic-only")
+    if entry.get("response_task") != "electronic":
+        raise ValueError("Electronic response-pretraining provenance is not electronic-only")
+    if contract.get("downstream_architecture") != expected_architecture:
+        raise ValueError("Electronic response-pretraining architecture differs")
+    if float(contract.get("encoder_width_multiplier", float("nan"))) != float(
+        expected_width_multiplier
+    ):
+        raise ValueError("Electronic response-pretraining encoder width differs")
+    expected_development = _normalized_ids(expected_development_ids)
+    if entry.get("development_material_id_sha256") != _id_hash(expected_development):
+        raise ValueError("Electronic response-pretraining development-panel hash differs")
+    if entry.get("development_formula_overlap_count") != 0:
+        raise ValueError("Electronic response-pretraining has development-formula overlap")
     return entry

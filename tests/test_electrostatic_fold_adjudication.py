@@ -21,6 +21,7 @@ from piezojet.electrostatic_fold_adjudication import (
     ARCHITECTURES,
     _evaluate,
     backward_training_objective,
+    load_electronic_response_pretraining,
     load_structure_pretraining,
     load_bec_response_pretraining,
     make_model,
@@ -61,6 +62,8 @@ from piezojet.pretrain_bec_e3nn import validate_resume_payload as validate_bec_r
 from piezojet.pretraining_protocol import (
     BEC_RESPONSE_PRETRAINING_ARCHITECTURE,
     BEC_RESPONSE_PRETRAINING_OBJECTIVE,
+    ELECTRONIC_RESPONSE_PRETRAINING_ARCHITECTURE,
+    ELECTRONIC_RESPONSE_PRETRAINING_OBJECTIVE,
 )
 from piezojet.pretraining_protocol import provenance
 from piezojet.prepare_electrostatic_adjudication import build_plan
@@ -968,6 +971,62 @@ def test_bec_response_pretraining_rejects_development_panel_drift_and_resume_dri
             expected_architecture="a0_parameter_matched_irreps",
             expected_width_multiplier=0.56,
             expected_development_ids=["other-development-id"],
+        )
+
+
+def test_electronic_response_pretraining_initializes_only_a0pm_piezo_tower(tmp_path):
+    config = {
+        "embedding_dim": 4, "cutoff": 3.0, "max_neighbors": 8, "lmax": 3,
+        "num_blocks": 1, "radial_basis": 3, "radial_hidden": 8,
+        "global_context_dim": 8, "spectral_channels": 2, "spectral_shells": 2,
+        "polar_fluctuation_shells": 2, "reciprocal_cutoff": 3.0,
+        "global_attention_dim": 4, "a0_parameter_matched_width_multiplier": 0.56,
+        "code_commit": "b" * 40, "fold_identity": "electrostatic-development-fold-0",
+    }
+    split_source = tmp_path / "folds.json"
+    split_source.write_text("{}", encoding="utf-8")
+    source = make_model("a0_parameter_matched_irreps", config)
+    entry = provenance(["train-id"], split_source, "train", config)
+    entry.update({
+        "development_material_id_sha256": sha256(b"development-id").hexdigest(),
+        "development_formula_overlap_count": 0,
+        "development_fold": 0,
+        "response_task": "electronic",
+    })
+    checkpoint = tmp_path / "electronic.pt"
+    torch.save({
+        "architecture": ELECTRONIC_RESPONSE_PRETRAINING_ARCHITECTURE,
+        "objective": ELECTRONIC_RESPONSE_PRETRAINING_OBJECTIVE,
+        "piezo_tower": source.piezo_generator.state_dict(),
+        "optimizer": {},
+        "config": {**config, "electrostatic_encoder_width_multiplier": 0.56},
+        "pretraining_provenance": entry,
+        "response_pretraining_contract": {
+            "objective": ELECTRONIC_RESPONSE_PRETRAINING_OBJECTIVE,
+            "response_task": "electronic",
+            "downstream_architecture": "a0_parameter_matched_irreps",
+            "encoder_width_multiplier": 0.56,
+        },
+    }, checkpoint)
+    target = make_model("a0_parameter_matched_irreps", config)
+    born_before = {
+        name: value.detach().clone()
+        for name, value in target.born_generator.state_dict().items()
+    }
+    audit = load_electronic_response_pretraining(
+        target, "a0_parameter_matched_irreps", checkpoint, torch.device("cpu"),
+        ["train-id"], ["development-id"], config,
+    )
+    assert audit["initialized_parameter_scope"] == "piezo_generator_only"
+    for name, value in source.piezo_generator.state_dict().items():
+        assert torch.equal(target.piezo_generator.state_dict()[name], value), name
+    for name, value in born_before.items():
+        assert torch.equal(target.born_generator.state_dict()[name], value), name
+    with pytest.raises(ValueError, match="only defined for A0-PM"):
+        load_electronic_response_pretraining(
+            make_model("a1_electromechanical_jet", config),
+            "a1_electromechanical_jet", checkpoint, torch.device("cpu"),
+            ["train-id"], ["development-id"], config,
         )
 
 

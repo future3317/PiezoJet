@@ -42,6 +42,7 @@ from .electrostatic_fold_adjudication import (
     _dataset,
     encoder_width_multiplier_for_architecture,
     load_bec_response_pretraining,
+    load_electronic_response_pretraining,
     load_structure_pretraining,
     make_model,
     response_active_diagnostic_indices,
@@ -304,6 +305,13 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--electronic-pretrained-tower", type=Path,
+        help=(
+            "Strict fold-train-only electronic response-aware initializer. It may "
+            "be used only with A0-PM and overwrites only piezo_generator."
+        ),
+    )
+    parser.add_argument(
         "--resume", type=Path,
         help="Resume from a run-local block-boundary progress.pt",
     )
@@ -347,6 +355,13 @@ def main() -> None:
             raise FileNotFoundError(f"A0 resume directory is absent: {args.output_dir}")
     if args.bec_pretrained_tower is not None and args.architecture != "a0_parameter_matched_irreps":
         raise ValueError("--bec-pretrained-tower is only valid for a0_parameter_matched_irreps")
+    if (
+        args.electronic_pretrained_tower is not None
+        and args.architecture != "a0_parameter_matched_irreps"
+    ):
+        raise ValueError(
+            "--electronic-pretrained-tower is only valid for a0_parameter_matched_irreps"
+        )
     if min(args.updates, args.batch_size, args.microbatch_size, args.eval_interval) < 1:
         raise ValueError("Update and batch arguments must be positive")
     if args.num_workers < 0:
@@ -447,6 +462,16 @@ def main() -> None:
             if args.bec_pretrained_tower is not None
             else None
         ),
+        "electronic_response_pretraining_checkpoint": (
+            str(args.electronic_pretrained_tower.resolve())
+            if args.electronic_pretrained_tower is not None
+            else None
+        ),
+        "electronic_response_pretraining_checkpoint_sha256": (
+            file_sha256(args.electronic_pretrained_tower)
+            if args.electronic_pretrained_tower is not None
+            else None
+        ),
     }
     seed_everything(args.seed)
     records = load_gmtnet_records(config["data_root"])
@@ -483,6 +508,19 @@ def main() -> None:
             config,
         )
         if args.bec_pretrained_tower is not None
+        else None
+    )
+    electronic_response_pretraining = (
+        load_electronic_response_pretraining(
+            control,
+            args.architecture,
+            args.electronic_pretrained_tower,
+            torch.device("cpu"),
+            full_fold_train_ids,
+            dev_ids,
+            config,
+        )
+        if args.electronic_pretrained_tower is not None
         else None
     )
     optimizers = {
@@ -895,6 +933,7 @@ def main() -> None:
         "frozen_validation_test_labels_read": False,
         "structure_pretraining": pretraining,
         "bec_response_pretraining": bec_response_pretraining,
+        "electronic_response_pretraining": electronic_response_pretraining,
         "response_subset_manifest": (
             str(args.train_ids_file.resolve()) if args.train_ids_file else None
         ),
