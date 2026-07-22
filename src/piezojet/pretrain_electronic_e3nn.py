@@ -9,11 +9,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import shutil
 from hashlib import sha256
 from pathlib import Path
 
 import torch
-from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
 from .data import formula, graph_cache_key, load_gmtnet_records
@@ -26,7 +27,7 @@ from .electrostatic_fold_adjudication import (
 from .electronic_capacity import irrep_balanced_capacity_loss
 from .loader_runtime import loader_options
 from .pretrain_bec_e3nn import (
-    _epoch_indices,
+    _multi_epoch_batches,
     _response_pretraining_ids,
     _valid_commit,
 )
@@ -85,6 +86,12 @@ def main() -> None:
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Batches prefetched per persistent worker without changing order",
+    )
+    parser.add_argument(
         "--graph-cache-key",
         help="Existing canonical graph-cache key; avoids recomputing a corpus hash",
     )
@@ -98,6 +105,8 @@ def main() -> None:
         raise ValueError("logical batch size must be a multiple of physical batch size")
     if args.train_limit < 0 or args.num_workers < 0:
         raise ValueError("train limit and num workers cannot be negative")
+    if args.prefetch_factor < 1:
+        raise ValueError("--prefetch-factor must be positive")
     if args.train_ids_file is not None and args.train_limit:
         raise ValueError("--train-ids-file and --train-limit are mutually exclusive")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
@@ -236,46 +245,53 @@ def main() -> None:
         if start_epoch > args.epochs:
             raise ValueError("Resume checkpoint already reached requested epochs")
 
+    training_loader = DataLoader(
+        dataset,
+        batch_sampler=_multi_epoch_batches(
+            len(dataset), args.seed, start_epoch, args.epochs, args.batch_size
+        ),
+        **loader_options(
+            args.num_workers,
+            cuda=device.type == "cuda",
+            persistent=True,
+            prefetch_factor=args.prefetch_factor,
+        ),
+    )
+    iterator = iter(training_loader)
+
     for epoch in range(start_epoch, args.epochs + 1):
-        loader = DataLoader(
-            Subset(dataset, _epoch_indices(len(dataset), args.seed, epoch)),
-            batch_size=args.batch_size,
-            shuffle=False,
-            **loader_options(args.num_workers, cuda=device.type == "cuda"),
-        )
         tower.train()
         optimizer.zero_grad(set_to_none=True)
-        total, graphs, logical_graphs, updates = 0.0, 0, 0, 0
-        logical_target = min(args.logical_batch_size, len(dataset))
-        for batch in loader:
-            batch = batch.to(device, non_blocking=device.type == "cuda")
-            if not torch.isfinite(batch.y_electronic_piezo).all():
-                raise ValueError("Electronic response-pretraining panel has non-finite labels")
-            _, graph_features, context = tower.encode_response_features(batch)
-            prediction = tower.decode_electronic_piezo(graph_features, context)
-            loss = irrep_balanced_capacity_loss(prediction, batch.y_electronic_piezo)
-            if not torch.isfinite(loss):
-                raise FloatingPointError("Non-finite electronic response-pretraining loss")
-            graphs_in_batch = int(batch.num_graphs)
-            if graphs_in_batch > logical_target - logical_graphs:
-                raise RuntimeError("Electronic batch crossed a logical-batch boundary")
-            (loss * graphs_in_batch / logical_target).backward()
-            total += float(loss.detach()) * graphs_in_batch
-            graphs += graphs_in_batch
-            logical_graphs += graphs_in_batch
-            if logical_graphs == logical_target:
-                if not all(
-                    torch.isfinite(parameter.grad).all()
-                    for parameter in tower.parameters() if parameter.grad is not None
-                ):
-                    raise FloatingPointError("Non-finite electronic pretraining gradient")
-                torch.nn.utils.clip_grad_norm_(tower.parameters(), max_norm=10.0)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                updates += 1
-                logical_graphs = 0
-                logical_target = min(args.logical_batch_size, len(dataset) - graphs)
-        if logical_graphs or updates != len(logical_sizes):
+        total, graphs, updates = 0.0, 0, 0
+        for logical_target in logical_sizes:
+            logical_graphs = 0
+            while logical_graphs < logical_target:
+                batch = next(iterator)
+                batch = batch.to(device, non_blocking=device.type == "cuda")
+                if not torch.isfinite(batch.y_electronic_piezo).all():
+                    raise ValueError("Electronic response-pretraining panel has non-finite labels")
+                _, graph_features, context = tower.encode_response_features(batch)
+                prediction = tower.decode_electronic_piezo(graph_features, context)
+                loss = irrep_balanced_capacity_loss(prediction, batch.y_electronic_piezo)
+                if not torch.isfinite(loss):
+                    raise FloatingPointError("Non-finite electronic response-pretraining loss")
+                graphs_in_batch = int(batch.num_graphs)
+                if graphs_in_batch > logical_target - logical_graphs:
+                    raise RuntimeError("Electronic batch crossed a logical-batch boundary")
+                (loss * graphs_in_batch / logical_target).backward()
+                total += float(loss.detach()) * graphs_in_batch
+                graphs += graphs_in_batch
+                logical_graphs += graphs_in_batch
+            if not all(
+                torch.isfinite(parameter.grad).all()
+                for parameter in tower.parameters() if parameter.grad is not None
+            ):
+                raise FloatingPointError("Non-finite electronic pretraining gradient")
+            torch.nn.utils.clip_grad_norm_(tower.parameters(), max_norm=10.0)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            updates += 1
+        if updates != len(logical_sizes):
             raise RuntimeError("Electronic response-pretraining update accounting drifted")
         value = total / max(graphs, 1)
         row = {
@@ -298,10 +314,18 @@ def main() -> None:
             "response_pretraining_contract": contract,
             "code_commit": config["code_commit"],
         }
-        torch.save(payload, args.output_dir / "last_electronic_tower.pt")
+        last_path = args.output_dir / "last_electronic_tower.pt"
+        torch.save(payload, last_path)
         if value < best:
             best = value
-            torch.save(payload, args.output_dir / "best_electronic_tower.pt")
+            best_path = args.output_dir / "best_electronic_tower.pt"
+            temporary = best_path.with_name(f".{best_path.name}.tmp")
+            temporary.unlink(missing_ok=True)
+            try:
+                os.link(last_path, temporary)
+            except OSError:
+                shutil.copyfile(last_path, temporary)
+            temporary.replace(best_path)
         print(f"pretrain_electronic_e3nn epoch={epoch} loss={value:.6g}")
     (args.output_dir / "history.json").write_text(
         json.dumps(history, indent=2) + "\n", encoding="utf-8"

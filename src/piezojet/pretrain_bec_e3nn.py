@@ -11,11 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import shutil
 from hashlib import sha256
 from pathlib import Path
 
 import torch
-from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
 from .build_electrostatic_development_folds import electrostatic_fold_train_ids
@@ -57,6 +58,35 @@ def _epoch_indices(materials: int, seed: int, epoch: int) -> list[int]:
         raise ValueError("Response pretraining needs at least one material")
     generator = torch.Generator().manual_seed(seed + epoch)
     return torch.randperm(materials, generator=generator).tolist()
+
+
+def _multi_epoch_schedule(
+    materials: int, seed: int, start_epoch: int, end_epoch: int
+) -> list[int]:
+    """Return concatenated deterministic per-epoch shuffles for one run segment."""
+    if materials < 1 or start_epoch < 1 or end_epoch < start_epoch:
+        raise ValueError("Schedule arguments must be positive and ordered")
+    schedule: list[int] = []
+    for epoch in range(start_epoch, end_epoch + 1):
+        schedule.extend(_epoch_indices(materials, seed, epoch))
+    return schedule
+
+
+def _multi_epoch_batches(
+    materials: int, seed: int, start_epoch: int, end_epoch: int, batch_size: int
+) -> list[list[int]]:
+    """Batch a concatenated schedule without crossing an epoch boundary."""
+    if batch_size < 1:
+        raise ValueError("Batch size must be positive")
+    schedule = _multi_epoch_schedule(materials, seed, start_epoch, end_epoch)
+    batches: list[list[int]] = []
+    for offset in range(0, len(schedule), materials):
+        epoch_schedule = schedule[offset : offset + materials]
+        batches.extend(
+            epoch_schedule[index : index + batch_size]
+            for index in range(0, len(epoch_schedule), batch_size)
+        )
+    return batches
 
 
 def _response_pretraining_ids(
@@ -112,6 +142,16 @@ def main() -> None:
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Batches prefetched per persistent worker without changing order",
+    )
+    parser.add_argument(
+        "--graph-cache-key",
+        help="Existing canonical graph-cache key; avoids recomputing a corpus hash",
+    )
+    parser.add_argument(
         "--matmul-precision", choices=("highest", "high", "medium"), default="highest"
     )
     args = parser.parse_args()
@@ -121,6 +161,8 @@ def main() -> None:
         raise ValueError("logical batch size must be a multiple of physical batch size")
     if args.train_limit < 0 or args.num_workers < 0:
         raise ValueError("train limit and num workers cannot be negative")
+    if args.prefetch_factor < 1:
+        raise ValueError("--prefetch-factor must be positive")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         raise ValueError("learning rate must be finite and positive")
     if not math.isfinite(args.weight_decay) or args.weight_decay < 0.0:
@@ -167,10 +209,25 @@ def main() -> None:
         "response_label_count": len(ids),
         "frozen_validation_test_labels_read": False,
     })
-    cache_key = graph_cache_key(
-        records, float(config["cutoff"]), int(config["max_neighbors"])
-    )
-    dataset = _dataset(config, records, ids, cache_key)
+    if args.graph_cache_key is not None:
+        cache_key = args.graph_cache_key
+        cache_manifest = (
+            Path(config["processed_dir"])
+            / "pbc_graph_cache"
+            / cache_key
+            / "manifest.json"
+        )
+        if not cache_manifest.is_file():
+            raise FileNotFoundError(
+                f"Requested graph cache key has no manifest: {cache_manifest}"
+            )
+    else:
+        cache_key = graph_cache_key(
+            [by_id[value] for value in ids],
+            float(config["cutoff"]),
+            int(config["max_neighbors"]),
+        )
+    dataset = _dataset(config, records, ids, cache_key, cache_graphs=False)
     if len(dataset) != len(ids):
         raise RuntimeError("BEC response-pretraining dataset lost material IDs")
     logical_sizes = logical_pretraining_batch_sizes(
@@ -187,6 +244,7 @@ def main() -> None:
         "optimizer_updates_per_exposure_epoch": len(logical_sizes),
         "optimizer": "AdamW",
         "code_commit": config["code_commit"],
+        "graph_cache_key": cache_key,
     }
     device = torch.device(args.device)
     model = make_model(_ARCHITECTURE, config)
@@ -215,34 +273,45 @@ def main() -> None:
         if start_epoch > args.epochs:
             raise ValueError("Resume checkpoint has already reached the requested epoch count")
 
+    training_loader = DataLoader(
+        dataset,
+        batch_sampler=_multi_epoch_batches(
+            len(dataset), args.seed, start_epoch, args.epochs, args.batch_size
+        ),
+        **loader_options(
+            args.num_workers,
+            cuda=device.type == "cuda",
+            persistent=True,
+            prefetch_factor=args.prefetch_factor,
+        ),
+    )
+    iterator = iter(training_loader)
+
     for epoch in range(start_epoch, args.epochs + 1):
-        epoch_set = Subset(dataset, _epoch_indices(len(dataset), args.seed, epoch))
-        loader = DataLoader(
-            epoch_set,
-            batch_size=args.batch_size,
-            shuffle=False,
-            **loader_options(args.num_workers, cuda=device.type == "cuda"),
-        )
         tower.train()
         optimizer.zero_grad(set_to_none=True)
-        total, graphs, logical_graphs, updates = 0.0, 0, 0, 0
-        logical_target = min(args.logical_batch_size, len(dataset))
-        for batch in loader:
-            batch = batch.to(device, non_blocking=device.type == "cuda")
-            if not torch.isfinite(batch.y_born).all():
-                raise ValueError("BEC response-pretraining panel has a non-finite BEC label")
-            node_features, _, context = tower.encode_response_features(batch)
-            prediction = tower.decode_born(node_features, context, batch.batch)
-            loss = born_material_balanced_loss(prediction, batch.y_born, batch.batch)
-            if not torch.isfinite(loss):
-                raise FloatingPointError("Non-finite BEC response-pretraining loss")
-            graphs_in_batch = int(batch.num_graphs)
-            if graphs_in_batch > logical_target - logical_graphs:
-                raise RuntimeError("A BEC batch crossed a logical-batch boundary")
-            (loss * graphs_in_batch / logical_target).backward()
-            total += float(loss.detach()) * graphs_in_batch
-            graphs += graphs_in_batch
-            logical_graphs += graphs_in_batch
+        total, graphs, updates = 0.0, 0, 0
+        for logical_target in logical_sizes:
+            logical_graphs = 0
+            while logical_graphs < logical_target:
+                batch = next(iterator)
+                batch = batch.to(device, non_blocking=device.type == "cuda")
+                if not torch.isfinite(batch.y_born).all():
+                    raise ValueError(
+                        "BEC response-pretraining panel has a non-finite BEC label"
+                    )
+                node_features, _, context = tower.encode_response_features(batch)
+                prediction = tower.decode_born(node_features, context, batch.batch)
+                loss = born_material_balanced_loss(prediction, batch.y_born, batch.batch)
+                if not torch.isfinite(loss):
+                    raise FloatingPointError("Non-finite BEC response-pretraining loss")
+                graphs_in_batch = int(batch.num_graphs)
+                if graphs_in_batch > logical_target - logical_graphs:
+                    raise RuntimeError("A BEC batch crossed a logical-batch boundary")
+                (loss * graphs_in_batch / logical_target).backward()
+                total += float(loss.detach()) * graphs_in_batch
+                graphs += graphs_in_batch
+                logical_graphs += graphs_in_batch
             if logical_graphs == logical_target:
                 if not all(
                     torch.isfinite(parameter.grad).all()
@@ -253,9 +322,7 @@ def main() -> None:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 updates += 1
-                logical_graphs = 0
-                logical_target = min(args.logical_batch_size, len(dataset) - graphs)
-        if logical_graphs or updates != len(logical_sizes):
+        if updates != len(logical_sizes):
             raise RuntimeError("BEC response-pretraining update accounting drifted")
         value = total / max(graphs, 1)
         row = {
@@ -278,10 +345,18 @@ def main() -> None:
             "response_pretraining_contract": contract,
             "code_commit": config["code_commit"],
         }
-        torch.save(payload, args.output_dir / "last_bec_tower.pt")
+        last_path = args.output_dir / "last_bec_tower.pt"
+        torch.save(payload, last_path)
         if value < best:
             best = value
-            torch.save(payload, args.output_dir / "best_bec_tower.pt")
+            best_path = args.output_dir / "best_bec_tower.pt"
+            temporary = best_path.with_name(f".{best_path.name}.tmp")
+            temporary.unlink(missing_ok=True)
+            try:
+                os.link(last_path, temporary)
+            except OSError:
+                shutil.copyfile(last_path, temporary)
+            temporary.replace(best_path)
         print(f"pretrain_bec_e3nn epoch={epoch} loss={value:.6g}")
     (args.output_dir / "history.json").write_text(
         json.dumps(history, indent=2) + "\n", encoding="utf-8"
