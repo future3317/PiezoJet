@@ -328,6 +328,10 @@ def main() -> None:
         help="Batches prefetched per persistent worker without changing order",
     )
     parser.add_argument(
+        "--graph-cache-key",
+        help="Existing canonical graph-cache key; avoids recomputing the corpus hash",
+    )
+    parser.add_argument(
         "--train-eval-interval",
         type=int,
         default=0,
@@ -472,12 +476,27 @@ def main() -> None:
             if args.electronic_pretrained_tower is not None
             else None
         ),
+        "graph_cache_key": None,
     }
     seed_everything(args.seed)
     records = load_gmtnet_records(config["data_root"])
-    cache_key = graph_cache_key(
-        records, float(config["cutoff"]), int(config["max_neighbors"])
-    )
+    if args.graph_cache_key is not None:
+        cache_key = args.graph_cache_key
+        cache_manifest = (
+            Path(config["processed_dir"])
+            / "pbc_graph_cache"
+            / cache_key
+            / "manifest.json"
+        )
+        if not cache_manifest.is_file():
+            raise FileNotFoundError(
+                f"Requested graph cache key has no manifest: {cache_manifest}"
+            )
+    else:
+        cache_key = graph_cache_key(
+            records, float(config["cutoff"]), int(config["max_neighbors"])
+        )
+    training_contract["graph_cache_key"] = cache_key
     train_set = _dataset(config, records, train_ids, cache_key)
     dev_set = _dataset(config, records, dev_ids, cache_key)
     schedule = matched_material_schedule(

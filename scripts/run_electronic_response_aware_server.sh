@@ -49,6 +49,7 @@ CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.electrostatic_a0_fold_adjudication \
   --bec-pretrained-tower "$BEC" \
   --electronic-pretrained-tower \
     "$COHORT/electronic_pretrain_full/best_electronic_tower.pt" \
+  --graph-cache-key "$GRAPH_CACHE_KEY" \
   --seed 42 --device cuda --num-workers 0 --matmul-precision highest \
   --code-commit "$COMMIT" \
   > "$COHORT/logs/a0_pm_electronic_response_aware.log" 2>&1
