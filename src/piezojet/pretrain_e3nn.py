@@ -24,6 +24,7 @@ from .data import (
 )
 from .pretrain import _corrupt_structure
 from .pretraining_protocol import provenance
+from .loader_runtime import loader_options
 from .project_config import load_project_config
 from .train import (
     _data_commit,
@@ -137,6 +138,14 @@ def main() -> None:
         "--resume", type=Path,
         help="Resume an exact-panel e3nn pretraining checkpoint at its next epoch",
     )
+    parser.add_argument(
+        "--num-workers", type=int, default=0,
+        help="Background graph-loading workers; does not alter the logical batch",
+    )
+    parser.add_argument(
+        "--matmul-precision", choices=("highest", "high", "medium"),
+        default="highest", help="PyTorch float32 matmul precision policy",
+    )
     args = parser.parse_args()
     cfg = load_project_config(args.config)
     cfg["data_commit"] = _data_commit(cfg["data_root"])
@@ -146,6 +155,7 @@ def main() -> None:
     ):
         raise ValueError("--code-commit must be one 40-character Git commit SHA")
     cfg["code_commit"] = code_commit.lower()
+    torch.set_float32_matmul_precision(args.matmul_precision)
     if args.seed is not None:
         cfg["seed"] = args.seed
     if args.batch_size is not None:
@@ -162,6 +172,8 @@ def main() -> None:
         )
     if args.logical_batch_size < 0:
         raise ValueError("--logical-batch-size cannot be negative")
+    if args.num_workers < 0:
+        raise ValueError("--num-workers cannot be negative")
     if args.accumulate_to_one_update and args.logical_batch_size:
         raise ValueError(
             "--accumulate-to-one-update and --logical-batch-size are mutually exclusive"
@@ -246,7 +258,7 @@ def main() -> None:
     )
     loader = DataLoader(
         dataset, batch_size=physical_batch_size, shuffle=True,
-        num_workers=0, pin_memory=device.type == "cuda",
+        **loader_options(args.num_workers, cuda=device.type == "cuda"),
     )
     model = e3nn_direct_baseline_from_config(cfg).to(device)
     head = E3nnStructurePretrainingHead(model.encoder.hidden_irreps).to(device)
@@ -307,6 +319,8 @@ def main() -> None:
         "physical_batch_size": int(cfg["batch_size"]),
         "logical_batch_size": logical_batch_size,
         "empty_cuda_cache_each_epoch": bool(args.empty_cuda_cache_each_epoch),
+        "num_workers": int(args.num_workers),
+        "matmul_precision": args.matmul_precision,
     })
     for epoch in range(start_epoch, epochs + 1):
         model.train()

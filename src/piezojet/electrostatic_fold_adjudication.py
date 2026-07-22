@@ -42,6 +42,7 @@ from .electrostatic_protocol import (
     matched_material_schedule,
 )
 from .electrostatic_subset import load_response_subset
+from .loader_runtime import loader_options
 from .model import (
     ElectromechanicalJetHead,
     HierarchicalElectromechanicalJetHead,
@@ -49,7 +50,10 @@ from .model import (
     SoftSharedElectromechanicalJetHead,
 )
 from .project_config import load_project_config
-from .pretraining_protocol import validate_inductive_checkpoint
+from .pretraining_protocol import (
+    validate_bec_response_pretraining_checkpoint,
+    validate_inductive_checkpoint,
+)
 from .train import _data_commit, _git_commit, seed_everything
 
 
@@ -437,6 +441,70 @@ def load_structure_pretraining(
     }
 
 
+def load_bec_response_pretraining(
+    model: nn.Module,
+    architecture: str,
+    checkpoint: Path,
+    device: torch.device,
+    train_ids: list[str],
+    development_ids: list[str],
+    config: dict[str, object],
+) -> dict[str, object]:
+    """Strictly initialize only the independent A0-PM BEC tower.
+
+    The response-aware initializer supplements, rather than replaces, the
+    fold-train-only structural initializer.  It is intentionally unavailable
+    to shared candidates and cannot initialize electronic or dielectric
+    parameters; the experiment therefore isolates BEC sample efficiency.
+    """
+    if architecture != "a0_parameter_matched_irreps":
+        raise ValueError("BEC response-aware initialization is only defined for A0-PM")
+    payload = torch.load(checkpoint, map_location=device, weights_only=False)
+    expected_width = encoder_width_multiplier_for_architecture(architecture, config)
+    entry = validate_bec_response_pretraining_checkpoint(
+        payload,
+        train_ids,
+        development_ids,
+        config,
+        expected_architecture=architecture,
+        expected_width_multiplier=expected_width,
+        expected_development_ids=development_ids,
+    )
+    expected_fold_identity = config.get("fold_identity")
+    if not isinstance(expected_fold_identity, str) or not expected_fold_identity.startswith(
+        "electrostatic-development-fold-"
+    ):
+        raise ValueError("BEC response-aware loading requires an electrostatic fold identity")
+    expected_fold = int(expected_fold_identity.rsplit("-", maxsplit=1)[1])
+    if entry.get("development_fold") != expected_fold:
+        raise ValueError("BEC response-pretraining fold differs")
+    saved_config = payload.get("config")
+    if not isinstance(saved_config, dict):
+        raise ValueError("BEC response-pretraining checkpoint has no saved configuration")
+    expected_config = dict(config)
+    expected_config["electrostatic_encoder_width_multiplier"] = expected_width
+    mismatches = {
+        key: {"checkpoint": saved_config.get(key), "downstream": expected_config.get(key)}
+        for key in _PRETRAINING_COMPATIBILITY_KEYS
+        if key in expected_config and saved_config.get(key) != expected_config.get(key)
+    }
+    if mismatches:
+        raise ValueError(
+            f"BEC response-pretraining encoder configuration differs: {mismatches}"
+        )
+    model.born_generator.load_state_dict(payload["born_tower"], strict=True)
+    return {
+        "checkpoint": str(checkpoint.resolve()),
+        "pretraining_provenance": entry,
+        "response_pretraining_epoch": payload.get("epoch"),
+        "response_pretraining_loss": payload.get("loss"),
+        "response_task": "born",
+        "initialized_parameter_scope": "born_generator_only",
+        "source_code_commit": payload.get("code_commit"),
+        "downstream_code_commit": config.get("code_commit"),
+    }
+
+
 def _dataset(config: dict[str, object], records, ids: list[str], cache_key: str):
     return PiezoDataset(
         records,
@@ -463,7 +531,7 @@ def _evaluate(model, loader, architecture: str):
     # inference tensors intentionally have no version counter.
     with torch.no_grad():
         for batch in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=device.type == "cuda")
             prediction = _coefficients(model, batch, architecture, create_graph=False)
             predictions.append(prediction.electronic_piezo.detach())
             targets.append(batch.y_electronic_piezo)
@@ -556,9 +624,19 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--num-workers", type=int, default=0,
+        help="Background graph-loading workers; runtime-only and resume-safe",
+    )
+    parser.add_argument(
+        "--matmul-precision", choices=("highest", "high", "medium"),
+        default="highest", help="PyTorch float32 matmul precision policy",
+    )
     args = parser.parse_args()
     if args.updates < 1 or args.batch_size < 1 or args.eval_interval < 1:
         raise ValueError("updates, batch size, and eval interval must be positive")
+    if args.num_workers < 0:
+        raise ValueError("--num-workers cannot be negative")
     if args.microbatch_size < 0 or args.eval_batch_size < 0 or args.diagnostic_batch_size < 0:
         raise ValueError("microbatch and evaluation batch sizes cannot be negative")
     if args.early_stopping_patience_evaluations < 0:
@@ -577,6 +655,7 @@ def main() -> None:
         raise ValueError("batch size must be divisible by microbatch size")
 
     config = load_project_config(args.config)
+    torch.set_float32_matmul_precision(args.matmul_precision)
     config["data_commit"] = _data_commit(config["data_root"])
     code_commit = args.code_commit or _git_commit()
     if len(code_commit) != 40 or any(
@@ -633,10 +712,12 @@ def main() -> None:
     )
     device = torch.device(args.device)
     dev_loader = DataLoader(
-        dev_set, batch_size=evaluation_batch_size, shuffle=False, num_workers=0,
+        dev_set, batch_size=evaluation_batch_size, shuffle=False,
+        **loader_options(args.num_workers, cuda=device.type == "cuda"),
     )
     train_eval_loader = DataLoader(
-        train_set, batch_size=evaluation_batch_size, shuffle=False, num_workers=0,
+        train_set, batch_size=evaluation_batch_size, shuffle=False,
+        **loader_options(args.num_workers, cuda=device.type == "cuda"),
     )
     if args.resume is None:
         if args.output_dir.exists():
@@ -719,7 +800,7 @@ def main() -> None:
         Subset(train_set, scheduled_tail),
         batch_size=microbatch_size,
         shuffle=False,
-        num_workers=0,
+        **loader_options(args.num_workers, cuda=device.type == "cuda"),
     )
     iterator = iter(train_loader)
     diagnostic_indices, diagnostic_materials = response_active_diagnostic_indices(
@@ -727,7 +808,10 @@ def main() -> None:
     )
     diagnostic_batch = next(iter(DataLoader(
         Subset(train_set, diagnostic_indices), batch_size=len(diagnostic_indices),
-        shuffle=False, num_workers=0,
+        shuffle=False,
+        **loader_options(
+            args.num_workers, cuda=device.type == "cuda", persistent=False
+        ),
     ))).to(device)
     initial_gradient = (
         saved_initial_gradient
@@ -768,7 +852,7 @@ def main() -> None:
             for microbatch in range(args.batch_size // microbatch_size):
                 if microbatch:
                     batch = next(iterator)
-                batch = batch.to(device)
+                batch = batch.to(device, non_blocking=device.type == "cuda")
                 model.train()
                 fraction = int(batch.num_graphs) / args.batch_size
                 electronic, born, dielectric = backward_training_objective(

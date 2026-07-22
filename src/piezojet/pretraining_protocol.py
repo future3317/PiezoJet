@@ -17,6 +17,8 @@ from .checkpoint_provenance import file_sha256
 
 
 PRETRAINING_PROTOCOL_SCHEMA = 2
+BEC_RESPONSE_PRETRAINING_ARCHITECTURE = "e3nn_periodic_bec_pretraining_v1"
+BEC_RESPONSE_PRETRAINING_OBJECTIVE = "born_charge_response_aware_pretraining"
 
 
 def _normalized_ids(ids: Iterable[str]) -> list[str]:
@@ -98,4 +100,54 @@ def validate_inductive_checkpoint(
             raise ValueError("Pretraining checkpoint canonical-data manifest differs")
         if entry.get("data_commit") != config.get("data_commit"):
             raise ValueError("Pretraining checkpoint GMTNet data commit differs")
+    return entry
+
+
+def validate_bec_response_pretraining_checkpoint(
+    payload: dict[str, Any],
+    train_ids: Iterable[str],
+    held_out_ids: Iterable[str],
+    config: Mapping[str, Any],
+    *,
+    expected_architecture: str,
+    expected_width_multiplier: float,
+    expected_development_ids: Iterable[str],
+) -> dict[str, Any]:
+    """Validate a BEC-only initializer before it touches an A0 tower.
+
+    This is deliberately a separate contract from structural pretraining:
+    response-aware weights are permitted only in the matching BEC tower and
+    must document the complete formula-disjoint development panel that was
+    excluded during their construction.  A partial or generic state dict is
+    never silently accepted as an initializer.
+    """
+    if payload.get("architecture") != BEC_RESPONSE_PRETRAINING_ARCHITECTURE:
+        raise ValueError("Checkpoint is not a BEC response-aware pretraining state")
+    if payload.get("objective") != BEC_RESPONSE_PRETRAINING_OBJECTIVE:
+        raise ValueError("BEC response-pretraining objective differs")
+    if not isinstance(payload.get("born_tower"), dict):
+        raise ValueError("BEC response-pretraining checkpoint has no born-tower state")
+    if not isinstance(payload.get("optimizer"), dict):
+        raise ValueError("BEC response-pretraining checkpoint has no optimizer state")
+    entry = validate_inductive_checkpoint(payload, train_ids, held_out_ids, config)
+    contract = payload.get("response_pretraining_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("BEC response-pretraining checkpoint has no contract")
+    if contract.get("objective") != BEC_RESPONSE_PRETRAINING_OBJECTIVE:
+        raise ValueError("BEC response-pretraining contract objective differs")
+    if contract.get("response_task") != "born":
+        raise ValueError("BEC response-pretraining checkpoint is not BEC-only")
+    if entry.get("response_task") != "born":
+        raise ValueError("BEC response-pretraining provenance is not BEC-only")
+    if contract.get("downstream_architecture") != expected_architecture:
+        raise ValueError("BEC response-pretraining architecture differs")
+    if float(contract.get("encoder_width_multiplier", float("nan"))) != float(
+        expected_width_multiplier
+    ):
+        raise ValueError("BEC response-pretraining encoder width differs")
+    expected_development = _normalized_ids(expected_development_ids)
+    if entry.get("development_material_id_sha256") != _id_hash(expected_development):
+        raise ValueError("BEC response-pretraining development-panel hash differs")
+    if entry.get("development_formula_overlap_count") != 0:
+        raise ValueError("BEC response-pretraining has development-formula overlap")
     return entry

@@ -384,29 +384,27 @@ norm remains a separate absolute leakage field. Reports include parameter
 count, counted FLOPs per logical update, optimizer GPU seconds, and peak CUDA
 allocation.
 
-Execution was explicitly resumed on 2026-07-21. No directory was overwritten or
-resumed after a resource interruption or redundant recomputation. The matched
-N=800/fold-0/seed-42 development comparison is now informative. Complete A0
-and A1 runs both select update 500: their stabilized three-task scores are
-`1.66731` and `1.77987`, respectively. A0 improves electronic/BEC stabilized
-errors (`0.48502/0.69716` versus `0.50951/0.80633`) and their directional
-metrics, while A1 is slightly better on electronic dielectric (`0.46403`
-versus `0.48514`). A1.5 tracks A1 through update 350 (`1.89298` versus A1
-`1.88757` at the same update) and was explicitly stopped as sufficient partial
-negative evidence; it is not reported as a complete 500-update result. Frozen
-validation10/test20 remain unread.
+Execution resumed on 2026-07-21 and the completed Stage-A architecture gate is
+recorded in
+`outputs/vnext_stage_a_hierarchical_fairness_server_v1_correct/ARCHITECTURE_GATE_DIAGNOSIS.json`.
+It is a single fold-0/seed-42, formula-disjoint, `N=800` development result;
+frozen validation10/test20 remain unread. All candidates use the same response
+subset, loss, schedule, fold-train-only structural initializer, and stabilized
+selection/guardrails. The selected checkpoints are:
 
-This comparison diagnoses a real sharing/optimization problem but is not a
-capacity-matched final ranking: A0 has `19,295,132` parameters and A1 has
-`6,454,490`. At A1 initialization, shared electronic--BEC,
-electronic--dielectric, and BEC--dielectric gradient cosines are
-`-0.0272/-0.5822/+0.2167`; at the selected checkpoint they are near zero.
-A1.5 also has a specific optimization confound: its scalar residual gates start
-at exactly zero, which initially blocks gradients to the adapter internals. At
-update 350, `tanh(scale)` is only `0.00607/-0.00113` for the electronic and
-dielectric adapters and `-0.10505` for BEC. The partial result therefore rejects
-this zero-gated A1.5 implementation under the fixed budget, not all soft-sharing
-architectures.
+| Candidate | Parameters | selected update | stabilized development score | BEC stabilized error |
+|---|---:|---:|---:|---:|
+| A0-full independent | 19.30M | 1200 | 1.61302 | 0.65336 |
+| A0-PM independent | 6.358M | 1200 | **1.58657** | **0.64019** |
+| A1 hard shared | 6.454M | 1000 | 1.73414 | 0.75302 |
+| A1.6 hierarchical | 6.674M | 800 | 1.72749 | 0.76495 |
+
+A0-PM beats hard sharing by `0.14757` and hierarchical sharing by `0.14091`.
+Its electronic error is effectively tied with A1, while its BEC error is the
+main advantage; A1.6 modestly improves A1 but does not close the independent
+gap. Thus the current evidence favors independent electrostatic towers in this
+data regime. It is not a multi-seed claim, a frozen-test result, or a general
+claim that sharing can never help.
 
 The implemented fairness repair is explicit rather than heuristic. With the
 registered full configuration, width multiplier `0.56` gives A0-PM
@@ -423,33 +421,34 @@ equivariance and nonzero first-step gradients for the amplitude, mixing, and
 context routes. A1.5 remains byte-for-byte behaviorally available as the
 zero-gate negative control and is excluded from the default next comparison.
 
-This is a preregistered model-class upgrade, not a performance claim. The next
-minimal experiment keeps the present e3nn `l<=3` backbone and three-task loss
-fixed while comparing A0-full, A0-PM, A1, and A1.6. Cartesian many-body/MACE,
-scale--shape losses, BEC-first curriculum, long-range electrostatics, and
-Gaunt kernels are separate later hypotheses; combining them before this
-sharing/capacity adjudication would make the result uninterpretable.
-The nonexecuting command contract is
-`outputs/vnext_stage_a_hierarchical_fairness_v1/plan.json`: fixed N=800,
-fold0/seed42, all 988 development materials, 1,500 updates, logical batch 16,
-and no early-stop fallback. It does not authorize or launch training.
+The next narrow hypothesis is **BEC response-aware pretraining**, not another
+shared-optimizer variant. All 3,951 fold-train structures have source BEC
+labels, whereas only 800 are used in the fixed downstream response subset. The
+new `piezojet.pretrain_bec_e3nn` command trains only the width-matched A0-PM
+BEC tower on the full fold-train BEC panel, then
+`piezojet.electrostatic_a0_fold_adjudication --bec-pretrained-tower` loads that
+tower only. Electronic and dielectric towers retain their ordinary structural
+initialization. Checkpoints bind the complete development-panel hash, source
+label identity, fold, data manifest, width, optimizer state, and architecture;
+a mismatch or any development-formula overlap is rejected. This is supervised
+response-aware initialization (not self-supervision) and its single-seed result
+must be retained regardless of outcome before considering PCGrad, long-range,
+or backbone changes.
 
 The data interface is not the leading explanation: all three models see the
 same balanced 800 unique formulas, same-archive labels, fold-train-only
 initializer, deterministic schedule, and stabilized metric. Exact-clone,
 microbatch-gradient, tensor, and provenance checks pass. Data scale and
-formula extrapolation nevertheless remain important: A0's selected train/dev
-scores are `1.20774/1.66731`, its development score is still improving at
-update 500, and even its train active electronic relative error is `0.88098`.
+formula extrapolation nevertheless remain important: selected A0-PM train/dev
+scores are `1.17988/1.58657`. The gate is single-seed development evidence, so
+it cannot establish a final learning curve or production generalization claim.
 Thus the current evidence is best described as task-interference plus
 undertraining/sample-efficiency and OOD generalization, not corrupted DFPT
-labels or a confirmed tensor-convention bug. A parameter-matched A0 control is
-the next fairness check before a full-fold promotion; the earlier N=100
-plan at `outputs/electromechanical_jet_fold_adjudication_v2/` remains a
-non-executed protocol record. The frozen v3 protocol will bind every selected
-checkpoint to the complete code/data/graph provenance. The similarly named
-plan under `electromechanical_jet_fold_adjudication/` is a superseded A0--A3
-historical plan and is not executable by the maintained runner.
+labels or a confirmed tensor-convention bug. The parameter-matched fairness
+check is complete; the next registered single-seed run tests BEC response-aware
+initialization before any PCGrad, long-range, or backbone intervention. The
+similarly named plans under `electromechanical_jet_fold_adjudication*` are
+historical and are not executable by the maintained runner.
 
 The explicit global-`l=3` displacement head resolves the former same-ID
 representation bottleneck.  On the preregistered samples32 capacity panel, a

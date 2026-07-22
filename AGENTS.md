@@ -377,13 +377,10 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   eligible checkpoint exists; failed guardrails never select or trigger a
   fallback. Compact `training_curve.json` records train/development scores,
   guardrails, generalization gap, timing, and the early-stop counter.
-- The fold-0/seed-42 N=800 A0 and A1 runs are complete. Their selected
-  update-500 stabilized scores are 1.66731 and 1.77987. A0 improves electronic
-  and BEC errors while A1 is slightly better on dielectric, but A0 has 19.30M
-  parameters versus A1's 6.45M; this is a model-class result, not a
-  capacity-matched promotion. A1.5 was explicitly interrupted after the
-  complete update-350 evaluation at score 1.89298 because it tracked A1 and
-  remained behind A0. Preserve it as partial negative evidence.
+- The earlier 500-update A0/A1/A1.5 trajectory is retained only as an
+  intermediate historical record. It is superseded for architecture decisions
+  by the completed 1,500-update A0-full/A0-PM/A1/A1.6 gate below; do not quote
+  its 1.66731/1.77987 values as the current comparison.
 - A1.5's exact-zero scalar adapter gates are an optimization confound: they
   initially block adapter-internal gradients. At update 350 the electronic,
   dielectric, and BEC effective gates are 0.00607, -0.00113, and -0.10505.
@@ -396,22 +393,32 @@ turn an unresolved data/physics issue into a cosmetic architectural claim.
   the complete O(3) hidden representation in both trunks, uses irrep-wise RMS
   normalization and positive per-multiplicity gates initialized at 0.075, and
   has regression tests for equivariance and nonzero first-step gradients.
-  The default next plan compares A0-full/A0-PM/A1/A1.6 and does not rerun A1.5.
-- Do not combine the sharing/capacity adjudication with Cartesian/MACE/Gaunt
-  backbones, scale--shape losses, BEC-first curriculum, or a new long-range
-  module. Those remain separately falsifiable later hypotheses.
+- `outputs/vnext_stage_a_hierarchical_fairness_server_v1_correct/ARCHITECTURE_GATE_DIAGNOSIS.json`
+  is the completed fold0/seed42/N800 architecture gate. Selected stabilized
+  development scores are A0-full 1.61302, A0-PM 1.58657, A1 1.73414, and
+  A1.6 1.72749. A0-PM is parameter matched to A1 yet wins by 0.14757; the
+  main shared-model deficit is BEC (0.64019 vs 0.75302/0.76495). This is
+  development-only single-seed evidence, not a production promotion or a
+  multi-seed statistical claim. Do not rerun A1.5.
+- The next single falsifiable candidate is BEC response-aware pretraining for
+  A0-PM. `piezojet.pretrain_bec_e3nn` uses source BEC labels only from the
+  3,951 fold-train records and exports only `born_generator`; the downstream
+  `--bec-pretrained-tower` loader rejects any fold, width, data, development-
+  panel-hash, formula-overlap, state-dict, or provenance mismatch and cannot
+  initialize electronic/dielectric towers. It is supervised initialization,
+  not self-supervision or a new physical response law.
+- Do not combine this BEC-pretraining gate with PCGrad/GradNorm, Cartesian/MACE,
+  scale--shape losses, or a new long-range module. Those remain separately
+  falsifiable later hypotheses.
 - The current diagnosis is multitask interference plus limited exposures and
   formula-OOD generalization, not a confirmed DFPT-label or tensor-convention
-  bug. A0's train/dev score is 1.20774/1.66731 and it is still improving at
-  update 500. Run the implemented A0-PM/A1.6 fairness control before
-  considering a full-fold promotion.
+  bug. At its selected point A0-PM has train/dev score 1.17988/1.58657; all
+  Stage-A runs remain development-only. Run the BEC response-aware gate before
+  considering PCGrad, a full-fold promotion, or a representation change.
 - `piezojet.prepare_electrostatic_adjudication` only writes an auditable command
-  plan and can never launch training. The current nonexecuted fairness plan is
-  `outputs/vnext_stage_a_hierarchical_fairness_v1/plan.json`: fold0/seed42,
-  fixed N=800 response labels, full 988-material development fold, 1,500
-  updates at logical batch 16, and A0-full/A0-PM/A1/A1.6. It requires fresh
-  width-matched pretraining where a compatible checkpoint is unavailable and
-  has no execution authorization. The older N=100 plan under
+  plan and can never launch training. The former nonexecuted fairness plan is
+  retained as protocol evidence; its completed server execution is the gate
+  above. The older N=100 plan under
   `outputs/electromechanical_jet_fold_adjudication_v2/` remains non-executed.
   The fold-only
   pretrainer derives schema-2 train IDs from the global population minus the

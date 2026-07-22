@@ -26,7 +26,7 @@ from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
 from .build_electrostatic_development_folds import electrostatic_fold_train_ids
-from .checkpoint_provenance import build_checkpoint_provenance
+from .checkpoint_provenance import build_checkpoint_provenance, file_sha256
 from .data import deterministic_subset, graph_cache_key, load_gmtnet_records
 from .electronic_capacity import (
     born_capacity_metrics,
@@ -39,6 +39,7 @@ from .electronic_capacity import (
 from .electrostatic_fold_adjudication import (
     _dataset,
     encoder_width_multiplier_for_architecture,
+    load_bec_response_pretraining,
     load_structure_pretraining,
     make_model,
     response_active_diagnostic_indices,
@@ -53,6 +54,7 @@ from .electrostatic_protocol import (
     matched_material_schedule,
 )
 from .electrostatic_subset import load_response_subset
+from .loader_runtime import loader_options
 from .project_config import load_project_config
 from .train import _data_commit, _git_commit, seed_everything
 
@@ -130,7 +132,7 @@ def _evaluate_task(tower: nn.Module, loader, task: str) -> dict[str, object]:
     # inference tensors intentionally have no version counter.
     with torch.no_grad():
         for batch in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=device.type == "cuda")
             predictions.append(_prediction(tower, batch, task).detach().cpu())
             if task == "electronic":
                 targets.append(batch.y_electronic_piezo.detach().cpu())
@@ -245,11 +247,26 @@ def main() -> None:
     )
     parser.add_argument("--pretrained-encoder", type=Path, required=True)
     parser.add_argument(
+        "--bec-pretrained-tower", type=Path,
+        help=(
+            "Strict fold-train-only BEC response-aware initializer. It may be used "
+            "only with A0-PM and overwrites only born_generator after structural init."
+        ),
+    )
+    parser.add_argument(
         "--resume", type=Path,
         help="Resume from a run-local block-boundary progress.pt",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--num-workers", type=int, default=0,
+        help="Background graph-loading workers; runtime-only and resume-safe",
+    )
+    parser.add_argument(
+        "--matmul-precision", choices=("highest", "high", "medium"),
+        default="highest", help="PyTorch float32 matmul precision policy",
+    )
     args = parser.parse_args()
     if args.resume is None and args.output_dir.exists():
         raise FileExistsError(f"A0 output directory already exists: {args.output_dir}")
@@ -258,8 +275,12 @@ def main() -> None:
             raise ValueError("A0 resume checkpoint must be inside --output-dir")
         if not args.output_dir.is_dir():
             raise FileNotFoundError(f"A0 resume directory is absent: {args.output_dir}")
+    if args.bec_pretrained_tower is not None and args.architecture != "a0_parameter_matched_irreps":
+        raise ValueError("--bec-pretrained-tower is only valid for a0_parameter_matched_irreps")
     if min(args.updates, args.batch_size, args.microbatch_size, args.eval_interval) < 1:
         raise ValueError("Update and batch arguments must be positive")
+    if args.num_workers < 0:
+        raise ValueError("--num-workers cannot be negative")
     if args.early_stopping_patience_evaluations < 0:
         raise ValueError("Early-stopping patience cannot be negative")
     if (
@@ -273,6 +294,7 @@ def main() -> None:
         raise ValueError("Logical batch size must be divisible by microbatch size")
 
     config = load_project_config(args.config)
+    torch.set_float32_matmul_precision(args.matmul_precision)
     config["data_commit"] = _data_commit(config["data_root"])
     code_commit = args.code_commit or _git_commit()
     if len(code_commit) != 40 or any(
@@ -336,6 +358,16 @@ def main() -> None:
         "train_ids": train_ids,
         "full_fold_structure_pretraining_ids": full_fold_train_ids,
         "development_ids": dev_ids,
+        "bec_response_pretraining_checkpoint": (
+            str(args.bec_pretrained_tower.resolve())
+            if args.bec_pretrained_tower is not None
+            else None
+        ),
+        "bec_response_pretraining_checkpoint_sha256": (
+            file_sha256(args.bec_pretrained_tower)
+            if args.bec_pretrained_tower is not None
+            else None
+        ),
     }
     seed_everything(args.seed)
     records = load_gmtnet_records(config["data_root"])
@@ -360,6 +392,19 @@ def main() -> None:
         full_fold_train_ids,
         dev_ids,
         config,
+    )
+    bec_response_pretraining = (
+        load_bec_response_pretraining(
+            control,
+            args.architecture,
+            args.bec_pretrained_tower,
+            torch.device("cpu"),
+            full_fold_train_ids,
+            dev_ids,
+            config,
+        )
+        if args.bec_pretrained_tower is not None
+        else None
     )
     optimizers = {
         task: torch.optim.AdamW(
@@ -399,13 +444,17 @@ def main() -> None:
         Subset(train_set, diagnostic_indices),
         batch_size=len(diagnostic_indices),
         shuffle=False,
-        num_workers=0,
+        **loader_options(
+            args.num_workers, cuda=device.type == "cuda", persistent=False
+        ),
     )
     dev_loader = DataLoader(
-        dev_set, batch_size=args.eval_batch_size, shuffle=False, num_workers=0
+        dev_set, batch_size=args.eval_batch_size, shuffle=False,
+        **loader_options(args.num_workers, cuda=device.type == "cuda"),
     )
     train_eval_loader = DataLoader(
-        train_set, batch_size=args.eval_batch_size, shuffle=False, num_workers=0
+        train_set, batch_size=args.eval_batch_size, shuffle=False,
+        **loader_options(args.num_workers, cuda=device.type == "cuda"),
     )
     if args.resume is None:
         args.output_dir.mkdir(parents=True, exist_ok=False)
@@ -450,7 +499,7 @@ def main() -> None:
                 Subset(train_set, block_indices),
                 batch_size=args.microbatch_size,
                 shuffle=False,
-                num_workers=0,
+                **loader_options(args.num_workers, cuda=device.type == "cuda"),
             )
             iterator = iter(loader)
             for update in range(block_start, block_end):
@@ -468,7 +517,9 @@ def main() -> None:
                 )
                 with flop_context:
                     for _ in range(args.batch_size // args.microbatch_size):
-                        batch = next(iterator).to(device)
+                        batch = next(iterator).to(
+                            device, non_blocking=device.type == "cuda"
+                        )
                         tower.train()
                         loss = _loss(tower, batch, task)
                         if not torch.isfinite(loss):
@@ -695,6 +746,7 @@ def main() -> None:
         "development_materials": len(dev_set),
         "frozen_validation_test_labels_read": False,
         "structure_pretraining": pretraining,
+        "bec_response_pretraining": bec_response_pretraining,
         "response_subset_manifest": (
             str(args.train_ids_file.resolve()) if args.train_ids_file else None
         ),
