@@ -161,8 +161,13 @@ def main() -> None:
             "response_subset_manifest": str(args.train_ids_file.resolve()),
             "response_subset_material_id_sha256": subset_manifest["material_id_sha256"],
         })
+    # The response panel is the only graph population used by this executor.
+    # Hashing the complete 4,939-record corpus here needlessly serializes all
+    # structures and can consume GiB before the first update; panel-scoped
+    # caching is deterministic and avoids that startup cost.
+    panel_records = [by_id[value] for value in ids]
     cache_key = graph_cache_key(
-        records, float(config["cutoff"]), int(config["max_neighbors"])
+        panel_records, float(config["cutoff"]), int(config["max_neighbors"])
     )
     dataset = _dataset(config, records, ids, cache_key)
     logical_sizes = logical_pretraining_batch_sizes(
