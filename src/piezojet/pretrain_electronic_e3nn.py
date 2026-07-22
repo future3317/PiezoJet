@@ -182,7 +182,7 @@ def main() -> None:
         raise FileNotFoundError(
             f"Requested graph cache key has no manifest: {cache_manifest}"
         )
-    dataset = _dataset(config, records, ids, cache_key)
+    dataset = _dataset(config, records, ids, cache_key, cache_graphs=False)
     logical_sizes = logical_pretraining_batch_sizes(
         len(dataset), args.batch_size, args.logical_batch_size
     )

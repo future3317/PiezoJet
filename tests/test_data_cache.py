@@ -27,6 +27,16 @@ def test_piezo_dataset_graph_cache_preserves_graph():
     assert first.edge_index.shape == second.edge_index.shape
 
 
+def test_piezo_dataset_can_disable_in_memory_graph_retention():
+    records = load_gmtnet_records(gmtnet_root())[:1]
+    material_id = str(records[0]["JARVIS_ID"])
+    uncached = PiezoDataset(records, [material_id], 5.0, 32, cache_graphs=False)
+    first = uncached[0]
+    second = uncached[0]
+    assert first is not second
+    assert uncached._graph_cache == {}
+
+
 def test_piezo_dataset_reuses_persistent_disk_graph(monkeypatch, tmp_path):
     records = load_gmtnet_records(gmtnet_root())[:1]
     material_id = str(records[0]["JARVIS_ID"])

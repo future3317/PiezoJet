@@ -571,7 +571,10 @@ def load_electronic_response_pretraining(
     }
 
 
-def _dataset(config: dict[str, object], records, ids: list[str], cache_key: str):
+def _dataset(
+    config: dict[str, object], records, ids: list[str], cache_key: str,
+    *, cache_graphs: bool = True,
+):
     return PiezoDataset(
         records,
         ids,
@@ -583,6 +586,7 @@ def _dataset(config: dict[str, object], records, ids: list[str], cache_key: str)
         dfpt_dir=config["jarvis_dfpt_dir"],
         strain_completion_dir=None,
         dfpt_profile="electrostatic",
+        cache_graphs=cache_graphs,
     )
 
 

@@ -441,13 +441,14 @@ def precompute_pbc_graphs(records: list[dict[str, Any]], processed_dir: str | Pa
 
 
 class PiezoDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None, elastic_targets_path: str | Path | None = None, dfpt_total_consistency_relative_tolerance: float = 0.05, dfpt_total_consistency_absolute_tolerance: float = 0.05, dfpt_profile: str = "full"):
+    def __init__(self, records: list[dict[str, Any]], ids: list[str], cutoff: float, max_neighbors: int, processed_dir: str | Path | None = None, cache_key: str | None = None, project_targets: bool = True, dfpt_dir: str | Path | None = None, strain_completion_dir: str | Path | None = None, elastic_targets_path: str | Path | None = None, dfpt_total_consistency_relative_tolerance: float = 0.05, dfpt_total_consistency_absolute_tolerance: float = 0.05, dfpt_profile: str = "full", cache_graphs: bool = True):
         super().__init__()
         wanted = set(ids)
         self.records = [record for record in records if str(record["JARVIS_ID"]) in wanted]
         if len(self.records) != len(ids):
             raise ValueError("Split contains material IDs absent from loaded GMTNet records")
         self.cutoff, self.max_neighbors = cutoff, max_neighbors
+        self._cache_graphs = bool(cache_graphs)
         self._graph_cache: dict[int, Data] = {}
         self._disk_cache = PersistentGraphCache(processed_dir, self.records, cutoff, max_neighbors, cache_key=cache_key) if processed_dir is not None else None
         self._target_cache = SymmetryTargetCache(processed_dir) if processed_dir is not None and project_targets else None
@@ -480,7 +481,7 @@ class PiezoDataset(Dataset):
         return len(self.records)
 
     def get(self, index: int) -> Data:
-        if index not in self._graph_cache:
+        if not self._cache_graphs or index not in self._graph_cache:
             record = self.records[index]
             graph = self._disk_cache.load(record) if self._disk_cache is not None else None
             if graph is None:
@@ -603,7 +604,8 @@ class PiezoDataset(Dataset):
                 graph.is_polar_point_group = torch.tensor(
                     is_polar_point_group(rotations), dtype=torch.bool
                 )
-                self._graph_cache[index] = graph
+                if self._cache_graphs:
+                    self._graph_cache[index] = graph
                 return graph
             if has_dfpt:
                 modes = int(dfpt["dynamical_eigenvalues"].numel())
@@ -761,5 +763,8 @@ class PiezoDataset(Dataset):
             graph.dfpt_mode_count = torch.tensor([modes], dtype=torch.long)
             graph.point_group_ops, graph.point_group_mask = pad_point_group_operations(rotations)
             graph.is_polar_point_group = torch.tensor(is_polar_point_group(rotations), dtype=torch.bool)
-            self._graph_cache[index] = graph
+            if self._cache_graphs:
+                self._graph_cache[index] = graph
+            else:
+                return graph
         return self._graph_cache[index]
