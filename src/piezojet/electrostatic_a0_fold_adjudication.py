@@ -15,6 +15,8 @@ import argparse
 import copy
 import json
 import math
+import os
+import shutil
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -60,6 +62,54 @@ from .train import _data_commit, _git_commit, seed_everything
 
 
 TASKS = ("electronic", "born", "dielectric")
+
+
+def _training_schedule_tail(
+    schedule: list[int],
+    start_update: int,
+    logical_batch_size: int,
+) -> list[int]:
+    """Return the exact remaining deterministic material schedule."""
+    if start_update < 0 or logical_batch_size < 1:
+        raise ValueError("Schedule offset arguments must be nonnegative/positive")
+    offset = start_update * logical_batch_size
+    if offset > len(schedule):
+        raise ValueError("Schedule offset lies beyond the persisted material schedule")
+    return schedule[offset:]
+
+
+def _train_evaluation_due(
+    block_end: int,
+    total_updates: int,
+    interval: int,
+) -> bool:
+    """Return whether the non-selecting full-train diagnostic is due."""
+    if block_end < 1 or total_updates < block_end or interval < 0:
+        raise ValueError("Invalid train-evaluation schedule")
+    return interval == 0 or block_end == total_updates or block_end % interval == 0
+
+
+def _clear_runtime_caches(module: nn.Module) -> None:
+    """Drop unregistered geometry tensors before moving a tower between devices."""
+    for child in module.modules():
+        if hasattr(child, "_geometry_cache"):
+            child._geometry_cache = None
+
+
+def _replace_progress_checkpoint(source: Path, destination: Path) -> None:
+    """Atomically make progress refer to one immutable evaluation checkpoint.
+
+    A hard link avoids a second Python serialization of model and optimizer
+    state.  A byte-copy fallback retains the same payload on filesystems that
+    cannot hard-link the two paths.
+    """
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        os.link(source, temporary)
+    except OSError:
+        shutil.copyfile(source, temporary)
+    temporary.replace(destination)
 
 
 def _optimizer_to(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
@@ -264,6 +314,26 @@ def main() -> None:
         help="Background graph-loading workers; runtime-only and resume-safe",
     )
     parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Batches prefetched per persistent worker without changing order",
+    )
+    parser.add_argument(
+        "--train-eval-interval",
+        type=int,
+        default=0,
+        help=(
+            "Common-update interval for the non-selecting full-train diagnostic; "
+            "0 preserves historical evaluation at every development checkpoint"
+        ),
+    )
+    parser.add_argument(
+        "--retain-cuda-allocator-cache",
+        action="store_true",
+        help="Do not clear inactive CUDA allocator blocks between disjoint towers",
+    )
+    parser.add_argument(
         "--matmul-precision", choices=("highest", "high", "medium"),
         default="highest", help="PyTorch float32 matmul precision policy",
     )
@@ -281,6 +351,14 @@ def main() -> None:
         raise ValueError("Update and batch arguments must be positive")
     if args.num_workers < 0:
         raise ValueError("--num-workers cannot be negative")
+    if args.prefetch_factor < 1:
+        raise ValueError("--prefetch-factor must be positive")
+    if args.train_eval_interval < 0:
+        raise ValueError("--train-eval-interval cannot be negative")
+    if args.train_eval_interval and args.train_eval_interval % args.eval_interval:
+        raise ValueError(
+            "--train-eval-interval must be a multiple of --eval-interval"
+        )
     if args.early_stopping_patience_evaluations < 0:
         raise ValueError("Early-stopping patience cannot be negative")
     if (
@@ -345,6 +423,7 @@ def main() -> None:
         "logical_batch_size": args.batch_size,
         "microbatch_size": args.microbatch_size,
         "eval_interval": args.eval_interval,
+        "train_eval_interval": args.train_eval_interval,
         "early_stopping_patience_evaluations": (
             args.early_stopping_patience_evaluations
         ),
@@ -445,16 +524,27 @@ def main() -> None:
         batch_size=len(diagnostic_indices),
         shuffle=False,
         **loader_options(
-            args.num_workers, cuda=device.type == "cuda", persistent=False
+            args.num_workers,
+            cuda=device.type == "cuda",
+            persistent=False,
+            prefetch_factor=args.prefetch_factor,
         ),
     )
     dev_loader = DataLoader(
         dev_set, batch_size=args.eval_batch_size, shuffle=False,
-        **loader_options(args.num_workers, cuda=device.type == "cuda"),
+        **loader_options(
+            args.num_workers,
+            cuda=device.type == "cuda",
+            prefetch_factor=args.prefetch_factor,
+        ),
     )
     train_eval_loader = DataLoader(
         train_set, batch_size=args.eval_batch_size, shuffle=False,
-        **loader_options(args.num_workers, cuda=device.type == "cuda"),
+        **loader_options(
+            args.num_workers,
+            cuda=device.type == "cuda",
+            prefetch_factor=args.prefetch_factor,
+        ),
     )
     if args.resume is None:
         args.output_dir.mkdir(parents=True, exist_ok=False)
@@ -464,10 +554,33 @@ def main() -> None:
             tower = _tower(control, task).to(device)
             diagnostic_batch = next(iter(diagnostic_loader)).to(device)
             initial_gradients[task] = _gradient_audit(tower, diagnostic_batch, task)
+            _clear_runtime_caches(tower)
             tower.to("cpu")
             del diagnostic_batch
-            if device.type == "cuda":
+            if device.type == "cuda" and not args.retain_cuda_allocator_cache:
                 torch.cuda.empty_cache()
+
+    remaining_subset = Subset(
+        train_set,
+        _training_schedule_tail(schedule, start_block, args.batch_size),
+    )
+    training_loaders = {
+        task: DataLoader(
+            remaining_subset,
+            batch_size=args.microbatch_size,
+            shuffle=False,
+            **loader_options(
+                args.num_workers,
+                cuda=device.type == "cuda",
+                persistent=True,
+                prefetch_factor=args.prefetch_factor,
+            ),
+        )
+        for task in TASKS
+    }
+    training_iterators = {
+        task: iter(loader) for task, loader in training_loaders.items()
+    }
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -475,9 +588,12 @@ def main() -> None:
     started = time.perf_counter()
     train_losses = {task: [0.0] * args.updates for task in TASKS}
     counted_flops_per_task: dict[str, int] = {}
-    cuda_update_events: dict[
+    cuda_block_events: dict[
         str, list[tuple[torch.cuda.Event, torch.cuda.Event]]
     ] = {task: [] for task in TASKS}
+    data_wait_seconds = {task: 0.0 for task in TASKS}
+    h2d_enqueue_seconds = {task: 0.0 for task in TASKS}
+    transfer_seconds = {task: 0.0 for task in TASKS}
 
     stopped_early = False
     completed_update = start_block
@@ -485,31 +601,29 @@ def main() -> None:
         block_end = min(block_start + args.eval_interval, args.updates)
         completed_update = block_end
         block_started = time.perf_counter()
-        block_indices = schedule[
-            block_start * args.batch_size : block_end * args.batch_size
-        ]
         block_metrics: dict[str, dict[str, object]] = {}
-        train_block_metrics: dict[str, dict[str, object]] = {}
+        run_train_evaluation = _train_evaluation_due(
+            block_end, args.updates, args.train_eval_interval
+        )
+        train_block_metrics: dict[str, dict[str, object]] | None = (
+            {} if run_train_evaluation else None
+        )
         evaluation_seconds: dict[str, dict[str, float]] = {}
         for task in TASKS:
+            transfer_started = time.perf_counter()
             tower = _tower(control, task).to(device)
             optimizer = optimizers[task]
             _optimizer_to(optimizer, device)
-            loader = DataLoader(
-                Subset(train_set, block_indices),
-                batch_size=args.microbatch_size,
-                shuffle=False,
-                **loader_options(args.num_workers, cuda=device.type == "cuda"),
-            )
-            iterator = iter(loader)
+            transfer_seconds[task] += time.perf_counter() - transfer_started
+            iterator = training_iterators[task]
+            block_start_event = block_end_event = None
+            if device.type == "cuda":
+                block_start_event = torch.cuda.Event(enable_timing=True)
+                block_end_event = torch.cuda.Event(enable_timing=True)
+                block_start_event.record()
             for update in range(block_start, block_end):
                 optimizer.zero_grad(set_to_none=True)
                 logical_loss = 0.0
-                start_event = end_event = None
-                if device.type == "cuda":
-                    start_event = torch.cuda.Event(enable_timing=True)
-                    end_event = torch.cuda.Event(enable_timing=True)
-                    start_event.record()
                 flop_context = (
                     FlopCounterMode(display=False)
                     if task not in counted_flops_per_task
@@ -517,8 +631,15 @@ def main() -> None:
                 )
                 with flop_context:
                     for _ in range(args.batch_size // args.microbatch_size):
-                        batch = next(iterator).to(
+                        wait_started = time.perf_counter()
+                        batch = next(iterator)
+                        data_wait_seconds[task] += time.perf_counter() - wait_started
+                        copy_started = time.perf_counter()
+                        batch = batch.to(
                             device, non_blocking=device.type == "cuda"
+                        )
+                        h2d_enqueue_seconds[task] += (
+                            time.perf_counter() - copy_started
                         )
                         tower.train()
                         loss = _loss(tower, batch, task)
@@ -533,30 +654,42 @@ def main() -> None:
                     counted_flops_per_task[task] = int(
                         flop_context.get_total_flops()
                     )
-                if start_event is not None and end_event is not None:
-                    end_event.record()
-                    cuda_update_events[task].append((start_event, end_event))
                 train_losses[task][update] = logical_loss
+            if block_start_event is not None and block_end_event is not None:
+                block_end_event.record()
+                cuda_block_events[task].append((block_start_event, block_end_event))
             development_evaluation_started = time.perf_counter()
             block_metrics[task] = _evaluate_task(tower, dev_loader, task)
             development_evaluation_seconds = (
                 time.perf_counter() - development_evaluation_started
             )
-            train_evaluation_started = time.perf_counter()
-            train_block_metrics[task] = _evaluate_task(
-                tower, train_eval_loader, task
-            )
+            train_evaluation_seconds = 0.0
+            if train_block_metrics is not None:
+                train_evaluation_started = time.perf_counter()
+                train_block_metrics[task] = _evaluate_task(
+                    tower, train_eval_loader, task
+                )
+                train_evaluation_seconds = (
+                    time.perf_counter() - train_evaluation_started
+                )
             evaluation_seconds[task] = {
                 "development_seconds": development_evaluation_seconds,
-                "train_seconds": time.perf_counter() - train_evaluation_started,
+                "train_seconds": train_evaluation_seconds,
             }
+            transfer_started = time.perf_counter()
+            _clear_runtime_caches(tower)
             tower.to("cpu")
             _optimizer_to(optimizer, torch.device("cpu"))
-            if device.type == "cuda":
+            transfer_seconds[task] += time.perf_counter() - transfer_started
+            if device.type == "cuda" and not args.retain_cuda_allocator_cache:
                 torch.cuda.empty_cache()
 
         selection = development_selection(block_metrics)
-        train_selection = development_selection(train_block_metrics)
+        train_selection = (
+            development_selection(train_block_metrics)
+            if train_block_metrics is not None
+            else None
+        )
         score = float(selection["raw_score"])
         row = {
             "update": block_end,
@@ -568,13 +701,18 @@ def main() -> None:
             "metrics": block_metrics,
             "train_metrics": train_block_metrics,
             "train_selection": train_selection,
-            "generalization_score_gap": score - float(train_selection["raw_score"]),
+            "generalization_score_gap": (
+                score - float(train_selection["raw_score"])
+                if train_selection is not None
+                else None
+            ),
             "evaluation_runtime": {
                 "per_task": evaluation_seconds,
                 "total_seconds": sum(
                     sum(task_seconds.values())
                     for task_seconds in evaluation_seconds.values()
                 ),
+                "train_evaluation_performed": run_train_evaluation,
                 "block_wall_seconds": time.perf_counter() - block_started,
             },
         }
@@ -590,7 +728,6 @@ def main() -> None:
             early_stopping["non_improving_evaluations"]
         )
         row["early_stopping"] = early_stopping
-        history.append(row)
         if bool(early_stopping["improved"]):
             best_score = score
             best_update = block_end
@@ -602,6 +739,13 @@ def main() -> None:
                 }
                 for task in TASKS
             }
+        compact_row = compact_training_curve_row(row)
+        if compact_row is None:
+            raise RuntimeError("A0 evaluation did not produce a compact history row")
+        # Immutable update checkpoints retain full per-material metrics.  The
+        # accumulated history stays compact so later checkpoint writes do not
+        # repeatedly serialize all earlier material-level payloads.
+        history.append(compact_row)
         evaluation_payload = {
                 "schema": 1,
                 "status": "running",
@@ -626,32 +770,32 @@ def main() -> None:
                 "train_metrics": train_block_metrics,
                 "selection_score": score,
                 "selection": selection,
+                "evaluation_runtime": row["evaluation_runtime"],
+                "latest_train_losses": {
+                    "electronic": row["train_electronic_loss"],
+                    "born": row["train_born_loss"],
+                    "dielectric": row["train_dielectric_loss"],
+                },
             }
         checkpoint_dir = args.output_dir / "evaluation_checkpoints"
         checkpoint_dir.mkdir(exist_ok=True)
-        torch.save(
-            evaluation_payload,
-            checkpoint_dir / f"update_{block_end:08d}.pt",
-        )
-        torch.save(evaluation_payload, args.output_dir / "progress.pt")
+        checkpoint_path = checkpoint_dir / f"update_{block_end:08d}.pt"
+        torch.save(evaluation_payload, checkpoint_path)
+        _replace_progress_checkpoint(checkpoint_path, args.output_dir / "progress.pt")
         (args.output_dir / "progress.json").write_text(
-            json.dumps({key: value for key, value in row.items() if key != "metrics"}, indent=2)
-            + "\n",
+            json.dumps({
+                "schema": 1,
+                "status": "running",
+                "completed_update": block_end,
+                **compact_row,
+            }, indent=2) + "\n",
             encoding="utf-8",
         )
         (args.output_dir / "training_curve.json").write_text(
-            json.dumps(
-                [
-                    compact
-                    for history_row in history
-                    if (compact := compact_training_curve_row(history_row)) is not None
-                ],
-                indent=2,
-            )
-            + "\n",
+            json.dumps(history, indent=2) + "\n",
             encoding="utf-8",
         )
-        print(json.dumps(row), flush=True)
+        print(json.dumps(compact_row), flush=True)
         if bool(early_stopping["should_stop"]):
             stopped_early = True
             break
@@ -661,7 +805,7 @@ def main() -> None:
     seconds = time.perf_counter() - started
     optimizer_seconds_per_task = {
         task: sum(start.elapsed_time(end) for start, end in events) / 1000.0
-        for task, events in cuda_update_events.items()
+        for task, events in cuda_block_events.items()
     }
     optimizer_seconds = (
         sum(optimizer_seconds_per_task.values())
@@ -692,6 +836,9 @@ def main() -> None:
                 "seconds": seconds,
                 "optimizer_seconds": optimizer_seconds,
                 "optimizer_seconds_per_task": optimizer_seconds_per_task,
+                "data_wait_seconds_per_task": data_wait_seconds,
+                "h2d_enqueue_seconds_per_task": h2d_enqueue_seconds,
+                "tower_optimizer_transfer_seconds_per_task": transfer_seconds,
                 "counted_flops_per_common_update": counted_flops_per_common_update,
             },
         }
@@ -717,9 +864,10 @@ def main() -> None:
         tower.to(device)
         diagnostic_batch = next(iter(diagnostic_loader)).to(device)
         selected_gradients[task] = _gradient_audit(tower, diagnostic_batch, task)
+        _clear_runtime_caches(tower)
         tower.to("cpu")
         del diagnostic_batch
-        if device.type == "cuda":
+        if device.type == "cuda" and not args.retain_cuda_allocator_cache:
             torch.cuda.empty_cache()
     selected_payload = {
         "model": best_states,
@@ -760,7 +908,11 @@ def main() -> None:
         "logical_batch_size": args.batch_size,
         "microbatch_size": args.microbatch_size,
         "evaluation_batch_size": args.eval_batch_size,
-        "num_workers": 0,
+        "num_workers": args.num_workers,
+        "prefetch_factor": args.prefetch_factor,
+        "persistent_training_loaders": True,
+        "train_evaluation_interval": args.train_eval_interval,
+        "retain_cuda_allocator_cache": args.retain_cuda_allocator_cache,
         "selection": (
             "minimum common-update development electronic-stabilized-relative plus "
             "BEC-stabilized-relative plus electronic-dielectric-stabilized-relative score"
@@ -793,6 +945,9 @@ def main() -> None:
             "seconds": seconds,
             "optimizer_seconds": optimizer_seconds,
             "optimizer_seconds_per_task": optimizer_seconds_per_task,
+            "data_wait_seconds_per_task": data_wait_seconds,
+            "h2d_enqueue_seconds_per_task": h2d_enqueue_seconds,
+            "tower_optimizer_transfer_seconds_per_task": transfer_seconds,
             "counted_flops_per_task_update": counted_flops_per_task,
             "counted_flops_per_common_update": counted_flops_per_common_update,
             "flop_count_scope": (
