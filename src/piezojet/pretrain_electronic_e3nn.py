@@ -17,6 +17,7 @@ from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
 from .data import formula, graph_cache_key, load_gmtnet_records
+from .electrostatic_subset import load_response_subset
 from .electrostatic_fold_adjudication import (
     _dataset,
     encoder_width_multiplier_for_architecture,
@@ -74,6 +75,10 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-6)
     parser.add_argument("--train-limit", type=int, default=0)
+    parser.add_argument(
+        "--train-ids-file", type=Path,
+        help="Preregistered fold-train response panel (mutually exclusive with --train-limit)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--code-commit")
@@ -89,6 +94,8 @@ def main() -> None:
         raise ValueError("logical batch size must be a multiple of physical batch size")
     if args.train_limit < 0 or args.num_workers < 0:
         raise ValueError("train limit and num workers cannot be negative")
+    if args.train_ids_file is not None and args.train_limit:
+        raise ValueError("--train-ids-file and --train-limit are mutually exclusive")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         raise ValueError("learning rate must be finite and positive")
     if not math.isfinite(args.weight_decay) or args.weight_decay < 0.0:
@@ -114,9 +121,22 @@ def main() -> None:
         raise ValueError("Electrostatic fold map is not explicitly frozen-panel safe")
     records = load_gmtnet_records(config["data_root"])
     known_ids = {str(record["JARVIS_ID"]) for record in records}
-    ids, development_ids = _response_pretraining_ids(
-        folds, args.fold, known_ids, args.train_limit, args.seed
-    )
+    fold = next((entry for entry in folds["folds"] if entry["fold"] == args.fold), None)
+    if fold is None:
+        raise ValueError(f"Fold {args.fold} is absent from electrostatic folds")
+    full_fold_train_ids = _response_pretraining_ids(
+        folds, args.fold, known_ids, 0, args.seed
+    )[0]
+    subset_manifest = None
+    if args.train_ids_file is not None:
+        ids, subset_manifest = load_response_subset(
+            args.train_ids_file, fold=args.fold, allowed_ids=full_fold_train_ids
+        )
+    else:
+        ids = _response_pretraining_ids(
+            folds, args.fold, known_ids, args.train_limit, args.seed
+        )[0]
+    development_ids = [str(value) for value in fold["development"]]
     by_id = {str(record["JARVIS_ID"]): record for record in records}
     overlap = sorted(
         {formula(by_id[value]) for value in ids}
@@ -136,6 +156,11 @@ def main() -> None:
         "response_label_count": len(ids),
         "frozen_validation_test_labels_read": False,
     })
+    if subset_manifest is not None:
+        pretraining_provenance.update({
+            "response_subset_manifest": str(args.train_ids_file.resolve()),
+            "response_subset_material_id_sha256": subset_manifest["material_id_sha256"],
+        })
     cache_key = graph_cache_key(
         records, float(config["cutoff"]), int(config["max_neighbors"])
     )
@@ -154,6 +179,12 @@ def main() -> None:
         "optimizer_updates_per_exposure_epoch": len(logical_sizes),
         "optimizer": "AdamW",
         "code_commit": config["code_commit"],
+        "response_subset_manifest": (
+            str(args.train_ids_file.resolve()) if args.train_ids_file is not None else None
+        ),
+        "response_subset_material_id_sha256": (
+            subset_manifest["material_id_sha256"] if subset_manifest is not None else None
+        ),
     }
     device = torch.device(args.device)
     model = make_model(_ARCHITECTURE, config)

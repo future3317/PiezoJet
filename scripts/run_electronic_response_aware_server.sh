@@ -26,6 +26,7 @@ mkdir -p "$COHORT/logs"
 CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.pretrain_electronic_e3nn \
   --config "$ROOT/config.yaml" --folds "$FOLDS" --fold 0 \
   --output-dir "$COHORT/electronic_pretrain_full" --epochs 20 \
+  --train-ids-file "$SUBSET" \
   --batch-size 16 --logical-batch-size 32 --learning-rate 1e-3 \
   --seed 42 --device cuda --code-commit "$COMMIT" \
   --num-workers 0 --matmul-precision highest \
