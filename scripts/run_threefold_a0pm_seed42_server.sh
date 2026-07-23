@@ -71,6 +71,14 @@ if [[ ! -f "$A0/selected.pt" ]]; then
   A0_RESUME=()
   if [[ -f "$A0/progress.pt" ]]; then
     A0_RESUME=(--resume "$A0/progress.pt")
+  elif [[ -d "$A0" ]]; then
+    # A process can be terminated before the first checkpoint.  Remove only
+    # an actually empty staging directory; never erase a partial run that has
+    # evidence which should be resumed or audited.
+    rmdir "$A0" 2>/dev/null || {
+      echo "A0 output exists without selected.pt/progress.pt; refusing overwrite: $A0" >&2
+      exit 1
+    }
   fi
   CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.electrostatic_a0_fold_adjudication \
   --config "$ROOT/config.yaml" --folds "$FOLDS" --fold "$FOLD" \
