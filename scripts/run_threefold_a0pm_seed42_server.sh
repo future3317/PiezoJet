@@ -89,7 +89,7 @@ if [[ ! -f "$A0/selected.pt" ]]; then
   --early-stopping-minimum-improvement 0.0 --train-ids-file "$SUBSET" \
   --development-limit 0 --pretrained-encoder "$STRUCTURAL" \
   --bec-pretrained-tower "$BEC" --electronic-pretrained-tower "$ELECTRONIC" \
-  --graph-cache-key "$GRAPH_CACHE_KEY" --seed 42 --device cuda --num-workers 0 \
+  --graph-cache-key "$GRAPH_CACHE_KEY" --seed 42 --device cuda --num-workers 2 \
   --matmul-precision highest --code-commit "$COMMIT" \
   "${A0_RESUME[@]}" > "$LOG/a0_pm.log" 2>&1
 fi
