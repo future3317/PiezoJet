@@ -263,6 +263,27 @@ def test_a0_resume_restores_all_towers_and_optimizers_at_common_boundary():
             {**payload, "completed_update": 3}, contract, provenance,
         )
 
+    runtime_provenance = {**provenance, "code_commit": "old-runtime-commit"}
+    current_provenance = {**provenance, "code_commit": "new-runtime-commit"}
+    restored = _restore_a0_progress(
+        restored_model,
+        restored_optimizers,
+        {**payload, "checkpoint_provenance": runtime_provenance},
+        contract,
+        current_provenance,
+        allow_runtime_resume=True,
+    )
+    assert restored["start_block"] == 5
+    with pytest.raises(ValueError, match="provenance"):
+        _restore_a0_progress(
+            restored_model,
+            restored_optimizers,
+            {**payload, "checkpoint_provenance": {**runtime_provenance, "all_ids_sha256": "b" * 64}},
+            contract,
+            current_provenance,
+            allow_runtime_resume=True,
+        )
+
 
 def test_independent_control_runs_only_its_declared_decoders():
     graph = record_to_graph(load_gmtnet_records(gmtnet_root())[10], 5.0, 12)
