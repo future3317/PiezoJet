@@ -269,13 +269,18 @@ selection rule 的方式换取速度。
 |---|---|---:|---:|---:|---:|---:|
 | 0 | complete（兼容 cohort） | 800 | 1.35458 | 0.50531 | 0.39123 | 0.45804 |
 | 1 | complete_early_stopped | 700 | 1.51672 | 0.53235 | 0.38265 | 0.60172 |
-| 2 | running（断点可恢复） | — | 最近 1.35790 | 0.49536 | 0.37911 | 0.48343 |
+| 2 | complete | 1350 | 1.34754 | 0.49539 | 0.38071 | 0.47144 |
 
-fold1 在 update 700 后满足四次无改善的早停条件；fold2 截至本记录在
-update 1200，guardrails 全通过（electronic active cosine 0.46721、BEC
-nonzero cosine 0.88486、active amplitude ratio 0.39622）。fold2 不应被重复
-启动；完成后只需写入最终 checkpoint 和汇总。三折的意义是确认 A0-PM 的
+fold1 在 update 700 后满足四次无改善的早停条件；fold2 在 update 1350 取得
+最佳 checkpoint，并于 update 1500 正常完成（最终 guardrails 全通过，selected
+electronic active cosine 0.48425、BEC nonzero cosine 0.88517、active amplitude
+ratio 0.42431）。三折的意义是确认 A0-PM 的
 fold 稳定性，不是冻结测试集结果；validation10/test20 仍未读取。
+
+三折 selected score 的均值/样本标准差为 1.40628/0.09571；electronic、BEC、
+dielectric 分项均值分别为 0.51102、0.38487、0.51040。fold1 的 dielectric
+分项明显较高，说明晶体/公式 OOD 仍有 fold variance；这不是理由去读取 frozen
+panel 或改变 selection rule。
 
 ### 13.2 M1 global `l=1` mixer oracle 判定
 
@@ -312,3 +317,9 @@ tetragonal 的 active cosine 0.610，而 orthorhombic/trigonal 分别为 0.379/0
 补齐相同分层与公式新颖度报告，再决定是否值得做一个独立 `l=1` readout 的
 samples8/32 capacity。该候选若不能先通过 same-ID gate，不进入 N=200 或
 更大规模训练。
+
+对两个 `l=1` copy 做 per-material 2×2 拟合的 spread 诊断显示 audit 中
+global-map 偏差中位数约 9.85、P90 约 65.38，但单材料只有三个 vector
+components，拟合矩阵条件数中位数约 4.6×10^5，因而该 oracle 过度欠定，不能
+直接证明应部署材料条件 mixer。它只支持“固定全局 mixer 不足”的结论；下一
+候选必须先用同 ID capacity 证伪，而不能把这个欠定 oracle 当作性能结果。

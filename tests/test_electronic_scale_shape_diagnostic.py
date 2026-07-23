@@ -4,6 +4,7 @@ from piezojet.electronic_scale_shape_diagnostic import (
     apply_l1_mixer,
     apply_irrep_scales,
     fit_l1_mixer,
+    fit_per_material_l1_mixers,
     fit_irrep_scales,
     fit_scale,
     oracle_shape_prediction,
@@ -39,6 +40,24 @@ def test_l1_mixer_is_batch_permutation_equivariant_and_rotation_independent():
     assert torch.allclose(
         apply_l1_mixer(prediction[permutation], mixer), mixed[permutation], atol=1e-12
     )
+
+
+def test_per_material_mixer_diagnostic_recovers_each_map():
+    torch.manual_seed(11)
+    prediction = piezo_from_irreps(torch.randn(4, 18))
+    coordinates = piezo_to_irreps(prediction)
+    maps = torch.tensor(
+        [[[1.0, 0.1], [0.2, 0.9]], [[0.8, -0.2], [0.3, 1.1]],
+         [[1.2, 0.0], [-0.1, 0.7]], [[0.9, 0.4], [0.0, 1.3]]],
+        dtype=torch.float64,
+    )
+    copies = torch.stack((coordinates[..., 0:3], coordinates[..., 3:6]), dim=-2)
+    mapped = torch.einsum("nab,nbc->nac", maps.to(copies), copies)
+    target_coordinates = coordinates.clone()
+    target_coordinates[..., 0:3] = mapped[..., 0, :]
+    target_coordinates[..., 3:6] = mapped[..., 1, :]
+    fitted = fit_per_material_l1_mixers(prediction, piezo_from_irreps(target_coordinates))
+    assert torch.allclose(fitted, maps, atol=1e-6, rtol=1e-6)
 def test_scalar_and_irrep_scales_recover_known_mapping():
     target_coordinates = torch.randn(6, 18)
     prediction_coordinates = target_coordinates.clone()

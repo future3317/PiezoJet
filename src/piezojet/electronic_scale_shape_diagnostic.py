@@ -107,6 +107,42 @@ def fit_l1_mixer(
     }
 
 
+def fit_per_material_l1_mixers(
+    prediction: torch.Tensor, target: torch.Tensor
+) -> torch.Tensor:
+    """Fit one diagnostic 2x2 map per material, without deployment semantics.
+
+    Each material contributes three vector components, so this is an
+    intentionally noisy upper-bound diagnostic rather than a trainable
+    adapter.  The distribution is useful only for testing whether a single
+    global multiplicity map is even plausible.
+    """
+    predicted = piezo_to_irreps(prediction).to(torch.float64)
+    expected = piezo_to_irreps(target).to(torch.float64)
+    x = torch.stack((predicted[..., 0:3], predicted[..., 3:6]), dim=-1)
+    y = torch.stack((expected[..., 0:3], expected[..., 3:6]), dim=-1)
+    maps = [torch.linalg.lstsq(x[index], y[index]).solution.transpose(0, 1) for index in range(x.shape[0])]
+    return torch.stack(maps)
+
+
+def per_material_l1_mixer_summary(
+    prediction: torch.Tensor, target: torch.Tensor
+) -> dict[str, float | int]:
+    """Return robust spread diagnostics for per-material l=1 maps."""
+    maps = fit_per_material_l1_mixers(prediction, target)
+    global_map = fit_l1_mixer(prediction, target)["unconstrained"]
+    deviations = torch.linalg.vector_norm(maps - global_map, dim=(-2, -1))
+    condition_numbers = torch.linalg.cond(maps)
+    finite_condition = condition_numbers[torch.isfinite(condition_numbers)]
+    return {
+        "materials": int(maps.shape[0]),
+        "global_map_frobenius_deviation_median": float(deviations.median()),
+        "global_map_frobenius_deviation_p90": float(torch.quantile(deviations, 0.9)),
+        "per_material_map_condition_median": float(finite_condition.median()) if finite_condition.numel() else float("inf"),
+        "per_material_map_condition_p90": float(torch.quantile(finite_condition, 0.9)) if finite_condition.numel() else float("inf"),
+    }
+
+
 def apply_l1_mixer(
     prediction: torch.Tensor, mixer: torch.Tensor
 ) -> torch.Tensor:
@@ -197,6 +233,12 @@ def run_diagnostic(
             name: mixer.tolist() for name, mixer in l1_mixers.items()
         },
         "audit_l1_mixer": l1_mixer_audits,
+        "calibration_per_material_l1_mixer_spread": per_material_l1_mixer_summary(
+            calibration_prediction, calibration_target
+        ),
+        "audit_per_material_l1_mixer_spread": per_material_l1_mixer_summary(
+            audit_prediction, audit_target
+        ),
         "l1_mixer_policy": (
             "global scalar 2x2 maps in the two l=1 multiplicity coordinates; "
             "fit on calibration slice only, never a production fallback"
