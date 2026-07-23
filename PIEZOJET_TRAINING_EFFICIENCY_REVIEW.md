@@ -172,8 +172,9 @@ A0 run resumes from the last common-update evaluation checkpoint. A completed
 `history.json`/`selected.pt` is required before a stage is skipped, so a partial file
 cannot silently masquerade as a finished initializer.
 
-For the upcoming three-fold single-seed gate, use the already validated A0
-resource-bounded runner with `num_workers=0` as the reproducible baseline. A
-worker/prefetch speed comparison may be run separately; it must not silently
-become the registered result until loss/gradient/resume equivalence and host
-memory are recorded.
+For the upcoming three-fold single-seed gate, the runner now keeps the
+worker-free pretraining path but uses two persistent A0 graph-loading workers
+after the main-process cache warm-up. This overlaps ragged collation with CUDA
+without changing the deterministic schedule. The runtime choice is recorded in
+each run command and can be reverted to `num_workers=0` if host-memory monitoring
+detects pressure; loss/gradient/resume equivalence remains mandatory.
