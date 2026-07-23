@@ -499,6 +499,12 @@ def main() -> None:
     training_contract["graph_cache_key"] = cache_key
     train_set = _dataset(config, records, train_ids, cache_key)
     dev_set = _dataset(config, records, dev_ids, cache_key)
+    # A0 revisits the same fixed train/development panels for many common
+    # update blocks.  Materialize the bounded electrostatic graph caches
+    # before moving towers to CUDA so disk deserialization cannot starve the
+    # GPU inside the optimizer loop.
+    train_set.warm_graph_cache()
+    dev_set.warm_graph_cache()
     schedule = matched_material_schedule(
         len(train_set), args.updates, args.batch_size, args.microbatch_size, args.seed
     )
