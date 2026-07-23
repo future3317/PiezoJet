@@ -82,6 +82,45 @@ def oracle_shape_prediction(
     return piezo_from_irreps(normalized * target_norm)
 
 
+def fit_l1_mixer(
+    prediction: torch.Tensor, target: torch.Tensor
+) -> dict[str, torch.Tensor]:
+    """Fit global 2x2 multiplicity maps for the two l=1 vector copies.
+
+    The same scalar matrix is applied to all three vector components, so this
+    operation changes only multiplicity coordinates and is O(3)-equivariant.
+    It is an oracle diagnostic: fitting uses only the calibration slice and
+    never changes a production model or checkpoint.
+    """
+    predicted = piezo_to_irreps(prediction).to(torch.float64)
+    expected = piezo_to_irreps(target).to(torch.float64)
+    x = torch.stack((predicted[..., 0:3], predicted[..., 3:6]), dim=-1).reshape(-1, 2)
+    y = torch.stack((expected[..., 0:3], expected[..., 3:6]), dim=-1).reshape(-1, 2)
+    unconstrained = torch.linalg.lstsq(x, y).solution.transpose(0, 1)
+    diagonal = torch.diag(torch.diagonal(unconstrained))
+    left, _, right_transpose = torch.linalg.svd(unconstrained)
+    orthogonal = left @ right_transpose
+    return {
+        "unconstrained": unconstrained,
+        "orthogonal_polar": orthogonal,
+        "diagonal_only": diagonal,
+    }
+
+
+def apply_l1_mixer(
+    prediction: torch.Tensor, mixer: torch.Tensor
+) -> torch.Tensor:
+    """Apply one scalar 2x2 map to both l=1 copies in irrep coordinates."""
+    if mixer.shape != (2, 2):
+        raise ValueError(f"Expected a [2,2] multiplicity mixer, got {tuple(mixer.shape)}")
+    coordinates = piezo_to_irreps(prediction).to(torch.float64).clone()
+    copies = torch.stack((coordinates[..., 0:3], coordinates[..., 3:6]), dim=-2)
+    mixed = torch.einsum("ab,...bc->...ac", mixer.to(copies), copies)
+    coordinates[..., 0:3] = mixed[..., 0, :]
+    coordinates[..., 3:6] = mixed[..., 1, :]
+    return piezo_from_irreps(coordinates)
+
+
 def _collect_predictions(tower, dataset, device, batch_size: int):
     predictions: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
@@ -138,6 +177,11 @@ def run_diagnostic(
     oracle = _metric_summary(
         oracle_shape_prediction(audit_prediction, audit_target), audit_target
     )
+    l1_mixers = fit_l1_mixer(calibration_prediction, calibration_target)
+    l1_mixer_audits = {
+        name: _metric_summary(apply_l1_mixer(audit_prediction, mixer), audit_target)
+        for name, mixer in l1_mixers.items()
+    }
     return {
         "calibration_materials": calibration_count,
         "audit_materials": int(prediction.shape[0] - calibration_count),
@@ -149,6 +193,14 @@ def run_diagnostic(
         "audit_global_scalar_calibration": global_scaled,
         "audit_irrep_scalar_calibration": irrep_scaled,
         "audit_oracle_per_material_norm": oracle,
+        "calibration_l1_mixers": {
+            name: mixer.tolist() for name, mixer in l1_mixers.items()
+        },
+        "audit_l1_mixer": l1_mixer_audits,
+        "l1_mixer_policy": (
+            "global scalar 2x2 maps in the two l=1 multiplicity coordinates; "
+            "fit on calibration slice only, never a production fallback"
+        ),
         "interpretation": {
             "global_scalar": "deployable post-hoc amplitude calibration diagnostic; fit only on calibration slice",
             "irrep_scalar": "shape-preserving per-irrep amplitude diagnostic; fit only on calibration slice",

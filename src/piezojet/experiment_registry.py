@@ -100,6 +100,25 @@ def _cohort_policy(name: str) -> dict[str, Any]:
             ),
             split="E1 frozen validation10 only; capacity rows use declared strict-train samples1/8/32; test20 unread",
         )
+    elif name == "electronic_mixer_oracle_fold0_seed42_v1":
+        policy.update(
+            family="electronic_l1_multiplicity_mixer_oracle",
+            archival_status="current",
+            execution_status="completed_development_only",
+            result_disposition="negative_candidate_rejected_before_capacity",
+            convention_epoch="v14_a0_pm_electronic_irrep_diagnostic",
+            comparability_group="development_only_fold0_seed42_oracle",
+            paper_use="appendix_architecture_selection",
+            interpretation_boundary=(
+                "Read-only global 2x2 maps in the two l=1 multiplicity coordinates. "
+                "Calibration uses development materials only; no model parameters, "
+                "loss, checkpoint selection, or production fallback is changed. The "
+                "orthogonal and unconstrained maps fail the preregistered improvement "
+                "gate, so the M1 candidate is rejected before capacity training. "
+                "Frozen validation10/test20 labels remain unread."
+            ),
+            split="electrostatic_development_folds_v2 fold0 calibration64/audit64 and development988; frozen validation/test unread",
+        )
     elif name == "vnext_identifiability_census_v1":
         policy.update(
             family="lambda_identifiability_census",
