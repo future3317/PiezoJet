@@ -25,6 +25,7 @@ from .data import (
 from .pretrain import _corrupt_structure
 from .pretraining_protocol import provenance
 from .loader_runtime import loader_options
+from .checkpoint_runtime import atomic_link_or_copy
 from .project_config import load_project_config
 from .train import (
     _data_commit,
@@ -143,6 +144,10 @@ def main() -> None:
         help="Background graph-loading workers; does not alter the logical batch",
     )
     parser.add_argument(
+        "--prefetch-factor", type=int, default=2,
+        help="Batches prefetched per worker when --num-workers is positive",
+    )
+    parser.add_argument(
         "--matmul-precision", choices=("highest", "high", "medium"),
         default="highest", help="PyTorch float32 matmul precision policy",
     )
@@ -174,6 +179,8 @@ def main() -> None:
         raise ValueError("--logical-batch-size cannot be negative")
     if args.num_workers < 0:
         raise ValueError("--num-workers cannot be negative")
+    if args.prefetch_factor < 1:
+        raise ValueError("--prefetch-factor must be positive")
     if args.accumulate_to_one_update and args.logical_batch_size:
         raise ValueError(
             "--accumulate-to-one-update and --logical-batch-size are mutually exclusive"
@@ -258,7 +265,11 @@ def main() -> None:
     )
     loader = DataLoader(
         dataset, batch_size=physical_batch_size, shuffle=True,
-        **loader_options(args.num_workers, cuda=device.type == "cuda"),
+        **loader_options(
+            args.num_workers,
+            cuda=device.type == "cuda",
+            prefetch_factor=args.prefetch_factor,
+        ),
     )
     model = e3nn_direct_baseline_from_config(cfg).to(device)
     head = E3nnStructurePretrainingHead(model.encoder.hidden_irreps).to(device)
@@ -266,6 +277,7 @@ def main() -> None:
         list(model.encoder.parameters()) + list(head.parameters()),
         lr=float(cfg["pretrain_learning_rate"]), weight_decay=float(cfg["weight_decay"]),
     )
+    trainable_parameters = list(model.encoder.parameters()) + list(head.parameters())
     if args.resume is None:
         if args.output_dir.exists():
             raise FileExistsError(
@@ -320,6 +332,7 @@ def main() -> None:
         "logical_batch_size": logical_batch_size,
         "empty_cuda_cache_each_epoch": bool(args.empty_cuda_cache_each_epoch),
         "num_workers": int(args.num_workers),
+        "prefetch_factor": int(args.prefetch_factor),
         "matmul_precision": args.matmul_precision,
     })
     for epoch in range(start_epoch, epochs + 1):
@@ -347,16 +360,15 @@ def main() -> None:
             (loss * int(batch.num_graphs) / logical_target).backward()
             logical_graphs += int(batch.num_graphs)
             if logical_graphs == logical_target:
-                parameters = list(model.encoder.parameters()) + list(head.parameters())
                 if not all(
                     torch.isfinite(parameter.grad).all()
-                    for parameter in parameters
+                    for parameter in trainable_parameters
                     if parameter.grad is not None
                 ):
                     raise FloatingPointError(
                         "Non-finite accumulated e3nn pretraining gradient"
                     )
-                torch.nn.utils.clip_grad_norm_(list(model.encoder.parameters()) + list(head.parameters()), max_norm=10.0)
+                torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=10.0)
                 optimizer.step()
                 optimizer_updates += 1
                 optimizer.zero_grad(set_to_none=True)
@@ -391,7 +403,10 @@ def main() -> None:
         torch.save(payload, args.output_dir / "last_encoder.pt")
         if value < best:
             best = value
-            torch.save(payload, args.output_dir / "best_encoder.pt")
+            atomic_link_or_copy(
+                args.output_dir / "last_encoder.pt",
+                args.output_dir / "best_encoder.pt",
+            )
         print(f"pretrain_e3nn epoch={epoch} loss={value:.6g}")
     (args.output_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
 

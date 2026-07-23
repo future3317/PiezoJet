@@ -17,6 +17,8 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.utils import scatter
 
 from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
+from .checkpoint_runtime import atomic_link_or_copy
+from .loader_runtime import loader_options
 from .model import model_from_config
 from .pretraining_protocol import provenance
 from .project_config import load_project_config
@@ -62,9 +64,17 @@ def main() -> None:
         help="Frozen train/val/test panel. Production pretraining uses its train IDs only.",
     )
     parser.add_argument("--max-samples", type=int, default=None, help="Bounded smoke-run only; the production pipeline uses all structures.")
+    parser.add_argument("--num-workers", type=int, help="Background graph-loading workers")
+    parser.add_argument("--prefetch-factor", type=int, default=2, help="Batches prefetched per worker")
     args = parser.parse_args()
     cfg = load_project_config(args.config)
     cfg["data_commit"] = _data_commit(cfg["data_root"])
+    if args.num_workers is not None:
+        if args.num_workers < 0:
+            raise ValueError("--num-workers cannot be negative")
+        cfg["num_workers"] = args.num_workers
+    if args.prefetch_factor < 1:
+        raise ValueError("--prefetch-factor must be positive")
     epochs = int(cfg["pretrain_epochs"] if args.epochs is None else args.epochs)
     output = Path(cfg["pretraining_output_dir"] if args.output_dir is None else args.output_dir)
     if epochs < 1:
@@ -91,13 +101,20 @@ def main() -> None:
         pretraining_provenance = provenance(all_ids, split_file, "train", cfg)
     cache_key = graph_cache_key(records, float(cfg["cutoff"]), int(cfg["max_neighbors"]))
     dataset = PiezoDataset(records, all_ids, float(cfg["cutoff"]), int(cfg["max_neighbors"]), processed_dir=cfg["processed_dir"], cache_key=cache_key, project_targets=False)
-    loader_options = {"num_workers": int(cfg["num_workers"]), "pin_memory": device.type == "cuda"}
-    if loader_options["num_workers"] > 0:
-        loader_options["persistent_workers"] = True
-    loader = DataLoader(dataset, batch_size=int(cfg["batch_size"]), shuffle=True, **loader_options)
+    loader = DataLoader(
+        dataset,
+        batch_size=int(cfg["batch_size"]),
+        shuffle=True,
+        **loader_options(
+            int(cfg["num_workers"]),
+            cuda=device.type == "cuda",
+            prefetch_factor=args.prefetch_factor,
+        ),
+    )
     model = model_from_config(cfg).to(device)
     head = StructurePretrainingHead(model.encoder.scalar_dim, model.encoder.channels).to(device)
     optimizer = torch.optim.AdamW(list(model.encoder.parameters()) + list(head.parameters()), lr=float(cfg["pretrain_learning_rate"]), weight_decay=float(cfg["weight_decay"]))
+    trainable_parameters = list(model.encoder.parameters()) + list(head.parameters())
     output.mkdir(parents=True, exist_ok=True)
     best = float("inf")
     history = []
@@ -116,7 +133,7 @@ def main() -> None:
             loss = species_loss + float(cfg["denoising_weight"]) * denoise_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(model.encoder.parameters()) + list(head.parameters()), max_norm=10.0)
+            torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=10.0)
             optimizer.step()
             updates_completed += 1
             total += float(loss.detach()) * batch.num_graphs
@@ -134,7 +151,7 @@ def main() -> None:
         torch.save(payload, output / "last_encoder.pt")
         if value < best:
             best = value
-            torch.save(payload, output / "best_encoder.pt")
+            atomic_link_or_copy(output / "last_encoder.pt", output / "best_encoder.pt")
         print(f"pretrain epoch={epoch} loss={value:.6g}")
         if args.updates is not None and updates_completed >= args.updates:
             break

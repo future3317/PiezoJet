@@ -11,8 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
-import shutil
 from hashlib import sha256
 from pathlib import Path
 
@@ -20,6 +18,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from .build_electrostatic_development_folds import electrostatic_fold_train_ids
+from .checkpoint_runtime import atomic_link_or_copy
 from .data import (
     deterministic_subset,
     formula,
@@ -350,13 +349,7 @@ def main() -> None:
         if value < best:
             best = value
             best_path = args.output_dir / "best_bec_tower.pt"
-            temporary = best_path.with_name(f".{best_path.name}.tmp")
-            temporary.unlink(missing_ok=True)
-            try:
-                os.link(last_path, temporary)
-            except OSError:
-                shutil.copyfile(last_path, temporary)
-            temporary.replace(best_path)
+            atomic_link_or_copy(last_path, best_path)
         print(f"pretrain_bec_e3nn epoch={epoch} loss={value:.6g}")
     (args.output_dir / "history.json").write_text(
         json.dumps(history, indent=2) + "\n", encoding="utf-8"

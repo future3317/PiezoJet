@@ -17,11 +17,13 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from .baselines import direct_cartesian_baseline_from_config, e3nn_direct_baseline_from_config
+from .checkpoint_runtime import atomic_link_or_copy
 from .checkpoint_provenance import build_checkpoint_provenance
 from .data import PiezoDataset, graph_cache_key, load_gmtnet_records
 from .metrics import response_tensor_skill
 from .pretraining_protocol import validate_inductive_checkpoint
 from .project_config import load_project_config
+from .loader_runtime import loader_options
 from .tensor_ops import piezo_scale
 from .train import (
     _data_commit,
@@ -121,7 +123,11 @@ def main() -> None:
     )
     train_set = PiezoDataset(ids=splits["train"], **dataset_kwargs)
     val_set = PiezoDataset(ids=splits["val"], **dataset_kwargs)
-    options = {"num_workers": int(cfg["num_workers"]), "pin_memory": device.type == "cuda"}
+    options = loader_options(
+        int(cfg["num_workers"]),
+        cuda=device.type == "cuda",
+        prefetch_factor=int(cfg.get("prefetch_factor", 2)),
+    )
     train_loader = DataLoader(train_set, batch_size=int(cfg["batch_size"]), shuffle=True, **options)
     val_loader = DataLoader(val_set, batch_size=int(cfg["batch_size"]), shuffle=False, **options)
     scale = piezo_scale(torch.cat([train_set[index].y_voigt for index in range(len(train_set))])).to(device)
@@ -171,7 +177,7 @@ def main() -> None:
         if val_loss < best:
             best = val_loss
             best_row = dict(row)
-            torch.save(checkpoint, args.output_dir / "loss_best.pt")
+            atomic_link_or_copy(args.output_dir / "last.pt", args.output_dir / "loss_best.pt")
         if epoch == 1 or epoch % 10 == 0 or epoch == args.epochs:
             print(f"epoch={epoch} train={train_loss:.6g} val={val_loss:.6g}")
     with (args.output_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:

@@ -150,3 +150,22 @@ The default production command remains conservative (`--num-workers 0`); worker
 prefetch is a separate runtime experiment and must be compared by loss trajectory,
 schedule/resume equivalence, wall time, and host memory before enabling it for a
 registered result. The 2026-07-22 full local suite passed after these changes.
+
+## Maintained-path extension (2026-07-23)
+
+The same bounded runtime changes now cover the remaining maintained training
+entry points. `pretrain_e3nn.py` and the Cartesian structure pretrainer accept
+`--prefetch-factor` through the common `loader_options` helper, precompute their
+trainable parameter lists, and use one serialized `last` checkpoint plus an
+atomic hard-link/copy for `best`. The direct baseline and the full factor/
+displacement trainer use the same loader helper and checkpoint link operation.
+The shared electrostatic fold runner no longer serializes the identical
+evaluation payload twice for its progress pointer. These changes are runtime
+only: they preserve material order, logical batch boundaries, optimizer
+updates, validation selection, and checkpoint payload contents.
+
+For the upcoming three-fold single-seed gate, use the already validated A0
+resource-bounded runner with `num_workers=0` as the reproducible baseline. A
+worker/prefetch speed comparison may be run separately; it must not silently
+become the registered result until loss/gradient/resume equivalence and host
+memory are recorded.

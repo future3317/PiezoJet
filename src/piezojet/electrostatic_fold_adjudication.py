@@ -22,6 +22,7 @@ from .data import (
     load_gmtnet_records,
 )
 from .checkpoint_provenance import build_checkpoint_provenance
+from .checkpoint_runtime import atomic_link_or_copy
 from .build_electrostatic_development_folds import electrostatic_fold_train_ids
 from .electronic_capacity import (
     born_capacity_metrics,
@@ -1017,7 +1018,10 @@ def main() -> None:
                 evaluation_payload,
                 checkpoint_dir / f"update_{update:08d}.pt",
             )
-            torch.save(evaluation_payload, args.output_dir / "progress.pt")
+            atomic_link_or_copy(
+                checkpoint_dir / f"update_{update:08d}.pt",
+                args.output_dir / "progress.pt",
+            )
             (args.output_dir / "progress.json").write_text(
                 json.dumps({
                     "schema": 1,

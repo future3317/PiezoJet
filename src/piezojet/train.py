@@ -25,7 +25,9 @@ from .checkpoint_provenance import (
     build_checkpoint_provenance,
     validate_checkpoint_provenance,
 )
+from .checkpoint_runtime import atomic_link_or_copy
 from .jarvis_dfpt import JarvisDFPTCache
+from .loader_runtime import loader_options
 from .model import AtomCoordinateResponsePotential, PiezoJet, model_from_config
 from .pretraining_protocol import validate_inductive_checkpoint
 from .project_config import load_project_config
@@ -1934,17 +1936,23 @@ def main() -> None:
     strict_set = PiezoDataset(
         records, strict_ids, cfg["cutoff"], cfg["max_neighbors"], **dataset_kwargs
     ) if strict_ids else None
-    loader_options = {"num_workers": cfg["num_workers"], "pin_memory": device.type == "cuda"}
-    if cfg["num_workers"] > 0:
-        loader_options["persistent_workers"] = True
-    train_loader = DataLoader(train_set, batch_size=cfg["batch_size"], shuffle=True, **loader_options)
-    val_loader = DataLoader(val_set, batch_size=cfg["batch_size"], shuffle=False, **loader_options)
+    runtime_options = loader_options(
+        int(cfg["num_workers"]),
+        cuda=device.type == "cuda",
+        prefetch_factor=int(cfg.get("prefetch_factor", 2)),
+    )
+    train_loader = DataLoader(
+        train_set, batch_size=cfg["batch_size"], shuffle=True, **runtime_options
+    )
+    val_loader = DataLoader(
+        val_set, batch_size=cfg["batch_size"], shuffle=False, **runtime_options
+    )
     branch_loader = (
-        DataLoader(branch_set, batch_size=cfg["batch_size"], shuffle=True, **loader_options)
+        DataLoader(branch_set, batch_size=cfg["batch_size"], shuffle=True, **runtime_options)
         if branch_set is not None else None
     )
     strict_loader = (
-        DataLoader(strict_set, batch_size=cfg["batch_size"], shuffle=True, **loader_options)
+        DataLoader(strict_set, batch_size=cfg["batch_size"], shuffle=True, **runtime_options)
         if strict_set is not None else None
     )
     first_target = torch.cat([train_set[index].y_voigt for index in range(len(train_set))])
@@ -2108,7 +2116,7 @@ def main() -> None:
                 factor_best = val_factor
                 factor_best_epoch = factor_epoch
                 factor_wait = 0
-                torch.save(factor_checkpoint, output / "factor_best.pt")
+                atomic_link_or_copy(output / "factor_last.pt", output / "factor_best.pt")
             else:
                 factor_wait += 1
             print(f"factor_epoch={factor_epoch} train={train_factor:.6g} val={val_factor:.6g}")
@@ -2236,7 +2244,9 @@ def main() -> None:
             if val_value < displacement_best:
                 displacement_best = val_value
                 displacement_best_epoch = displacement_epoch
-                torch.save(checkpoint, output / "displacement_best.pt")
+                atomic_link_or_copy(
+                    output / "displacement_last.pt", output / "displacement_best.pt"
+                )
             print(
                 f"displacement_epoch={displacement_epoch} "
                 f"train={branch_value + strict_value:.6g} val={val_value:.6g}"
@@ -2499,13 +2509,13 @@ def main() -> None:
         if loss_improved:
             loss_best = val_value
             loss_best_epoch = epoch
-            torch.save(checkpoint, output / "loss_best.pt")
+            atomic_link_or_copy(output / "last.pt", output / "loss_best.pt")
         val_response_skill = float(val_components["tensor_response_skill_vs_zero"])
         trs_improved = val_response_skill > trs_best
         if trs_improved:
             trs_best = val_response_skill
             trs_best_epoch = epoch
-            torch.save(checkpoint, output / "trs_best.pt")
+            atomic_link_or_copy(output / "last.pt", output / "trs_best.pt")
         selected_improved = trs_improved if selection_metric == "trs" else loss_improved
         epochs_without_improvement = 0 if selected_improved else epochs_without_improvement + 1
         print(f"epoch={epoch} train={train_value:.6g} val={val_value:.6g}")
