@@ -336,4 +336,18 @@ The 1-epoch samples8 smoke gave baseline active electronic relative error/cosine
 
 The candidate was worse at epochs 1/5/10/15/20 and did not meet the preregistered error (-0.04) or cosine (+0.10) gate. It therefore does not enter N=200, N=800, or the final three-seed study. Full outputs, logs, checkpoints, and the train-only manifest are retained under `outputs/electrostatic_l1_capacity_v1/`.
 
-This rejects “extra independent `l=1` readout capacity” as the next explanation; it does not indicate a data or tensor-convention failure. The next action is a read-only per-irrep/response-scale audit. A scale--shape candidate is authorized only if it shows stable direction with amplitude collapse, and any new candidate must pass samples8/32 same-ID capacity before inductive development.
+This rejects extra independent l=1 readout capacity as the next explanation; it does not indicate a data or tensor-convention failure. The next action is a read-only per-irrep/response-scale audit. A scale--shape candidate is authorized only if it shows stable direction with amplitude collapse, and any new candidate must pass samples8/32 same-ID capacity before inductive development.
+
+### 13.5 Three-fold response-scale audit (2026-07-23)
+
+The existing leakage-safe calibration diagnostic was rerun for the selected A0-PM checkpoint in each of the three development folds. Each fold uses 64 calibration and 64 disjoint audit materials; no calibration target is used on its audit slice, and frozen validation/test labels remain unread.
+
+| fold | raw active relative | raw cosine | raw amplitude | oracle-norm relative | global-scalar relative | per-irrep relative |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.9297 | 0.3648 | 0.2164 | 0.9340 | 0.9218 | 0.9302 |
+| 1 | 0.7637 | 0.6280 | 0.3005 | 0.6439 | 2.5912 | 2.6214 |
+| 2 | 0.9019 | 0.2287 | 0.2754 | 1.0255 | 7.3487 | 6.6694 |
+
+The fitted irrep scales are unstable across folds (for example l=3 is 1.34, -6.35, and 27.92), and global/per-irrep calibration frequently reverses or magnifies the error. Oracle norm rescaling leaves the direction unchanged; it improves relative error only on fold 1 and worsens it on folds 0 and 2. Thus the required stable-direction plus amplitude-collapse evidence is absent. No scale--shape production candidate is authorized.
+
+The current evidence is sufficient to select A0-PM as the final architecture candidate for the preregistered three-seed stability run. That run must retain the same stabilized selection rule, train-only response maps, and frozen-panel prohibition. The failed independent-l1 candidate and this negative scale audit remain appendix diagnostics, not production fallbacks.
