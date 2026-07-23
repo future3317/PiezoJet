@@ -291,3 +291,24 @@ capacity，不进入 production，也不启动 M2 的长训练。
 分层诊断。下一最小动作是复用现有 checkpoint 做 per-irrep、晶系、原子数、
 response-scale 和 formula-novelty 分层；只有分层证据支持材料条件化，才考虑
 结构条件 mixer，否则优先评估独立 `l=1` readout 的小容量候选。
+
+### 13.3 分层诊断的首个结果
+
+新增只读工具 `piezojet.electrostatic_stratified_diagnostic`，并在 fold2
+update 1200 checkpoint 上运行。它验证 checkpoint 的 development ID 集合与
+fold manifest 完全一致，并报告 `frozen_validation_test_labels_read=false`。
+官方 dft_3d 元数据覆盖 977/987 个 development ID，仅用于晶系/空间群/公式
+描述，不参与任何标签或 checkpoint 选择。
+
+在这个中途 checkpoint 上，electronic active panel 为 436 个材料，active
+relative error 0.86977、cosine 0.46721、amplitude 0.39622。按 response norm
+分层时，目标范数 `[0.5,1)` 的 cosine 仅 0.345、`[0.1,0.5)` 为 0.427，而
+`[1,inf)` 为 0.510；这说明误差不能由一个全局 scalar 振幅解释。按晶系，
+tetragonal 的 active cosine 0.610，而 orthorhombic/trigonal 分别为 0.379/0.403；
+按原子数也没有单调关系（3--8 atoms 为 0.555，9--16 为 0.434，17--32 为
+0.469）。这些是 development-only 的方向证据，不能外推到 frozen panel。
+
+因此下一候选暂不启用结构条件 mixer；优先完成 fold2 后，对选定 checkpoint
+补齐相同分层与公式新颖度报告，再决定是否值得做一个独立 `l=1` readout 的
+samples8/32 capacity。该候选若不能先通过 same-ID gate，不进入 N=200 或
+更大规模训练。
