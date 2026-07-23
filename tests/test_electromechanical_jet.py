@@ -12,7 +12,7 @@ def _graph(index: int = 10):
     return graph
 
 
-def _model():
+def _model(electronic_readout_variant: str = "standard"):
     return ElectromechanicalJetHead(
         embedding_dim=8,
         cutoff=5.0,
@@ -26,6 +26,7 @@ def _model():
         polar_fluctuation_shells=3,
         reciprocal_cutoff=4.0,
         attention_dim=8,
+        electronic_readout_variant=electronic_readout_variant,
     )
 
 
@@ -147,4 +148,22 @@ def test_electromechanical_jet_coefficients_and_increment_are_o3_equivariant():
     )
     assert torch.allclose(
         transformed_increment, increment @ rotation.T, atol=3e-5, rtol=3e-5
+    )
+
+
+def test_independent_l1_readout_is_o3_equivariant_and_has_no_standard_head():
+    torch.manual_seed(13)
+    graph = _graph(19)
+    rotation, _ = torch.linalg.qr(torch.randn(3, 3))
+    rotated = _rotated(graph, rotation)
+    model = _model("independent_l1").eval()
+    with torch.no_grad():
+        prediction = model.coefficients(graph).electronic_piezo
+        transformed = model.coefficients(rotated).electronic_piezo
+    assert not hasattr(model, "electronic_irreps")
+    assert torch.allclose(
+        transformed,
+        rotate_piezo(prediction, rotation),
+        atol=3e-5,
+        rtol=3e-5,
     )

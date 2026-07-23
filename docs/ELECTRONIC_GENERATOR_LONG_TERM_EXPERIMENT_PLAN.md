@@ -323,3 +323,17 @@ global-map 偏差中位数约 9.85、P90 约 65.38，但单材料只有三个 ve
 components，拟合矩阵条件数中位数约 4.6×10^5，因而该 oracle 过度欠定，不能
 直接证明应部署材料条件 mixer。它只支持“固定全局 mixer 不足”的结论；下一
 候选必须先用同 ID capacity 证伪，而不能把这个欠定 oracle 当作性能结果。
+### 13.4 Independent `l=1` readout capacity decision (2026-07-23)
+
+After the global mixer oracle failed, we tested the smallest readout-only candidate: retain the standard `l=2/l=3` readouts and replace the two `l=1` copies with independent readouts. Candidate and `a0_parameter_matched_irreps` baseline used the same fold-0 train-only structure checkpoint, identical 8/32 material manifests, optimizer, and batch settings. No development or frozen-panel labels were read.
+
+The 1-epoch samples8 smoke gave baseline active electronic relative error/cosine 0.8510/0.7822 versus 0.9798/-0.0817 for the candidate. The completed 20-epoch samples32 same-ID capacity result was:
+
+| architecture | best epoch | active relative error | active cosine | amplitude ratio |
+|---|---:|---:|---:|---:|
+| A0 parameter-matched baseline | 20 | 0.68937 | 0.60649 | 0.43342 |
+| independent `l=1` readout | 19 | 0.82108 | 0.55340 | 0.23192 |
+
+The candidate was worse at epochs 1/5/10/15/20 and did not meet the preregistered error (-0.04) or cosine (+0.10) gate. It therefore does not enter N=200, N=800, or the final three-seed study. Full outputs, logs, checkpoints, and the train-only manifest are retained under `outputs/electrostatic_l1_capacity_v1/`.
+
+This rejects “extra independent `l=1` readout capacity” as the next explanation; it does not indicate a data or tensor-convention failure. The next action is a read-only per-irrep/response-scale audit. A scale--shape candidate is authorized only if it shows stable direction with amplitude collapse, and any new candidate must pass samples8/32 same-ID capacity before inductive development.

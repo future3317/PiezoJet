@@ -75,7 +75,7 @@ def encoder_width_multiplier_for_architecture(
     architecture: str, config: dict[str, object]
 ) -> float:
     """Resolve an explicit architecture-bound e3nn encoder width."""
-    if architecture == "a0_parameter_matched_irreps":
+    if architecture in {"a0_parameter_matched_irreps", "a0_independent_l1_readout"}:
         return float(config.get("a0_parameter_matched_width_multiplier", 0.56))
     return float(config.get("electrostatic_encoder_width_multiplier", 1.0))
 
@@ -105,6 +105,10 @@ def _model_kwargs(
 def make_model(architecture: str, config: dict[str, object]) -> nn.Module:
     kwargs = _model_kwargs(config, architecture)
     if architecture in A0_ARCHITECTURES:
+        if architecture == "a0_independent_l1_readout":
+            return IndependentElectrostaticHeads(
+                electronic_readout_variant="independent_l1", **kwargs
+            )
         return IndependentElectrostaticHeads(**kwargs)
     if architecture == "a1_electromechanical_jet":
         return ElectromechanicalJetHead(**kwargs)

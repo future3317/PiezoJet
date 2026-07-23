@@ -18,6 +18,7 @@ ARCHITECTURES = (
 A0_ARCHITECTURES = (
     "a0_independent_irreps",
     "a0_parameter_matched_irreps",
+    "a0_independent_l1_readout",
 )
 
 CURRENT_ADJUDICATION_ARCHITECTURES = (

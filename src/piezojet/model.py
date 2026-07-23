@@ -1506,10 +1506,16 @@ class ElectromechanicalJetHead(nn.Module):
         reciprocal_cutoff: float = 7.0,
         attention_dim: int = 64,
         encoder_width_multiplier: float = 1.0,
+        electronic_readout_variant: str = "standard",
     ):
         super().__init__()
         if lmax < 3:
             raise ValueError("ElectromechanicalJetHead requires explicit lmax >= 3")
+        if electronic_readout_variant not in {"standard", "independent_l1"}:
+            raise ValueError(
+                "electronic_readout_variant must be 'standard' or 'independent_l1'"
+            )
+        self.electronic_readout_variant = electronic_readout_variant
         self.encoder = PeriodicCrystalEncoder(
             embedding_dim=embedding_dim,
             cutoff=cutoff,
@@ -1529,13 +1535,32 @@ class ElectromechanicalJetHead(nn.Module):
             polar_fluctuation_shells,
             reciprocal_cutoff,
         )
-        self.electronic_irreps = o3.Linear(irreps, PIEZO_TYPE)
+        if electronic_readout_variant == "standard":
+            self.electronic_irreps = o3.Linear(irreps, PIEZO_TYPE)
+        else:
+            # The two l=1 copies receive an independent readout while the
+            # l=2/l=3 blocks retain the original shared path.  Concatenating
+            # [2x1o, 1x2o, 1x3o] is exactly PIEZO_TYPE's orthonormal order.
+            self.electronic_l1_irreps = o3.Linear(irreps, o3.Irreps("2x1o"))
+            self.electronic_l23_irreps = o3.Linear(
+                irreps, o3.Irreps("1x2o + 1x3o")
+            )
         self.born_irreps = o3.Linear(irreps, BEC_TYPE)
         self.dielectric_irreps = o3.Linear(irreps, DIELECTRIC_TENSOR)
-        self.electronic_context_gates = nn.Sequential(
-            nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
-            nn.Linear(global_context_dim, len(PIEZO_IRREP_SLICES)),
-        )
+        if electronic_readout_variant == "standard":
+            self.electronic_context_gates = nn.Sequential(
+                nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
+                nn.Linear(global_context_dim, len(PIEZO_IRREP_SLICES)),
+            )
+        else:
+            self.electronic_l1_context_gates = nn.Sequential(
+                nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
+                nn.Linear(global_context_dim, 2),
+            )
+            self.electronic_l23_context_gates = nn.Sequential(
+                nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
+                nn.Linear(global_context_dim, 2),
+            )
         self.born_context_gates = nn.Sequential(
             nn.Linear(global_context_dim, global_context_dim), nn.SiLU(),
             nn.Linear(global_context_dim, len(BEC_IRREP_SLICES)),
@@ -1595,11 +1620,24 @@ class ElectromechanicalJetHead(nn.Module):
         graph_features: torch.Tensor,
         context: torch.Tensor,
     ) -> torch.Tensor:
-        electronic_coordinates = self._gated_blocks(
-            self.electronic_irreps(graph_features),
-            self.electronic_context_gates(context),
-            PIEZO_IRREP_SLICES,
-        )
+        if self.electronic_readout_variant == "standard":
+            electronic_coordinates = self._gated_blocks(
+                self.electronic_irreps(graph_features),
+                self.electronic_context_gates(context),
+                PIEZO_IRREP_SLICES,
+            )
+        else:
+            l1 = self._gated_blocks(
+                self.electronic_l1_irreps(graph_features),
+                self.electronic_l1_context_gates(context),
+                {"l1_copy0": slice(0, 3), "l1_copy1": slice(3, 6)},
+            )
+            l23 = self._gated_blocks(
+                self.electronic_l23_irreps(graph_features),
+                self.electronic_l23_context_gates(context),
+                {"l2": slice(0, 5), "l3": slice(5, 12)},
+            )
+            electronic_coordinates = torch.cat((l1, l23), dim=-1)
         electronic = piezo_from_irreps(electronic_coordinates)
         return 0.5 * (electronic + electronic.transpose(-1, -2))
 
@@ -1810,17 +1848,39 @@ class HierarchicalElectromechanicalJetHead(ElectromechanicalJetHead):
 class IndependentElectrostaticHeads(nn.Module):
     """A0 control with statistically independent BEC and piezo generators."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, electronic_readout_variant: str = "standard", **kwargs):
         super().__init__()
         self.born_generator = ElectromechanicalJetHead(**kwargs)
-        self.piezo_generator = ElectromechanicalJetHead(**kwargs)
+        self.piezo_generator = ElectromechanicalJetHead(
+            electronic_readout_variant=electronic_readout_variant,
+            **kwargs,
+        )
         self.dielectric_generator = ElectromechanicalJetHead(**kwargs)
         # A0 changes parameter sharing, not the initial response function.
         # Clone values before pruning so every independent task starts from
         # exactly the same random trunk/decoder state as A1 under the same
         # seed, while retaining distinct Parameter objects and optimizer state.
         initial_state = self.born_generator.state_dict()
-        self.piezo_generator.load_state_dict(initial_state, strict=True)
+        if electronic_readout_variant == "standard":
+            self.piezo_generator.load_state_dict(initial_state, strict=True)
+        else:
+            missing, unexpected = self.piezo_generator.load_state_dict(
+                initial_state, strict=False
+            )
+            expected_missing = {
+                key for key in self.piezo_generator.state_dict()
+                if key.startswith("electronic_l1_") or key.startswith("electronic_l23_")
+            }
+            expected_unexpected = {
+                key for key in initial_state
+                if key.startswith("electronic_irreps")
+                or key.startswith("electronic_context_gates")
+            }
+            if set(missing) != expected_missing or set(unexpected) != expected_unexpected:
+                raise RuntimeError(
+                    "Independent l=1 initialization state mismatch: "
+                    f"missing={missing}, unexpected={unexpected}"
+                )
         self.dielectric_generator.load_state_dict(initial_state, strict=True)
         # A0 has three independent backbones but no dead task heads.  Removing
         # the unused decoders keeps its parameter count and optimizer state
