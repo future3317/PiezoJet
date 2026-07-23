@@ -70,7 +70,7 @@ test -f "$ELECTRONIC"
 if [[ ! -f "$A0/selected.pt" ]]; then
   A0_RESUME=()
   if [[ -f "$A0/progress.pt" ]]; then
-    A0_RESUME=(--resume "$A0/progress.pt")
+    A0_RESUME=(--resume "$A0/progress.pt" --allow-runtime-resume)
   elif [[ -d "$A0" ]]; then
     # A process can be terminated before the first checkpoint.  Remove only
     # an actually empty staging directory; never erase a partial run that has

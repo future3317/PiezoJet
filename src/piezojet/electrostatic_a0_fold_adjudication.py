@@ -215,14 +215,28 @@ def _restore_a0_progress(
     payload: dict[str, object],
     training_contract: dict[str, object],
     checkpoint_provenance: dict[str, object],
+    *,
+    allow_runtime_resume: bool = False,
 ) -> dict[str, object]:
     """Validate and restore one complete A0 common-update block."""
     if payload.get("status") not in {"running", "interrupted"}:
         raise ValueError("A0 resume checkpoint is not an incomplete run")
     if payload.get("training_contract") != training_contract:
         raise ValueError("A0 resume training contract differs from the current command")
-    if payload.get("checkpoint_provenance") != checkpoint_provenance:
-        raise ValueError("A0 resume provenance differs from the current fold")
+    saved_provenance = payload.get("checkpoint_provenance")
+    if saved_provenance != checkpoint_provenance:
+        # A cache-warming/runtime-only patch must not invalidate a complete
+        # common-update checkpoint.  The opt-in flag compares every
+        # provenance field except the executable commit; data, split, graph,
+        # and response identities remain mandatory exact matches.
+        if not allow_runtime_resume or not isinstance(saved_provenance, dict):
+            raise ValueError("A0 resume provenance differs from the current fold")
+        saved_runtime = dict(saved_provenance)
+        expected_runtime = dict(checkpoint_provenance)
+        saved_runtime.pop("code_commit", None)
+        expected_runtime.pop("code_commit", None)
+        if saved_runtime != expected_runtime:
+            raise ValueError("A0 resume provenance differs beyond a runtime-only commit")
     completed_update = int(payload["completed_update"])
     updates = int(training_contract["updates"])
     interval = int(training_contract["eval_interval"])
@@ -314,6 +328,11 @@ def main() -> None:
     parser.add_argument(
         "--resume", type=Path,
         help="Resume from a run-local block-boundary progress.pt",
+    )
+    parser.add_argument(
+        "--allow-runtime-resume",
+        action="store_true",
+        help="Permit an explicit cache/runtime-only code-commit change when resuming",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
@@ -567,7 +586,12 @@ def main() -> None:
     if args.resume is not None:
         payload = torch.load(args.resume, map_location="cpu", weights_only=False)
         restored = _restore_a0_progress(
-            control, optimizers, payload, training_contract, checkpoint_provenance
+            control,
+            optimizers,
+            payload,
+            training_contract,
+            checkpoint_provenance,
+            allow_runtime_resume=args.allow_runtime_resume,
         )
         start_block = int(restored["start_block"])
         history = restored["history"]
