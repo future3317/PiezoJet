@@ -8,7 +8,7 @@
     "historical_conventions_must_not_be_pooled": true,
     "artifact_index": "outputs/EXPERIMENT_ARTIFACT_INDEX.jsonl"
   },
-  "cohort_count": 155,
+  "cohort_count": 157,
   "cohorts": [
     {
       "experiment_id": "audit",
@@ -2975,6 +2975,53 @@
           ]
         }
       ]
+    },
+    {
+      "experiment_id": "electronic_mixer_oracle_fold0_seed42_v1",
+      "artifact_root": "outputs/electronic_mixer_oracle_fold0_seed42_v1",
+      "family": "electronic_l1_multiplicity_mixer_oracle",
+      "archival_status": "current",
+      "execution_status": "completed_development_only",
+      "result_disposition": "negative_candidate_rejected_before_capacity",
+      "convention_epoch": "v14_a0_pm_electronic_irrep_diagnostic",
+      "comparability_group": "development_only_fold0_seed42_oracle",
+      "paper_use": "appendix_architecture_selection",
+      "interpretation_boundary": "Read-only global 2x2 maps in the two l=1 multiplicity coordinates. Calibration uses development materials only; no model parameters, loss, checkpoint selection, or production fallback is changed. The orthogonal and unconstrained maps fail the preregistered improvement gate, so the M1 candidate is rejected before capacity training. Frozen validation10/test20 labels remain unread.",
+      "split": "electrostatic_development_folds_v2 fold0 calibration64/audit64 and development988; frozen validation/test unread",
+      "artifact_summary": {
+        "file_count": 2,
+        "bytes": 60483,
+        "last_modified_utc": "2026-07-23T07:43:38.280257Z",
+        "run_records": 0,
+        "completed_run_records": 0,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [
+        "electronic_mixer_oracle_fold0_seed42_v1/calibration64_audit64.json"
+      ],
+      "runs": []
+    },
+    {
+      "experiment_id": "electronic_response_pretraining_a0pm_fold0_seed42_v1",
+      "artifact_root": "outputs/electronic_response_pretraining_a0pm_fold0_seed42_v1",
+      "family": "support_or_pretraining",
+      "archival_status": "historical",
+      "execution_status": "completed_or_partial",
+      "result_disposition": "support_artifact",
+      "convention_epoch": "historical_pre_v7_or_run_local",
+      "comparability_group": "not_a_performance_experiment",
+      "paper_use": "appendix_provenance_if_used",
+      "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
+      "artifact_summary": {
+        "file_count": 1,
+        "bytes": 10264,
+        "last_modified_utc": "2026-07-23T01:14:51.643369Z",
+        "run_records": 0,
+        "completed_run_records": 0,
+        "partial_or_blocked_run_records": 0
+      },
+      "key_artifacts": [],
+      "runs": []
     },
     {
       "experiment_id": "electrostatic_data_availability_audit_v2",
@@ -9773,14 +9820,15 @@
       "paper_use": "historical_appendix_only",
       "interpretation_boundary": "Development artifact; use only with its persisted run-local configuration. Do not pool it with current direct-U results.",
       "artifact_summary": {
-        "file_count": 23,
-        "bytes": 646434931,
-        "last_modified_utc": "2026-07-21T15:54:53.278941Z",
+        "file_count": 25,
+        "bytes": 646437197,
+        "last_modified_utc": "2026-07-21T15:58:38.767900Z",
         "run_records": 4,
         "completed_run_records": 4,
         "partial_or_blocked_run_records": 0
       },
       "key_artifacts": [
+        "vnext_stage_a_hierarchical_fairness_n200_quick_v5/preliminary_report.md",
         "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a0_independent_irreps_seed42/summary.json",
         "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a0_parameter_matched_irreps_seed42/summary.json",
         "vnext_stage_a_hierarchical_fairness_n200_quick_v5/stage_a_n200_fold0_a16_hierarchical_electromechanical_jet_seed42/summary.json",

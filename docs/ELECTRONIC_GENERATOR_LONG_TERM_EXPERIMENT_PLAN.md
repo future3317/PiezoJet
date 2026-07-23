@@ -256,3 +256,38 @@ selection rule 的方式换取速度。
 
 这三步完成前，不启动新的大规模预训练、不启用 PCGrad、不扩 backbone，也不
 读取 frozen validation10/test20。
+
+## 13. 执行记录（2026-07-23 更新）
+
+### 13.1 三折 A0-PM 基线
+
+三折单 seed（seed 42、N=800、development-only）按同一 stabilized selection
+协议运行。fold0 沿用已完成且 provenance 兼容的旧 cohort；fold1、fold2 使用
+同一参数匹配架构、response-aware BEC/electronic 初始化和断点协议。
+
+| fold | 状态 | selected update | stabilized score | electronic | BEC | dielectric |
+|---|---|---:|---:|---:|---:|---:|
+| 0 | complete（兼容 cohort） | 800 | 1.35458 | 0.50531 | 0.39123 | 0.45804 |
+| 1 | complete_early_stopped | 700 | 1.51672 | 0.53235 | 0.38265 | 0.60172 |
+| 2 | running（断点可恢复） | — | 最近 1.35790 | 0.49536 | 0.37911 | 0.48343 |
+
+fold1 在 update 700 后满足四次无改善的早停条件；fold2 截至本记录在
+update 1200，guardrails 全通过（electronic active cosine 0.46721、BEC
+nonzero cosine 0.88486、active amplitude ratio 0.39622）。fold2 不应被重复
+启动；完成后只需写入最终 checkpoint 和汇总。三折的意义是确认 A0-PM 的
+fold 稳定性，不是冻结测试集结果；validation10/test20 仍未读取。
+
+### 13.2 M1 global `l=1` mixer oracle 判定
+
+`outputs/electronic_mixer_oracle_fold0_seed42_v1/` 已完成 calibration/audit
+和完整 development988 的只读诊断。unconstrained 2×2 mixer 与
+orthogonal-polar mixer 均未达到预注册门槛（audit active cosine 至少 +0.10、
+relative error 至少 -0.03）；完整 development 上 baseline / unconstrained /
+orthogonal-polar 的 active relative error 为 0.87115 / 1.00273 / 0.87138，
+cosine 为 0.43404 / 0.41004 / 0.43913。故 M1 在 oracle 阶段拒绝，不运行 same-ID
+capacity，不进入 production，也不启动 M2 的长训练。
+
+这一负结果把后续搜索从“全局振幅/固定 mixer 后处理”收敛到表示与公式 OOD
+分层诊断。下一最小动作是复用现有 checkpoint 做 per-irrep、晶系、原子数、
+response-scale 和 formula-novelty 分层；只有分层证据支持材料条件化，才考虑
+结构条件 mixer，否则优先评估独立 `l=1` readout 的小容量候选。

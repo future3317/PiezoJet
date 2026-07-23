@@ -4,7 +4,7 @@ This is the human-readable index of every top-level cohort under `outputs/`. The
 
 Negative, failed, interrupted, partial, running, and historical runs are intentionally retained. A directory's existence never implies a valid performance result.
 
-Registered top-level cohorts: **155**.
+Registered top-level cohorts: **157**.
 
 | Cohort | Family | Execution | Result | Convention | Paper use | Runs (complete/partial) |
 |---|---|---|---|---|---|---:|
@@ -60,6 +60,8 @@ Registered top-level cohorts: **155**.
 | `electromechanical_jet_fold_adjudication` | electrostatic_generator_formula_disjoint_adjudication | partial_with_completed_a1_negative_and_a0_user_interruption | development_only_negative_and_incomplete_diagnostics | v10_full_public_electrostatic_a0_a1_a15 | appendix_post_freeze_development_diagnostic | 10 (6/4) |
 | `electromechanical_jet_fold_adjudication_v2` | electrostatic_generator_formula_disjoint_adjudication | planned_not_executed | no_performance_result | v11_reduced_formula_safe_electrostatic_a0_a1_a15 | protocol_only | 0 (0/0) |
 | `electronic_generator_adjudication_v1` | electronic_generator_model_class_adjudication | completed_controls_and_same_id_capacity_with_retained_failures | current_head_negative_global_irrep_first_order_jet_and_literal_positive_same_id_capacity_redundant_probe_mixed_negative_control | v10_global_l3_independent_u_electronic_irreps_autodiff_delta_p | appendix_post_freeze_diagnostic | 19 (16/3) |
+| `electronic_mixer_oracle_fold0_seed42_v1` | electronic_l1_multiplicity_mixer_oracle | completed_development_only | negative_candidate_rejected_before_capacity | v14_a0_pm_electronic_irrep_diagnostic | appendix_architecture_selection | 0 (0/0) |
+| `electronic_response_pretraining_a0pm_fold0_seed42_v1` | support_or_pretraining | completed_or_partial | support_artifact | historical_pre_v7_or_run_local | appendix_provenance_if_used | 0 (0/0) |
 | `electrostatic_data_availability_audit_v2` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `exposure_matched_direct_u_v2_conditioning` | registered_direct_u_exposure_replay | completed | registered_result_available | v7_bec_transpose_regularized_direct_u | appendix_registered_result | 25 (24/0) |
 | `factor_protected_norm_match_v1` | historical_registered_factor_forensics | completed | mixed_or_negative_forensic | historical_factorized_pre_direct_u | historical_appendix_only | 5 (3/0) |
