@@ -25,8 +25,6 @@ mkdir -p "$FOLD_ROOT" "$LOG"
 
 test -f "$FOLDS"
 test -f "$SUBSET"
-test ! -e "$A0"
-
 if [[ ! -f "$STRUCTURAL" ]]; then
   CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.pretrain_e3nn \
     --config "$ROOT/config.yaml" --electrostatic-folds "$FOLDS" --fold "$FOLD" \
@@ -38,28 +36,43 @@ fi
 test -f "$STRUCTURAL"
 
 if [[ ! -f "$BEC" ]]; then
+  BEC_RESUME=()
+  if [[ -f "$FOLD_ROOT/bec_pretrain/last_bec_tower.pt" && ! -f "$FOLD_ROOT/bec_pretrain/history.json" ]]; then
+    BEC_RESUME=(--resume "$FOLD_ROOT/bec_pretrain/last_bec_tower.pt")
+  fi
   CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.pretrain_bec_e3nn \
     --config "$ROOT/config.yaml" --folds "$FOLDS" --fold "$FOLD" \
     --output-dir "$FOLD_ROOT/bec_pretrain" --epochs 20 --batch-size 16 \
     --logical-batch-size 32 --learning-rate 1e-3 --seed 42 --device cuda \
-    --num-workers 0 --prefetch-factor 2 --matmul-precision highest \
+    --num-workers 0 --prefetch-factor 2 --cache-graphs --matmul-precision highest \
+    "${BEC_RESUME[@]}" \
     --code-commit "$COMMIT" > "$LOG/bec_pretrain.log" 2>&1
 fi
 test -f "$BEC"
 
 if [[ ! -f "$ELECTRONIC" ]]; then
+  ELECTRONIC_RESUME=()
+  if [[ -f "$FOLD_ROOT/electronic_pretrain/last_electronic_tower.pt" && ! -f "$FOLD_ROOT/electronic_pretrain/history.json" ]]; then
+    ELECTRONIC_RESUME=(--resume "$FOLD_ROOT/electronic_pretrain/last_electronic_tower.pt")
+  fi
   CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.pretrain_electronic_e3nn \
     --config "$ROOT/config.yaml" --folds "$FOLDS" --fold "$FOLD" \
     --output-dir "$FOLD_ROOT/electronic_pretrain" --epochs 20 \
     --train-ids-file "$SUBSET" --graph-cache-key "$GRAPH_CACHE_KEY" \
     --batch-size 16 --logical-batch-size 32 --learning-rate 1e-3 --seed 42 \
-    --device cuda --num-workers 0 --prefetch-factor 2 \
+    --device cuda --num-workers 0 --prefetch-factor 2 --cache-graphs \
+    "${ELECTRONIC_RESUME[@]}" \
     --matmul-precision highest --code-commit "$COMMIT" \
     > "$LOG/electronic_pretrain.log" 2>&1
 fi
 test -f "$ELECTRONIC"
 
-CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.electrostatic_a0_fold_adjudication \
+if [[ ! -f "$A0/selected.pt" ]]; then
+  A0_RESUME=()
+  if [[ -f "$A0/progress.pt" ]]; then
+    A0_RESUME=(--resume "$A0/progress.pt")
+  fi
+  CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.electrostatic_a0_fold_adjudication \
   --config "$ROOT/config.yaml" --folds "$FOLDS" --fold "$FOLD" \
   --architecture a0_parameter_matched_irreps --output-dir "$A0" \
   --updates 1500 --batch-size 16 --microbatch-size 16 --eval-batch-size 64 \
@@ -70,7 +83,8 @@ CUDA_VISIBLE_DEVICES=$GPU "$PY" -m piezojet.electrostatic_a0_fold_adjudication \
   --bec-pretrained-tower "$BEC" --electronic-pretrained-tower "$ELECTRONIC" \
   --graph-cache-key "$GRAPH_CACHE_KEY" --seed 42 --device cuda --num-workers 0 \
   --matmul-precision highest --code-commit "$COMMIT" \
-  > "$LOG/a0_pm.log" 2>&1
+  "${A0_RESUME[@]}" > "$LOG/a0_pm.log" 2>&1
+fi
 
 test -f "$A0/selected.pt"
 printf 'fold=%s status=complete output=%s\n' "$FOLD" "$A0"

@@ -27,6 +27,14 @@ def test_piezo_dataset_graph_cache_preserves_graph():
     assert first.edge_index.shape == second.edge_index.shape
 
 
+def test_piezo_dataset_warm_graph_cache_materializes_panel():
+    records = load_gmtnet_records(gmtnet_root())[:2]
+    ids = [str(record["JARVIS_ID"]) for record in records]
+    cached = PiezoDataset(records, ids, 5.0, 32)
+    cached.warm_graph_cache()
+    assert set(cached._graph_cache) == {0, 1}
+
+
 def test_piezo_dataset_can_disable_in_memory_graph_retention():
     records = load_gmtnet_records(gmtnet_root())[:1]
     material_id = str(records[0]["JARVIS_ID"])

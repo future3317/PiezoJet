@@ -91,6 +91,11 @@ def main() -> None:
         help="Batches prefetched per persistent worker without changing order",
     )
     parser.add_argument(
+        "--cache-graphs",
+        action="store_true",
+        help="Warm and retain the response-panel graphs in the worker-free loader",
+    )
+    parser.add_argument(
         "--graph-cache-key",
         help="Existing canonical graph-cache key; avoids recomputing a corpus hash",
     )
@@ -190,7 +195,14 @@ def main() -> None:
         raise FileNotFoundError(
             f"Requested graph cache key has no manifest: {cache_manifest}"
         )
-    dataset = _dataset(config, records, ids, cache_key, cache_graphs=False)
+    # With num_workers=0, repeatedly reading the same response graphs from
+    # disk dominates the exposure loop.  The electrostatic profile excludes
+    # force-constant/mode payloads, so retaining this fixed panel is bounded
+    # and leaves the objective, order, and labels unchanged.
+    cache_graphs = bool(args.cache_graphs or args.num_workers == 0)
+    dataset = _dataset(config, records, ids, cache_key, cache_graphs=cache_graphs)
+    if cache_graphs:
+        dataset.warm_graph_cache()
     logical_sizes = logical_pretraining_batch_sizes(
         len(dataset), args.batch_size, args.logical_batch_size
     )

@@ -147,6 +147,11 @@ def main() -> None:
         help="Batches prefetched per persistent worker without changing order",
     )
     parser.add_argument(
+        "--cache-graphs",
+        action="store_true",
+        help="Warm and retain the response-panel graphs in the worker-free loader",
+    )
+    parser.add_argument(
         "--graph-cache-key",
         help="Existing canonical graph-cache key; avoids recomputing a corpus hash",
     )
@@ -226,7 +231,10 @@ def main() -> None:
             float(config["cutoff"]),
             int(config["max_neighbors"]),
         )
-    dataset = _dataset(config, records, ids, cache_key, cache_graphs=False)
+    cache_graphs = bool(args.cache_graphs or args.num_workers == 0)
+    dataset = _dataset(config, records, ids, cache_key, cache_graphs=cache_graphs)
+    if cache_graphs:
+        dataset.warm_graph_cache()
     if len(dataset) != len(ids):
         raise RuntimeError("BEC response-pretraining dataset lost material IDs")
     logical_sizes = logical_pretraining_batch_sizes(

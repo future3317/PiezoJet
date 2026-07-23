@@ -139,8 +139,10 @@ response-only pretrainers and are now addressed in the maintained sources:
   complete resumed epoch range;
 - the schedule batches are explicitly cut at epoch boundaries, so a physical batch
   can never mix two epochs or alter logical AdamW objectives;
-- `cache_graphs=False` is used for response pretraining, preventing each worker from
-  retaining hundreds of ragged graphs in its private process memory;
+- worker-free response pretraining now warms a bounded electrostatic graph cache
+  (`cache_graphs=True`) once per panel, removing repeated disk deserialization from
+  the optimizer loop. If workers are explicitly enabled, the cache remains disabled
+  to avoid one private copy per worker;
 - best checkpoints are filesystem hard-links to the already serialized `last` payload,
   with a copy fallback, rather than a second `torch.save`;
 - an optional, manifest-checked `--graph-cache-key` reuses an existing canonical graph
@@ -163,6 +165,12 @@ The shared electrostatic fold runner no longer serializes the identical
 evaluation payload twice for its progress pointer. These changes are runtime
 only: they preserve material order, logical batch boundaries, optimizer
 updates, validation selection, and checkpoint payload contents.
+
+The fold runner now treats `last_*`/`progress.pt` as resumable state: an interrupted
+response pretrainer resumes from its last completed exposure epoch, and an interrupted
+A0 run resumes from the last common-update evaluation checkpoint. A completed
+`history.json`/`selected.pt` is required before a stage is skipped, so a partial file
+cannot silently masquerade as a finished initializer.
 
 For the upcoming three-fold single-seed gate, use the already validated A0
 resource-bounded runner with `num_workers=0` as the reproducible baseline. A

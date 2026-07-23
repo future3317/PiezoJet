@@ -477,6 +477,13 @@ class PiezoDataset(Dataset):
     def target(self, record: dict[str, Any]) -> torch.Tensor:
         return _raw_cartesian_target(record) if self._target_cache is None else self._target_cache.get(record)
 
+    def warm_graph_cache(self) -> None:
+        """Materialize the fixed panel once for worker-free repeated training."""
+        if not self._cache_graphs:
+            return
+        for index in range(len(self.records)):
+            self.get(index)
+
     def len(self) -> int:
         return len(self.records)
 
