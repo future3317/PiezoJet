@@ -2,12 +2,14 @@
 
 ## 1. 当前证据与主判断
 
-截至 2026-07-23，development-only、fold0/seed42/N=800 的最佳 A0-PM
-checkpoint 位于 update 800：总 stabilized score 为 1.35458，其中 electronic、
-BEC、dielectric 分别为 0.50531、0.39123、0.45804。它显著优于旧 A0-PM
-的 1.58657，但只比 BEC-only response-aware 初始化的 1.35559 好约 0.001。
-因此，response-aware 初始化是有效的训练改进，却没有单独解决 electronic
-泛化瓶颈。
+截至 2026-07-24，development-only 的 A0-PM 三 seed stability cohort 已完成：
+fold0、固定 N=800、seeds 42/7/1729 的 selected stabilized scores 为
+1.31881/1.21082/1.24463（均值 1.25809，样本 SD 0.05524）。随后在候选
+完全锁定后只读取了一次 validation10：BEC stabilized relative/cosine 均值为
+0.31483/0.97659，但 electronic stabilized relative error 为 1.13875、
+active cosine 0.42523、active amplitude 0.27031。因而 response-aware 初始化
+改善了训练稳定性和 BEC 迁移，却没有解决 electronic 的 formula-OOD 泛化瓶颈；
+test20 仍未读取。
 
 128-material scale--shape 诊断进一步表明：全局 amplitude calibration 只把
 active relative error 从 0.9281 改到 0.9212，active cosine 保持 0.3292；按
@@ -354,4 +356,78 @@ The current evidence is sufficient to select A0-PM as the final architecture can
 
 ### 13.6 Final three-seed run started
 
-The final A0-PM stability cohort is running on the server as outputs/electrostatic_a0pm_final_three_seed_v1/, with seeds 42, 7, and 1729 on fold 0, N=800, 1,500 maximum updates, logical batch 16, and the same development-only stabilized selection. The structural, BEC, and electronic response-aware initializers are reused only after their strict fold/provenance checks; this avoids redundant pretraining while keeping the response task and train-only manifest fixed. At update 50, the three scores were 1.5262, 1.4503, and 1.4935, respectively, with all guardrails eligible. These are intermediate trajectories; no seed is considered final until its selected checkpoint is written and the complete three-seed summary is computed. Frozen validation10/test20 remain unread.
+The final A0-PM stability cohort is complete on the server under `outputs/electrostatic_a0pm_final_three_seed_v1/`. It used fold 0, the fixed train-only N=800 manifest, maximum 1,500 updates, logical batch 16, and the development-only stabilized selection. The structural, BEC, and electronic response-aware initializers were reused only after strict fold/provenance checks. All three seeds stopped by the registered four-evaluation patience rule and wrote a selected checkpoint; frozen validation10/test20 remained unread.
+
+Selected development results (not a frozen or production result) are:
+
+| seed | selected update | total stabilized score | BEC | electronic piezo | electronic dielectric | electronic active cosine | electronic amplitude | BEC nonzero cosine |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 800 | 1.31881 | 0.39874 | 0.45933 | 0.46074 | 0.42432 | 0.42760 | 0.88695 |
+| 7 | 400 | 1.21082 | 0.38725 | 0.44567 | 0.37790 | 0.44139 | 0.33704 | 0.88571 |
+| 1729 | 900 | 1.24463 | 0.39565 | 0.45431 | 0.39467 | 0.43781 | 0.41337 | 0.88775 |
+| mean | — | **1.25809** | **0.39388** | **0.45310** | **0.41110** | **0.43451** | **0.39267** | **0.88680** |
+
+The sample standard deviation of the total score is 0.05524. Every selected checkpoint passed the electronic cosine/amplitude and BEC cosine guardrails; no fallback selection was used. The cohort therefore supports A0-PM as the stable development candidate and confirms that response-aware initialization is compatible with the parameter-disjoint architecture. It does not authorize reading the frozen panel or claiming a final inductive test result. The next experiment should be a fresh, pre-registered full production three-seed run only after the production split/release is explicitly frozen; no additional architecture branch is justified by this cohort alone.
+
+### 13.7 Formal validation10 replay
+
+After the development candidate was frozen, the three selected A0-PM checkpoints
+were evaluated once on the canonical frozen validation10 panel. The dedicated
+read-only evaluator rejected test-panel overlap and wrote the per-material JSON
+artifacts under `outputs/electrostatic_a0pm_formal_validation_v1/`; `test20`
+was not read.
+
+| seed | electronic stabilized relative | electronic active cosine | electronic active amplitude | BEC stabilized relative | BEC cosine | dielectric stabilized relative |
+|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 1.39452 | 0.34601 | 0.28021 | 0.33572 | 0.97523 | 0.56863 |
+| 7 | 1.01223 | 0.25678 | 0.25600 | 0.31282 | 0.97833 | 0.43596 |
+| 1729 | 1.00951 | 0.67290 | 0.27473 | 0.29597 | 0.97620 | 0.46718 |
+| mean | **1.13875** | **0.42523** | **0.27031** | **0.31483** | **0.97659** | **0.49059** |
+
+The sample standard deviations are 0.22151, 0.21908, 0.01269, 0.01995,
+0.00158, and 0.06936 in the same column order. Thus the development result is
+reproducible as a training protocol, and BEC transfers well to validation, but
+the electronic generator fails the intended validation-quality bar: its active
+direction is seed-sensitive and its amplitude remains collapsed. A0-PM is
+therefore a valid development candidate but **not yet a validated production
+electronic generator**. Do not read test20 or tune on it. The next work item is
+a pre-registered electronic-only representation/coverage diagnosis (using
+development data or new train-only capacity tests); any new candidate must
+first beat this validation result under a fresh, locked protocol before a new
+test20 read is authorized.
+
+### 13.8 Full train-only electronic response pretraining replay
+
+The validation failure localized the missing coverage: the earlier electronic
+initializer had been trained on only 800 response materials, whereas the BEC
+initializer used all 3,951 fold-train materials. We therefore kept A0-PM,
+batching, loss, and downstream protocol fixed and trained only the electronic
+tower on all 3,951 fold-train electronic labels (20 epochs, physical/logical
+batch 64, two persistent workers, prefetch 4). The loss decreased from 0.29260
+at epoch 1 to 0.21541 at epoch 20. The downstream run selected update 800 with
+development score 1.28246 and passed all guardrails.
+
+The locked validation10 replay then gave electronic stabilized relative error
+0.48711, active cosine 0.37936, and active amplitude 0.47746; BEC relative
+error/cosine were 0.31894/0.97528 and dielectric relative error was 0.56863.
+Compared with the previous 800-material initializer (electronic relative error
+1.13875 and amplitude 0.27031), this is a large targeted improvement. It is
+still a single-seed validation diagnostic, not a test20 or final production
+claim. The result supports full train-only electronic response pretraining as
+the next maintained direction; a three-seed replay is required before any
+test20 release.
+
+### 13.9 Full physical model replay (v5)
+
+The maintained Cartesian physical model was then trained on the canonical
+train1595/val10/test20 split with the compatible Cartesian structural
+initializer. Factor and teacher-$U$ stages used five complete passes each;
+the joint stage used ten complete stream passes. The validation-selected
+checkpoint achieved total signal-weighted relative error 0.4781 and total
+response skill 0.2712 versus the zero predictor. High-response directional
+cosine was 0.7990 with amplitude ratio 0.4882, but the ionic branch had macro
+cosine -0.2858 and amplitude ratio 0.00285, while the electronic branch had
+near-zero skill and amplitude ratio below $10^{-6}$. This confirms that the
+current joint objective still collapses response amplitudes. The result is a
+validation diagnostic only; frozen test20 remains unread. Full metrics are in
+`docs/FULL_PHYSICAL_RETRAIN_V5_REPORT.md` and the run-local validation JSON.

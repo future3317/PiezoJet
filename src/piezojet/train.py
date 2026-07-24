@@ -1843,6 +1843,10 @@ def main() -> None:
         runtime_device = f"{device} ({torch.cuda.get_device_name(device)})"
     print(f"runtime_device={runtime_device}")
     data_commit = _data_commit(cfg["data_root"])
+    # Bind the verified source commit before validating any inductive
+    # pretraining checkpoint.  Validation must compare against the actual
+    # current data source, not a missing config entry.
+    cfg["data_commit"] = data_commit
     records = load_gmtnet_records(cfg["data_root"])
     if args.material_ids_file is not None and args.splits_file is not None:
         raise ValueError("--material-ids-file and --splits-file are mutually exclusive")
@@ -2003,7 +2007,6 @@ def main() -> None:
     cfg["pretraining_provenance"] = pretraining_provenance
     cfg["noninductive_overfit_diagnostic"] = bool(args.allow_noninductive_overfit)
     cfg["git_commit"] = _git_commit()
-    cfg["data_commit"] = data_commit
     cfg["runtime_device"] = runtime_device
     cfg["exposure_protocol"] = {
         "unit": "complete_stream_passes",

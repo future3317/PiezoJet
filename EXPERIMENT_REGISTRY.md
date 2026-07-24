@@ -4,7 +4,7 @@ This is the human-readable index of every top-level cohort under `outputs/`. The
 
 Negative, failed, interrupted, partial, running, and historical runs are intentionally retained. A directory's existence never implies a valid performance result.
 
-Registered top-level cohorts: **157**.
+Registered top-level cohorts: **159**.
 
 | Cohort | Family | Execution | Result | Convention | Paper use | Runs (complete/partial) |
 |---|---|---|---|---|---|---:|
@@ -63,7 +63,9 @@ Registered top-level cohorts: **157**.
 | `electronic_mixer_oracle_fold0_seed42_v1` | electronic_l1_multiplicity_mixer_oracle | completed_development_only | negative_candidate_rejected_before_capacity | v14_a0_pm_electronic_irrep_diagnostic | appendix_architecture_selection | 0 (0/0) |
 | `electrostatic_l1_capacity_v1` | independent_l1_readout_capacity | completed_train_only | negative_same_id_capacity_candidate_rejected | v15_independent_l1_readout_capacity | appendix_architecture_selection | 6 (6/0) |
 | `electronic_scale_shape_threefold_v1` | electronic_scale_shape_audit | completed_development_only | negative_unstable_scale_shape_not_authorized | v15_a0pm_threefold_scale_audit | appendix_architecture_selection | 3 (3/0) |
-| `electrostatic_a0pm_final_three_seed_v1` | final_candidate_three_seed_stability | running_development_only | pending_three_seed_summary | v15_a0pm_final_candidate | production_candidate_pending_frozen_release | 3 (0/0) |
+| `electrostatic_a0pm_final_three_seed_v1` | final_candidate_three_seed_stability | completed_development_only | selected_three_seed_summary_1.25809_sd_0.05524; seeds42/7/1729 selected updates 800/400/900; all guardrails passed; frozen panels unread | v15_a0pm_final_candidate | production_candidate_pending_frozen_release | 3 (3/0) |
+| `electrostatic_a0pm_formal_validation_v1` | frozen_validation10_replay | completed_validation_only | A0-PM seeds42/7/1729; electronic rel 1.39452/1.01223/1.00951, active cosine 0.34601/0.25678/0.67290; BEC rel 0.33572/0.31282/0.29597; dielectric rel 0.56863/0.43596/0.46718; test20 unread | v15_a0pm_final_candidate | validation_failure_electronic_bottleneck_no_test_read | 3 (3/0) |
+| `electronic_response_pretraining_full3951_a0pm_fold0_seed42_v1` | full_train_only_electronic_response_pretraining | completed_validation_diagnostic | 3,951-material electronic pretraining, 20 epochs, batch64; downstream selected update800, dev score1.28246; validation10 electronic rel0.48711/cos0.37936/amp0.47746; BEC rel0.31894/cos0.97528; dielectric rel0.56863; test20 unread | v16_full_electronic_pretraining | promising_single_seed_requires_three_seed_replay | 1 (1/0) |
 | `electronic_response_pretraining_a0pm_fold0_seed42_v1` | support_or_pretraining | completed_or_partial | support_artifact | historical_pre_v7_or_run_local | appendix_provenance_if_used | 0 (0/0) |
 | `electrostatic_data_availability_audit_v2` | early_development | completed_or_retained_partial | diagnostic | historical_pre_v7_or_run_local | historical_appendix_only | 1 (1/0) |
 | `exposure_matched_direct_u_v2_conditioning` | registered_direct_u_exposure_replay | completed | registered_result_available | v7_bec_transpose_regularized_direct_u | appendix_registered_result | 25 (24/0) |

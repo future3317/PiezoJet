@@ -1057,12 +1057,21 @@ class CrystalGlobalContext(nn.Module):
     def _tensor_signature(value: torch.Tensor | None) -> tuple[object, ...]:
         if value is None:
             return (None,)
+        # Inference tensors intentionally do not expose a version counter.
+        # Geometry caching only needs identity/shape/device metadata, so use
+        # a sentinel in that context instead of disabling inference_mode.
+        try:
+            version = value._version
+        except RuntimeError as exc:
+            if "version counter" not in str(exc):
+                raise
+            version = None
         return (
             value.data_ptr(),
             tuple(value.shape),
             str(value.device),
             value.dtype,
-            value._version,
+            version,
         )
 
     def _geometry_signature(self, batch, batch_index: torch.Tensor) -> tuple[object, ...]:
@@ -2321,14 +2330,25 @@ class AtomCoordinateResponsePotential(nn.Module):
         solve_policy: str | None = None,
         regularization: float | None = None,
     ) -> torch.Tensor:
-        """Apply the declared optical response operator without materializing it.
+        r"""Apply the declared optical response operator without materializing it.
 
         ``rhs`` has shape ``[3N, K]``.  The exact path returns the stationary
-        optical displacement ``Q (Q^T Phi Q)^{-1} Q^T rhs``.  The regularized
-        path computes the signed resolvent with one complex reduced solve,
-        ``Re[(Phi_o + i delta I)^{-1}]``.  Both paths project translations by
-        construction, so there is no auxiliary translation penalty or squared
-        condition number from a normal-equation solve.
+        optical displacement ``Q (Q^T Phi Q)^{-1} Q^T rhs`` and is restricted
+        to a true-DFPT-stable spectrum as a diagnostic.
+
+        The regularized path computes the continuous signed resolvent
+
+        .. math::
+            U_\delta = \\arg\\min_{T^\\top U=0}
+            \\frac12\\|\\Phi U - \\text{rhs}\\|_F^2
+            + \\frac{\\delta^2}{2}\\|U\\|_F^2 .
+
+        In the ``3N-3`` optical basis this is equivalent to replacing the
+        spectral weight ``1/\\lambda`` with the bounded signed filter
+        ``\\lambda/(\\lambda^2+\\delta^2)``.  For unstable or soft references
+        this is a regularized response coordinate, not the equilibrium
+        derivative ``du/d\\eta``.  Both paths project translations by
+        construction, so there is no auxiliary translation penalty.
         """
         policy = self.optical_solve_policy if solve_policy is None else solve_policy
         if policy not in {"exact", "regularized"}:
@@ -2380,9 +2400,10 @@ class AtomCoordinateResponsePotential(nn.Module):
     ) -> torch.Tensor:
         """Signed regularized optical Green operator.
 
-        This applies ``lambda / (lambda**2 + delta**2)``.  It is a bounded
-        response generator for soft or unstable structures, not the stationary
-        solution of the unregularized quadratic potential.
+        This applies the bounded spectral filter ``\\lambda/(\\lambda^2+\\delta^2)``
+        projected onto the optical subspace. It is a bounded response generator for soft or
+        unstable structures, not the stationary solution of the unregularized
+        quadratic potential.
         """
         atoms = force_constants.shape[0]
         matrix = self._matrix_from_blocks(force_constants)
@@ -2398,7 +2419,7 @@ class AtomCoordinateResponsePotential(nn.Module):
         solve_policy: str | None = None,
         regularization: float | None = None,
     ) -> torch.Tensor:
-        """Choose the declared exact or regularized optical response policy."""
+        """Choose the declared exact or regularized optical policy."""
         policy = self.optical_solve_policy if solve_policy is None else solve_policy
         if policy not in {"exact", "regularized"}:
             raise ValueError("solve_policy must be exact or regularized")

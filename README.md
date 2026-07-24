@@ -421,32 +421,47 @@ equivariance and nonzero first-step gradients for the amplitude, mixing, and
 context routes. A1.5 remains byte-for-byte behaviorally available as the
 zero-gate negative control and is excluded from the default next comparison.
 
-The next narrow hypothesis is **BEC response-aware pretraining**, not another
-shared-optimizer variant. All 3,951 fold-train structures have source BEC
-labels, whereas only 800 are used in the fixed downstream response subset. The
-new `piezojet.pretrain_bec_e3nn` command trains only the width-matched A0-PM
-BEC tower on the full fold-train BEC panel, then
-`piezojet.electrostatic_a0_fold_adjudication --bec-pretrained-tower` loads that
-tower only. Electronic and dielectric towers retain their ordinary structural
-initialization. Checkpoints bind the complete development-panel hash, source
-label identity, fold, data manifest, width, optimizer state, and architecture;
-a mismatch or any development-formula overlap is rejected. This is supervised
-response-aware initialization (not self-supervision) and its single-seed result
-must be retained regardless of outcome before considering PCGrad, long-range,
-or backbone changes.
+The BEC response-aware initialization gate is now complete. All 3,951 fold-train
+structures have source BEC labels, whereas only 800 are used in the fixed
+downstream response subset. `piezojet.pretrain_bec_e3nn` trains only the
+width-matched A0-PM BEC tower; electronic and dielectric towers retain their
+structural/response-aware initializers. Strict provenance checks reject any
+fold, width, manifest, or development-overlap mismatch. This is supervised
+response-aware initialization, not self-supervision.
 
 The data interface is not the leading explanation: all three models see the
 same balanced 800 unique formulas, same-archive labels, fold-train-only
 initializer, deterministic schedule, and stabilized metric. Exact-clone,
 microbatch-gradient, tensor, and provenance checks pass. Data scale and
-formula extrapolation nevertheless remain important: selected A0-PM train/dev
-scores are `1.17988/1.58657`. The gate is single-seed development evidence, so
-it cannot establish a final learning curve or production generalization claim.
+formula extrapolation nevertheless remain important. The final development-only
+A0-PM stability cohort (fold 0, fixed N=800, seeds 42/7/1729) selected updates
+800/400/900 with stabilized scores `1.31881/1.21082/1.24463` (mean `1.25809`,
+sample SD `0.05524`). Mean BEC/electronic/dielectric errors are
+`0.39388/0.45310/0.41110`; every selected checkpoint passed the registered
+guardrails. This supports A0-PM as the stable development candidate, but does
+not establish production generalization. After locking the candidate, a
+one-time validation10 replay was run with all three selected checkpoints. BEC
+stabilized relative error/cosine were `0.31483/0.97659` on average, while
+electronic stabilized relative error was `1.13875`, active cosine `0.42523`,
+and active amplitude `0.27031`; dielectric error was `0.49059`. The artifacts
+are in `outputs/electrostatic_a0pm_formal_validation_v1/`. A0-PM is therefore
+**not yet a validated production electronic generator**; `test20` remains
+unread.
+
+The targeted follow-up trained the electronic response-aware tower on all
+3,951 fold-train materials (20 epochs, batch64, two persistent workers). Its
+downstream A0-PM run selected update 800 with development score `1.28246`.
+Validation10 electronic error improved to `0.48711`, active cosine `0.37936`,
+and amplitude `0.47746`; BEC error/cosine were `0.31894/0.97528`. This supports
+full train-only electronic pretraining as the next direction, but it is still
+a single-seed validation diagnostic and requires a three-seed replay before a
+test20 release.
 Thus the current evidence is best described as task-interference plus
 undertraining/sample-efficiency and OOD generalization, not corrupted DFPT
 labels or a confirmed tensor-convention bug. The parameter-matched fairness
-check is complete; the next registered single-seed run tests BEC response-aware
-initialization before any PCGrad, long-range, or backbone intervention. The
+check is complete; the next step is an electronic-only representation/coverage
+diagnosis on development or train-only capacity data. Do not start PCGrad,
+long-range, or backbone changes before that result. The
 similarly named plans under `electromechanical_jet_fold_adjudication*` are
 historical and are not executable by the maintained runner.
 
