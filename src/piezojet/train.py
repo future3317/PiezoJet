@@ -808,6 +808,25 @@ def full_internal_strain_loss(
     return torch.stack(losses).mean()
 
 
+def requires_factorized_response(
+    *,
+    dielectric_weight: float,
+    elastic_weight: float,
+    ionic_weight: float,
+    branch_sum_weight: float,
+) -> bool:
+    """Whether the current objective consumes the production factor path."""
+    return any(
+        weight != 0.0
+        for weight in (
+            dielectric_weight,
+            elastic_weight,
+            ionic_weight,
+            branch_sum_weight,
+        )
+    )
+
+
 def _epoch(
     model,
     loader,
@@ -848,12 +867,11 @@ def _epoch(
         weight != 0.0
         for weight in (macro_weight, macro_dielectric_weight, macro_elastic_weight)
     )
-    compute_factorized_response = evaluate_all_components or any(
-        weight != 0.0
-        for weight in (
-            dielectric_weight,
-            elastic_weight,
-        )
+    compute_factorized_response = evaluate_all_components or requires_factorized_response(
+        dielectric_weight=dielectric_weight,
+        elastic_weight=elastic_weight,
+        ionic_weight=ionic_weight,
+        branch_sum_weight=branch_sum_weight,
     )
     total, count, elapsed = 0.0, 0, 0.0
     response_predictions, response_targets = [], []

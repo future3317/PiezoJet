@@ -480,8 +480,8 @@ class CartesianInternalStrainHead(nn.Module):
 class GlobalDisplacementResponseHead(nn.Module):
     """Nonlocal equivariant ``U_{eta,delta}`` readout.
 
-    The regularized displacement response is a dense Green-action field even
-    when ``Phi`` is sparse.  This head therefore augments local Cartesian node
+    The independent diagnostic displacement response is a dense Green-action
+    field even when ``Phi`` is sparse.  This head therefore augments local Cartesian node
     tensors with permutation-equivariant, all-to-all invariant attention,
     graph-level reciprocal context, and the graph-level polar strain operator.
     Channel-factorized cross mixing supplies ``V_c tensor T_c'`` terms without
@@ -2444,7 +2444,7 @@ class AtomCoordinateResponsePotential(nn.Module):
     ) -> torch.Tensor:
         """Contract an independent internal-displacement response with BEC.
 
-        ``displacement_response[kappa,a,j,k]`` is the production regularized
+        ``displacement_response[kappa,a,j,k]`` is the diagnostic regularized
         coordinate ``U_{eta,delta}`` in Cartesian coordinates, with symmetric
         strain indices and zero mean over atoms.  It is not an equilibrium
         ``du/deta`` for an unstable reference.  This path contains no inverse,

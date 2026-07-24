@@ -1,7 +1,12 @@
 import pytest
 import torch
 
-from piezojet.train import _epoch, restrict_splits_to_material_ids, soft_optical_eigenvalue_loss
+from piezojet.train import (
+    _epoch,
+    requires_factorized_response,
+    restrict_splits_to_material_ids,
+    soft_optical_eigenvalue_loss,
+)
 
 
 def test_global_material_id_restriction_preserves_disjoint_split():
@@ -54,3 +59,18 @@ def test_branch_sum_can_never_be_reenabled_as_an_optimization_loss():
             torch.device("cpu"),
             branch_sum_weight=0.1,
         )
+
+
+def test_ionic_loss_requires_production_factor_path():
+    assert requires_factorized_response(
+        dielectric_weight=0.0,
+        elastic_weight=0.0,
+        ionic_weight=1.0,
+        branch_sum_weight=0.0,
+    )
+    assert not requires_factorized_response(
+        dielectric_weight=0.0,
+        elastic_weight=0.0,
+        ionic_weight=0.0,
+        branch_sum_weight=0.0,
+    )
