@@ -90,11 +90,11 @@ def test_signed_regularized_green_retains_negative_modes_and_has_soft_mode_gradi
     assert eigenvalues.grad[-1].abs() > 0
 
 
-def test_default_optical_policy_is_continuous_regularized_not_predicted_spectrum_switch():
+def test_default_optical_policy_is_tikhonov_not_predicted_spectrum_switch():
     response = AtomCoordinateResponsePotential()
-    assert response.optical_solve_policy == "regularized"
+    assert response.optical_solve_policy == "tikhonov"
     model = PiezoJet(cutoff=5.0, num_blocks=1)
-    assert model.response.optical_solve_policy == "regularized"
+    assert model.response.optical_solve_policy == "tikhonov"
     assert model.ionic_parameterization == "isolated_global_octupole_displacement"
     assert not hasattr(model, "observable_lift_policy")
 
@@ -147,9 +147,8 @@ def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatc
             compute_factorized_response=False,
         )
     for name in (
-        "physical_tensor",
         "electronic_piezo",
-        "ionic_piezo",
+        "direct_u_ionic_piezo",
         "displacement_response",
         "born_charges",
         "force_constants_flat",
@@ -159,8 +158,12 @@ def test_multistream_pruned_forward_preserves_active_physical_outputs(monkeypatc
             getattr(pruned, name), getattr(reference, name),
             atol=2e-6, rtol=2e-6,
         )
+    # With compute_factorized_response=False the factor/Schur ionic path is
+    # disabled, so physical_tensor and ionic_piezo collapse to the electronic
+    # contribution only.
+    assert torch.allclose(pruned.physical_tensor, pruned.electronic_piezo)
+    assert torch.count_nonzero(pruned.ionic_piezo) == 0
     assert torch.count_nonzero(pruned.tensor) == 0
-    assert torch.count_nonzero(pruned.factorized_ionic_piezo) == 0
 
 
 def test_pruned_strict_objective_keeps_inactive_towers_out_of_autograd():

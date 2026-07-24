@@ -907,12 +907,13 @@ class AtomCoordinatePrediction(NamedTuple):
     macro_elastic: torch.Tensor
     physical_tensor: torch.Tensor
     electronic_piezo: torch.Tensor
-    # Maintained ionic prediction from the independent displacement-response
-    # field U_eta.  It is not constructed by inverting a predicted observable
-    # map or by propagating the predicted Lambda.
+    # Production ionic prediction from the factor/Schur path
+    # ``Z*^T Phi^{-1} Lambda`` (exact on stable spectra, Tikhonov-regularized
+    # otherwise).  This is the maintained physical mechanism.
     ionic_piezo: torch.Tensor
-    # Independent Phi/Lambda propagation retained as a physical diagnostic.
-    factorized_ionic_piezo: torch.Tensor
+    # Direct-U ablation / diagnostic.  Predicted independently from node
+    # features and contracted with BEC.  Retained only for baseline comparison.
+    direct_u_ionic_piezo: torch.Tensor
     displacement_response: torch.Tensor
     born_charges: torch.Tensor
     force_constants_flat: torch.Tensor
@@ -2203,15 +2204,17 @@ class AtomCoordinateResponsePotential(nn.Module):
         self,
         optical_regularization: float = 1e-3,
         optical_stability_cutoff: float = 1e-4,
-        optical_solve_policy: str = "regularized",
+        optical_solve_policy: str = "tikhonov",
     ):
         super().__init__()
         if optical_regularization <= 0:
             raise ValueError("optical_regularization must be positive")
         if optical_stability_cutoff <= 0:
             raise ValueError("optical_stability_cutoff must be positive")
-        if optical_solve_policy not in {"exact", "regularized"}:
-            raise ValueError("optical_solve_policy must be exact or regularized")
+        if optical_solve_policy not in {"exact", "regularized", "tikhonov"}:
+            raise ValueError(
+                "optical_solve_policy must be exact, regularized, or tikhonov"
+            )
         self.optical_regularization = float(optical_regularization)
         self.optical_stability_cutoff = float(optical_stability_cutoff)
         self.optical_solve_policy = optical_solve_policy
@@ -2336,7 +2339,7 @@ class AtomCoordinateResponsePotential(nn.Module):
         optical displacement ``Q (Q^T Phi Q)^{-1} Q^T rhs`` and is restricted
         to a true-DFPT-stable spectrum as a diagnostic.
 
-        The regularized path computes the continuous signed resolvent
+        The production path solves the real Tikhonov variational problem
 
         .. math::
             U_\delta = \\arg\\min_{T^\\top U=0}
@@ -2351,8 +2354,8 @@ class AtomCoordinateResponsePotential(nn.Module):
         construction, so there is no auxiliary translation penalty.
         """
         policy = self.optical_solve_policy if solve_policy is None else solve_policy
-        if policy not in {"exact", "regularized"}:
-            raise ValueError("solve_policy must be exact or regularized")
+        if policy not in {"exact", "regularized", "tikhonov"}:
+            raise ValueError("solve_policy must be exact, regularized, or tikhonov")
         matrix = self._matrix_from_blocks(force_constants)
         if rhs.ndim != 2 or rhs.shape[0] != matrix.shape[0]:
             raise ValueError("rhs must have shape [3N, K] for the supplied force constants")
@@ -2372,10 +2375,14 @@ class AtomCoordinateResponsePotential(nn.Module):
             delta = self.optical_regularization if regularization is None else float(regularization)
             if delta <= 0:
                 raise ValueError("regularization must be positive")
-            complex_dtype = torch.complex128 if reduced.dtype == torch.float64 else torch.complex64
-            identity = torch.eye(reduced.shape[0], dtype=complex_dtype, device=reduced.device)
-            shifted = reduced.to(complex_dtype) + (1j * delta) * identity
-            reduced_solution = torch.linalg.solve(shifted, rhs_optical.to(complex_dtype)).real
+            identity = torch.eye(reduced.shape[0], dtype=reduced.dtype, device=reduced.device)
+            # First-order condition of the Tikhonov objective in the optical
+            # basis: (Phi_o^T Phi_o + delta^2 I) U = Phi_o^T rhs.
+            # Phi_o is real symmetric, so this becomes
+            # (Phi_o @ Phi_o + delta^2 I) U = Phi_o @ rhs.
+            a = reduced @ reduced + (delta ** 2) * identity
+            b = reduced @ rhs_optical
+            reduced_solution = torch.linalg.solve(a, b)
         return (basis @ reduced_solution).to(dtype=output_dtype)
 
     def exact_optical_inverse(self, force_constants: torch.Tensor) -> torch.Tensor:
@@ -2398,10 +2405,12 @@ class AtomCoordinateResponsePotential(nn.Module):
         force_constants: torch.Tensor,
         regularization: float | None = None,
     ) -> torch.Tensor:
-        """Signed regularized optical Green operator.
+        """Regularized optical Green operator via the Tikhonov objective.
 
         This applies the bounded spectral filter ``\\lambda/(\\lambda^2+\\delta^2)``
-        projected onto the optical subspace. It is a bounded response generator for soft or
+        by solving the real variational problem
+        ``min_U 1/2||\\Phi U - I||^2 + \\delta^2/2||U||^2`` projected onto the
+        optical subspace.  It is a bounded response generator for soft or
         unstable structures, not the stationary solution of the unregularized
         quadratic potential.
         """
@@ -2419,10 +2428,10 @@ class AtomCoordinateResponsePotential(nn.Module):
         solve_policy: str | None = None,
         regularization: float | None = None,
     ) -> torch.Tensor:
-        """Choose the declared exact or regularized optical policy."""
+        """Choose the declared exact or Tikhonov regularized optical policy."""
         policy = self.optical_solve_policy if solve_policy is None else solve_policy
-        if policy not in {"exact", "regularized"}:
-            raise ValueError("solve_policy must be exact or regularized")
+        if policy not in {"exact", "regularized", "tikhonov"}:
+            raise ValueError("solve_policy must be exact, regularized, or tikhonov")
         if policy == "exact":
             return self.exact_optical_inverse(force_constants)
         return self.signed_regularized_optical_green(force_constants, regularization)
@@ -2539,7 +2548,7 @@ class PiezoJet(nn.Module):
         reciprocal_cutoff: float = 7.0,
         optical_regularization: float = 1e-3,
         optical_stability_cutoff: float = 1e-4,
-        optical_solve_policy: str = "regularized",
+        optical_solve_policy: str = "tikhonov",
         factor_architecture: str = "independent_quadratic_response",
         background_architecture: str = "isotropic",
         displacement_attention_dim: int = 64,
@@ -2735,7 +2744,7 @@ class PiezoJet(nn.Module):
         can be requested only for a small, explicitly diagnostic calculation.
         Multistream training may omit macro or propagated-factor outputs when
         no active objective consumes them; the maintained physical
-        ``electronic + Z*^T U`` path is unchanged.
+        ``electronic + Z*^T Phi^{-1} Lambda`` path is the production response.
         """
         if return_optical_operator and not compute_factorized_response:
             raise ValueError(
@@ -2756,7 +2765,7 @@ class PiezoJet(nn.Module):
             macro_elastic = electronic_piezo.new_zeros(graphs, 6, 6)
         internal_strain = factors.internal_strain
         displacement_response = self.predict_displacement_response(batch)
-        ionic_piezo = self.response.ionic_piezo_from_displacement_response(
+        direct_u_ionic_piezo = self.response.ionic_piezo_from_displacement_response(
             factors.born_charges, displacement_response, batch
         )
         if compute_factorized_response:
@@ -2780,8 +2789,8 @@ class PiezoJet(nn.Module):
             elastic_softening = electronic_piezo.new_zeros(graphs, 6, 6)
             dielectric = dielectric_background
             elastic = elastic_background
-        factorized_ionic_piezo = factorized_tensor - electronic_piezo
-        physical_tensor = electronic_piezo + ionic_piezo
+        ionic_piezo = factorized_tensor - electronic_piezo
+        physical_tensor = factorized_tensor
         return AtomCoordinatePrediction(
             # The direct and reciprocal terms are strain-symmetric by
             # construction.  Retain this final projection because the
@@ -2793,7 +2802,7 @@ class PiezoJet(nn.Module):
             macro_dielectric, macro_elastic,
             0.5 * (physical_tensor + physical_tensor.transpose(-1, -2)),
             electronic_piezo, ionic_piezo,
-            factorized_ionic_piezo, displacement_response,
+            direct_u_ionic_piezo, displacement_response,
             factors.born_charges, factors.force_constants_flat, internal_strain, optical_operator_flat,
             shared_clamped_elastic, elastic_background, dielectric_background,
             ionic_dielectric, elastic_softening, dielectric, elastic,
@@ -2813,10 +2822,11 @@ def model_from_config(config: Mapping[str, object]) -> PiezoJet:
             "factor_architecture=independent_quadratic_response; "
             "legacy architecture switches are not accepted by model_from_config"
         )
-    solve_policy = str(config.get("optical_solve_policy", "regularized"))
-    if solve_policy != "regularized":
+    solve_policy = str(config.get("optical_solve_policy", "tikhonov"))
+    if solve_policy not in {"regularized", "tikhonov"}:
         raise ValueError(
-            "Production PiezoJet requires optical_solve_policy=regularized; "
+            "Production PiezoJet requires optical_solve_policy=tikhonov "
+            "(or the transitional alias regularized); "
             "exact propagation is available only through explicit DFPT diagnostics"
         )
     background_architecture = str(config.get("background_architecture", "isotropic"))

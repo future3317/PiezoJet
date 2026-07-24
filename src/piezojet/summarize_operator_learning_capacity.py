@@ -10,7 +10,7 @@ from typing import Any
 
 FACTORS = (
     "born_charge", "force_constant", "internal_strain_full",
-    "displacement_response", "ionic_piezo", "factorized_ionic_piezo",
+    "displacement_response", "ionic_piezo", "direct_u_ionic_piezo",
     "dielectric", "ionic_dielectric", "macro_elastic",
 )
 

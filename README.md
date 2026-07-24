@@ -85,9 +85,11 @@ The total-only GMTNet target and the physical branch decomposition use
 independent towers:
 
 - `tensor`: macro total tower, trained on all GMTNet total labels;
-- `physical_tensor`: same-OUTCAR electronic plus direct-`U_eta` ionic tower;
-- `factorized_ionic_piezo`: `Z*/Phi/Lambda` diagnostic, never substituted for
-  the maintained direct-`U_eta` prediction.
+- `physical_tensor`: same-OUTCAR electronic plus factor/Schur ionic response
+  ``Z*^T Phi^{-1} Lambda`` (exact on true-DFPT-stable spectra,
+  Tikhonov-regularized otherwise);
+- `direct_u_ionic_piezo`: independent direct-`U_eta` ablation, retained for
+  baseline comparison and never substituted for the production factor path.
 
 This separation is required because total-only data cannot identify the
 electronic/ionic allocation. A macro-total gradient cannot enter the physical

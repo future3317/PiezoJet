@@ -326,19 +326,23 @@ def test_independent_displacement_response_has_no_pinv_chart_or_ghost_gradient(t
     model = PiezoJet(cutoff=5.0, num_blocks=1)
     components = model.predict_components(batch)
     assert components.ionic_piezo.shape == (1, 3, 3, 3)
-    assert components.factorized_ionic_piezo.shape == (1, 3, 3, 3)
+    assert components.direct_u_ionic_piezo.shape == (1, 3, 3, 3)
     assert components.displacement_response.shape == (batch.num_nodes, 3, 3, 3)
     assert components.internal_strain.sum(dim=0).abs().max() < 1e-5
     assert components.displacement_response.sum(dim=0).abs().max() < 1e-5
-    assert not torch.allclose(components.ionic_piezo, components.factorized_ionic_piezo)
+    assert not torch.allclose(components.ionic_piezo, components.direct_u_ionic_piezo)
 
+    # Production ionic path (factor/Schur) differentiates through Phi, Lambda,
+    # Z*, and the electronic head, but not the independent direct-U head.
     components.ionic_piezo.square().mean().backward()
-    assert any(
-        parameter.grad is not None and parameter.grad.abs().sum() > 0
-        for parameter in model.displacement_response_head.parameters()
+    assert all(
+        parameter.grad is None for parameter in model.displacement_response_head.parameters()
     )
     assert any(parameter.grad is not None for parameter in model.born_head.parameters())
-    assert all(parameter.grad is None for parameter in model.response_factors.parameters())
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in model.response_factors.parameters()
+    )
 
     model.zero_grad(set_to_none=True)
     teacher_forced = model.predict_displacement_response(batch)
@@ -358,15 +362,18 @@ def test_independent_displacement_response_has_no_pinv_chart_or_ghost_gradient(t
 
     model.zero_grad(set_to_none=True)
     components = model.predict_components(batch)
-    components.factorized_ionic_piezo.square().mean().backward()
+    # Direct-U ablation contracts the predicted displacement response with
+    # predicted BEC, so it touches both the U head and the Born head.
+    components.direct_u_ionic_piezo.square().mean().backward()
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in model.displacement_response_head.parameters()
+    )
     assert any(
         parameter.grad is not None and parameter.grad.abs().sum() > 0
         for parameter in model.born_head.parameters()
     )
-    assert any(
-        parameter.grad is not None and parameter.grad.abs().sum() > 0
-        for parameter in model.response_factors.parameters()
-    )
+    assert all(parameter.grad is None for parameter in model.response_factors.parameters())
 
 
 def test_full_lambda_loss_respects_strict_graph_mask():

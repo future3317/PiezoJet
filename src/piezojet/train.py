@@ -870,7 +870,7 @@ def _epoch(
         "internal_strain_full": 0.0,
         "response_active_strain": 0.0,
         "ionic_piezo": 0.0,
-        "factorized_ionic_piezo": 0.0,
+        "direct_u_ionic_piezo": 0.0,
         "displacement_response": 0.0,
         "displacement_first_order_consistency": 0.0,
         "electronic_piezo": 0.0,
@@ -971,7 +971,19 @@ def _epoch(
                 or branch_sum_weight != 0.0 or collect_u_gradient_diagnostics
             )
             if need_ionic:
-                ionic_component, supervised_ionic_prediction = displacement_macro_piezo_loss(
+                ionic_component = ionic_piezo_loss(
+                    components.ionic_piezo,
+                    batch.y_ionic_piezo,
+                    batch.ionic_piezo_mask,
+                )
+            else:
+                ionic_component = zero
+            need_direct_u = (
+                evaluate_all_components or displacement_response_weight != 0.0
+                or collect_u_gradient_diagnostics
+            )
+            if need_direct_u:
+                direct_u_component, _ = displacement_macro_piezo_loss(
                     components.displacement_response,
                     batch.y_born,
                     batch.y_ionic_piezo,
@@ -980,8 +992,7 @@ def _epoch(
                     model.response,
                 )
             else:
-                ionic_component = zero
-                supervised_ionic_prediction = components.ionic_piezo * 0.0
+                direct_u_component = zero
             electronic_component = (
                 macroscopic_piezo_loss(
                     components.electronic_piezo,
@@ -994,7 +1005,7 @@ def _epoch(
             )
             branch_sum_component = (
                 macroscopic_piezo_loss(
-                    components.electronic_piezo + supervised_ionic_prediction,
+                    components.physical_tensor,
                     batch.y_dfpt_total_piezo,
                     batch.dfpt_branch_mask,
                 )
@@ -1121,7 +1132,7 @@ def _epoch(
             if training and collect_u_gradient_diagnostics and gradient_materials:
                 gradient_metrics = _paired_parameter_gradient_metrics(
                     displacement_component,
-                    ionic_component,
+                    direct_u_component,
                     _displacement_core_parameters(model),
                 )
                 conditioning_totals["u_gradient_materials"] += gradient_materials
@@ -1148,7 +1159,7 @@ def _epoch(
                 ] += branch_sum_metrics["gradient_cosine"] * gradient_materials
                 combined_metrics = _paired_parameter_gradient_metrics(
                     displacement_component,
-                    ionic_component + branch_sum_component,
+                    direct_u_component + branch_sum_component,
                     _displacement_core_parameters(model),
                 )
                 conditioning_totals[
@@ -1243,10 +1254,7 @@ def _epoch(
             "internal_strain_full": full_internal_component,
             "response_active_strain": active_strain_component,
             "ionic_piezo": ionic_component,
-            "factorized_ionic_piezo": (
-                components.factorized_ionic_piezo.abs().mean()
-                if compute_factorized_response else zero
-            ),
+            "direct_u_ionic_piezo": direct_u_component,
             "displacement_response": displacement_component,
             "displacement_first_order_consistency": displacement_consistency_component,
             "electronic_piezo": electronic_component,

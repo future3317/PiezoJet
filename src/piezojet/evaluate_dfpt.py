@@ -40,7 +40,7 @@ FACTOR_FLOORS = {
     "internal_strain_full": 0.01,  # eV / Angstrom
     "displacement_response": 0.001,  # Angstrom
     "ionic_piezo": 0.05,  # C / m^2
-    "factorized_ionic_piezo": 0.05,  # C / m^2
+    "direct_u_ionic_piezo": 0.05,  # C / m^2
     "electronic_piezo": 0.05,  # C / m^2
     "total_piezo": 0.05,  # C / m^2
     "dfpt_total_piezo": 0.05,  # C / m^2
@@ -57,7 +57,7 @@ FACTOR_UNITS = {
     "internal_strain_full": "eV/Angstrom",
     "displacement_response": "Angstrom",
     "ionic_piezo": "C/m^2",
-    "factorized_ionic_piezo": "C/m^2",
+    "direct_u_ionic_piezo": "C/m^2",
     "electronic_piezo": "C/m^2",
     "total_piezo": "C/m^2",
     "dfpt_total_piezo": "C/m^2",
@@ -861,7 +861,7 @@ def main() -> None:
         "internal_strain_full",
         "displacement_response",
         "ionic_piezo",
-        "factorized_ionic_piezo",
+        "direct_u_ionic_piezo",
         "electronic_piezo",
         "total_piezo",
         "dfpt_total_piezo",
@@ -979,8 +979,8 @@ def main() -> None:
                 "force_constant": (force_prediction, force_target),
                 "internal_strain": (internal_prediction, internal_target),
                 "ionic_piezo": (components.ionic_piezo.squeeze(0), ionic_target),
-                "factorized_ionic_piezo": (
-                    components.factorized_ionic_piezo.squeeze(0), ionic_target
+                "direct_u_ionic_piezo": (
+                    components.direct_u_ionic_piezo.squeeze(0), ionic_target
                 ),
                 "electronic_piezo": (electronic_prediction, electronic_target),
                 "total_piezo": (components.tensor.squeeze(0), total_target),
@@ -1069,7 +1069,7 @@ def main() -> None:
             oracle = {
                 "direct_pred_z_pred_u_regularized": components.ionic_piezo.squeeze(0),
                 "factorized_pred_z_pred_phi_pred_lambda_regularized": (
-                    components.factorized_ionic_piezo.squeeze(0)
+                    components.direct_u_ionic_piezo.squeeze(0)
                 ),
                 "true_z_true_phi_pred_lambda_regularized": ionic_piezo_from_factors(
                     model.response, true_born, force_target, predicted_lambda, volume, "regularized"
@@ -1241,7 +1241,7 @@ def main() -> None:
             electronic_predictions.append(components.electronic_piezo.cpu())
             electronic_targets.append(graph.y_electronic_piezo.cpu())
             ionic_predictions.append(components.ionic_piezo.cpu())
-            factorized_ionic_predictions.append(components.factorized_ionic_piezo.cpu())
+            factorized_ionic_predictions.append(components.direct_u_ionic_piezo.cpu())
             dfpt_total_targets.append(graph.y_dfpt_total_piezo.cpu())
             ionic_targets.append(graph.y_ionic_piezo.cpu())
 
